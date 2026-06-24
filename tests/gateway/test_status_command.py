@@ -99,7 +99,7 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
     result = await runner._handle_message(_make_event("/status"))
 
     assert "**Session ID:** `sess-1`" in result
-    assert "**Cumulative API tokens (re-sent each call):** 321" in result
+    assert "**Lifetime tokens billed:** 321" in result
     assert "**Agent Running:** Yes ⚡" in result
     assert "**Title:**" not in result
     running_agent.interrupt.assert_not_called()
@@ -152,7 +152,7 @@ async def test_status_command_reads_token_totals_from_session_db():
     result = await runner._handle_message(_make_event("/status"))
 
     # 1000 + 250 + 500 + 100 + 50 = 1,900
-    assert "**Cumulative API tokens (re-sent each call):** 1,900" in result
+    assert "**Lifetime tokens billed:** 1,900" in result
 
 
 @pytest.mark.asyncio
@@ -173,7 +173,7 @@ async def test_status_command_tokens_zero_when_session_db_row_missing():
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Cumulative API tokens (re-sent each call):** 0" in result
+    assert "**Lifetime tokens billed:** 0" in result
 
 
 @pytest.mark.asyncio
@@ -211,7 +211,7 @@ async def test_status_command_includes_live_agent_model_and_context():
 
     assert "**Model:** `openai/gpt-test` (openai)" in result
     assert "**Context:** 12,345 / 100,000 (12%)" in result
-    assert "**Cumulative API tokens (re-sent each call):** 1,250" in result
+    assert "**Lifetime tokens billed:** 1,250" in result
     assert "1,250 (cumulative)" not in result
 
 
@@ -244,7 +244,7 @@ async def test_status_command_includes_persisted_model_and_context_when_agent_no
 
     assert "**Model:** `openai/gpt-persisted` (openai-codex)" in result
     assert "**Context:** 24,000 / 272,000 (9%)" in result
-    assert "**Cumulative API tokens (re-sent each call):** 2,500" in result
+    assert "**Lifetime tokens billed:** 2,500" in result
 
 
 @pytest.mark.asyncio
@@ -734,3 +734,111 @@ async def test_post_delivery_callback_generation_snapshot_happens_after_bind():
     assert fired == []
     assert session_key in adapter._post_delivery_callbacks
     assert adapter._post_delivery_callbacks[session_key][0] == 2
+
+
+# ---------------------------------------------------------------------------
+# /context command
+# ---------------------------------------------------------------------------
+
+
+def _make_ctx_agent(**overrides):
+    """A stub agent carrying a context_compressor + cumulative counters."""
+    ctx = SimpleNamespace(
+        last_prompt_tokens=overrides.pop("last_prompt_tokens", 48_000),
+        last_real_prompt_tokens=overrides.pop("last_real_prompt_tokens", 48_000),
+        context_length=overrides.pop("context_length", 200_000),
+        threshold_tokens=overrides.pop("threshold_tokens", 100_000),
+        threshold_percent=overrides.pop("threshold_percent", 0.5),
+        compression_count=overrides.pop("compression_count", 2),
+        _last_compression_savings_pct=overrides.pop("savings", 63.0),
+    )
+    return SimpleNamespace(
+        model=overrides.pop("model", "demo/model"),
+        context_compressor=ctx,
+        session_cache_read_tokens=overrides.pop("cache_read", 900_000),
+        session_cache_write_tokens=overrides.pop("cache_write", 12_000),
+        session_input_tokens=overrides.pop("input", 120_000),
+        session_output_tokens=overrides.pop("output", 20_000),
+        session_reasoning_tokens=overrides.pop("reasoning", 4_000),
+        session_total_tokens=overrides.pop("total", 1_056_000),
+        session_api_calls=overrides.pop("api_calls", 12),
+    )
+
+
+def _seat_cached_agent(runner, agent):
+    """Place *agent* in the runner's agent cache under the resolved key."""
+    import threading
+    runner._agent_cache_lock = threading.Lock()
+    key = runner._session_key_for_source(_make_source())
+    runner._agent_cache[key] = (agent,)
+
+
+def _ctx_session_entry(session_id: str) -> SessionEntry:
+    return SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id=session_id,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_command_reports_live_window_from_cached_agent():
+    runner = _make_runner(_ctx_session_entry("sess-ctx"))
+    _seat_cached_agent(runner, _make_ctx_agent())
+
+    result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "🧠 **Context Window**" in result
+    assert "**Model:** `demo/model`" in result
+    assert "**In use:** 48,000 / 200,000 (24%)" in result
+    assert "**Headroom to limit:** 152,000 tokens" in result
+    assert "**Auto-compresses at:** 100,000 (50%) — 52,000 to go" in result
+    assert "**Compressions this session:** 2" in result
+    assert "**Last compression freed:** 63% of context" in result
+    assert "Hit rate: 88% of input served from cache" in result
+    # Cumulative throughput is shown but explicitly framed as NOT context size.
+    assert "Total billed: 1,056,000" in result
+    assert "Throughput, not context size" in result
+
+
+@pytest.mark.asyncio
+async def test_context_command_over_threshold_flags_active_compression():
+    runner = _make_runner(_ctx_session_entry("sess-ctx2"))
+    _seat_cached_agent(
+        runner,
+        _make_ctx_agent(last_prompt_tokens=150_000, last_real_prompt_tokens=150_000,
+                        compression_count=0),
+    )
+
+    result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "**In use:** 150,000 / 200,000 (75%)" in result
+    assert "over threshold, compression active" in result
+
+
+@pytest.mark.asyncio
+async def test_context_command_falls_back_to_transcript_estimate():
+    runner = _make_runner(_ctx_session_entry("sess-ctx3"))
+    # No resident agent; a transcript exists → rough-estimate path.
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "hello there"},
+        {"role": "assistant", "content": "hi, how can I help?"},
+    ]
+
+    result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "🧠 **Context Window**" in result
+    assert "Estimated context:" in result
+
+
+@pytest.mark.asyncio
+async def test_context_command_no_data_when_empty():
+    runner = _make_runner(_ctx_session_entry("sess-ctx4"))
+    runner.session_store.load_transcript.return_value = []
+
+    result = await runner._handle_context_command(_make_event("/context"))
+
+    assert result == "No context data available yet for this session."

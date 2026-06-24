@@ -3592,6 +3592,129 @@ class GatewaySlashCommandsMixin:
             return "\n".join(parts)
         return t("gateway.usage.no_data")
 
+    async def _handle_context_command(self, event: MessageEvent) -> str:
+        """Handle /context -- the dedicated context-window view.
+
+        ``/status`` surfaces a one-line ``used / total`` context summary; this
+        command is the deep view for users who want to understand and tune
+        their context budget: how full the live window is right now (with a
+        visual gauge), when automatic compression triggers and how far away
+        that is, how many compressions have fired and how much the last one
+        freed, provider cache-hit efficiency, and the session's cumulative
+        token throughput -- the last clearly labelled as throughput, NOT
+        context size, since the per-call window is re-sent every request.
+
+        Resolves the live agent from ``_running_agents`` (mid-turn) then the
+        ``_agent_cache`` (between turns) so the figures come straight from the
+        agent's ``context_compressor``.  Falls back to a rough transcript
+        estimate when no agent is resident yet.
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        # Try running agent first (mid-turn), then cached agent (between turns).
+        agent = self._running_agents.get(session_key)
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached = _cache.get(session_key)
+                    if cached:
+                        agent = cached[0]
+
+        ctx = getattr(agent, "context_compressor", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        used = 0
+        context_length = 0
+        if ctx is not None:
+            used = getattr(ctx, "last_prompt_tokens", 0) or getattr(ctx, "last_real_prompt_tokens", 0) or 0
+            context_length = getattr(ctx, "context_length", 0) or 0
+
+        # ── Live path: a resident agent has reported real provider usage ──
+        if ctx is not None and used > 0 and context_length > 0:
+            def _bar(fraction: float, width: int = 24) -> str:
+                fraction = max(0.0, min(1.0, fraction))
+                filled = int(round(fraction * width))
+                return "█" * filled + "░" * (width - filled)
+
+            pct = min(100.0, used / context_length * 100)
+            threshold = getattr(ctx, "threshold_tokens", 0) or 0
+            threshold_pct = (getattr(ctx, "threshold_percent", 0) or 0) * 100
+            headroom = max(0, context_length - used)
+
+            lines = [
+                t("gateway.context.header"),
+                "",
+                t("gateway.context.model", model=getattr(agent, "model", "?")),
+                t("gateway.context.window", total=f"{context_length:,}"),
+                t("gateway.context.in_use", used=f"{used:,}", total=f"{context_length:,}", pct=f"{pct:.0f}"),
+                t("gateway.context.bar", bar=_bar(used / context_length)),
+                t("gateway.context.headroom", headroom=f"{headroom:,}"),
+            ]
+
+            # Compression state
+            lines.append("")
+            if threshold > 0:
+                if used >= threshold:
+                    lines.append(t("gateway.context.over_threshold",
+                                   threshold=f"{threshold:,}", threshold_pct=f"{threshold_pct:.0f}"))
+                else:
+                    lines.append(t("gateway.context.threshold",
+                                   threshold=f"{threshold:,}", threshold_pct=f"{threshold_pct:.0f}",
+                                   to_go=f"{threshold - used:,}"))
+            compressions = getattr(ctx, "compression_count", 0) or 0
+            lines.append(t("gateway.context.compressions", count=compressions))
+            if compressions:
+                savings = getattr(ctx, "_last_compression_savings_pct", None)
+                if savings is not None:
+                    lines.append(t("gateway.context.last_savings", savings=f"{savings:.0f}"))
+
+            # Cache efficiency (cumulative session counters live on the agent)
+            cache_read = getattr(agent, "session_cache_read_tokens", 0) or 0
+            cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
+            input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+            if cache_read or cache_write:
+                lines.append("")
+                lines.append(t("gateway.context.cache_header"))
+                if cache_read:
+                    lines.append(t("gateway.context.cache_read", count=f"{cache_read:,}"))
+                if cache_write:
+                    lines.append(t("gateway.context.cache_write", count=f"{cache_write:,}"))
+                _denom = cache_read + input_tokens
+                if _denom > 0:
+                    lines.append(t("gateway.context.cache_hit", pct=f"{cache_read / _denom * 100:.0f}"))
+
+            # Cumulative throughput — clearly labelled as NOT context size
+            api_calls = getattr(agent, "session_api_calls", 0) or 0
+            output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+            reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
+            total_tokens = getattr(agent, "session_total_tokens", 0) or 0
+            lines.append("")
+            lines.append(t("gateway.context.totals_header", calls=api_calls))
+            lines.append(t("gateway.context.totals_line",
+                           input=f"{input_tokens:,}", output=f"{output_tokens:,}",
+                           reasoning=f"{reasoning_tokens:,}"))
+            lines.append(t("gateway.context.total_billed", total=f"{total_tokens:,}"))
+            lines.append(t("gateway.context.throughput_note"))
+
+            return "\n".join(lines)
+
+        # ── Cold path: no resident agent — rough estimate from transcript ──
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+        if history:
+            from agent.model_metadata import estimate_messages_tokens_rough
+            msgs = [m for m in history if m.get("role") in {"user", "assistant"} and m.get("content")]
+            approx = estimate_messages_tokens_rough(msgs)
+            return "\n".join([
+                t("gateway.context.header"),
+                "",
+                t("gateway.context.estimated", count=f"{approx:,}", messages=len(msgs)),
+                t("gateway.context.detail_after_first"),
+            ])
+        return t("gateway.context.no_data")
+
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""
         args = event.get_command_args().strip()

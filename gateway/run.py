@@ -7861,6 +7861,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return await self._handle_commands_command(event)
                 if _cmd_def_inner.name == "profile":
                     return await self._handle_profile_command(event)
+                if _cmd_def_inner.name == "context":
+                    return await self._handle_context_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
                 if _cmd_def_inner.name == "version":
@@ -8267,6 +8269,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "usage":
             return await self._handle_usage_command(event)
+
+        if canonical == "context":
+            return await self._handle_context_command(event)
 
         if canonical == "credits":
             return await self._handle_credits_command(event)
