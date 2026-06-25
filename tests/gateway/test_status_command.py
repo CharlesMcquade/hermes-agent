@@ -842,3 +842,26 @@ async def test_context_command_no_data_when_empty():
     result = await runner._handle_context_command(_make_event("/context"))
 
     assert result == "No context data available yet for this session."
+
+
+@pytest.mark.asyncio
+async def test_context_command_gauge_between_turns_without_agent(monkeypatch):
+    # No resident agent, but the SessionStore tracked last_prompt_tokens and
+    # the session's model is known → accurate gauge instead of the rough
+    # transcript estimate. This is the between-turns path (mirrors /status).
+    se = _ctx_session_entry("sess-ctx5")
+    se.last_prompt_tokens = 60_000
+    runner = _make_runner(se)
+    runner._session_db.get_session.return_value = {"model": "demo/model"}
+    import agent.model_metadata as mm
+    monkeypatch.setattr(mm, "get_model_context_length", lambda *a, **k: 200_000)
+
+    result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "🧠 **Context Window**" in result
+    assert "**Model:** `demo/model`" in result
+    assert "**In use:** 60,000 / 200,000 (30%)" in result
+    assert "**Headroom to limit:** 140,000 tokens" in result
+    # No live agent → compression/cache/throughput omitted (need an active turn).
+    assert "Compressions this session" not in result
+    assert "Total billed" not in result
