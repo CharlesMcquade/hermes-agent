@@ -805,6 +805,19 @@ async def test_context_command_reports_live_window_from_cached_agent():
 
 
 @pytest.mark.asyncio
+async def test_context_command_ignores_post_compression_prompt_sentinel():
+    runner = _make_runner(_ctx_session_entry("sess-sentinel"))
+    _seat_cached_agent(
+        runner,
+        _make_ctx_agent(last_prompt_tokens=-1, last_real_prompt_tokens=48_000),
+    )
+
+    result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "**In use:** 48,000 / 200,000 (24%)" in result
+
+
+@pytest.mark.asyncio
 async def test_context_command_over_threshold_flags_active_compression():
     runner = _make_runner(_ctx_session_entry("sess-ctx2"))
     _seat_cached_agent(
@@ -852,7 +865,13 @@ async def test_context_command_gauge_between_turns_without_agent(monkeypatch):
     se = _ctx_session_entry("sess-ctx5")
     se.last_prompt_tokens = 60_000
     runner = _make_runner(se)
-    runner._session_db.get_session.return_value = {"model": "demo/model"}
+    try:
+        runner._session_db.get_session.return_value = {"model": "demo/model"}
+    except AttributeError:
+        pass
+    inner_db = getattr(runner._session_db, "_db", None)
+    if inner_db is not None:
+        inner_db.get_session.return_value = {"model": "demo/model"}
     import agent.model_metadata as mm
     monkeypatch.setattr(mm, "get_model_context_length", lambda *a, **k: 200_000)
 

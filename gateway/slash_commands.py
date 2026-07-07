@@ -3636,18 +3636,32 @@ class GatewaySlashCommandsMixin:
         #   used  : compressor.last_prompt_tokens → SessionStore.last_prompt_tokens
         #   model : agent.model → SessionDB row model
         #   window: compressor.context_length → get_model_context_length(model)
+        def _positive_int(value: Any) -> int:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                return 0
+            return value if value > 0 else 0
+
         used = 0
         context_length = 0
         if ctx is not None:
-            used = getattr(ctx, "last_prompt_tokens", 0) or getattr(ctx, "last_real_prompt_tokens", 0) or 0
-            context_length = getattr(ctx, "context_length", 0) or 0
+            # last_prompt_tokens can be -1 immediately after compression while
+            # the agent awaits fresh provider usage; ignore non-positive
+            # sentinels so we can fall back to the last real prompt/session row.
+            used = _positive_int(getattr(ctx, "last_prompt_tokens", 0)) or _positive_int(
+                getattr(ctx, "last_real_prompt_tokens", 0)
+            )
+            context_length = _positive_int(getattr(ctx, "context_length", 0))
         if not used:
-            used = int(getattr(session_entry, "last_prompt_tokens", 0) or 0)
+            used = _positive_int(getattr(session_entry, "last_prompt_tokens", 0))
 
         model_name = getattr(agent, "model", "") if has_agent else ""
         if not model_name and getattr(self, "_session_db", None) is not None:
             try:
-                _row = self._session_db.get_session(session_entry.session_id) or {}
+                _row = self._session_db.get_session(session_entry.session_id)
+                if inspect.isawaitable(_row):
+                    _row = await _row
                 model_name = _row.get("model") or "" if isinstance(_row, dict) else ""
             except Exception:
                 model_name = ""
