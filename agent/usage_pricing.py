@@ -327,7 +327,9 @@ def resolve_billing_route(
     provider_name = (provider or "").strip().lower()
     base = (base_url or "").strip().lower()
     model = (model_name or "").strip()
-    if model.startswith("@") and ":" in model:
+    if provider_name and model.lower().startswith(f"@{provider_name}:"):
+        model = model[len(provider_name) + 2:]
+    elif model.startswith("@") and ":" in model:
         declared_provider, model = model[1:].split(":", 1)
         if not provider_name:
             provider_name = declared_provider.strip().lower()
