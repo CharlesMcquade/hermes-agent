@@ -15323,6 +15323,7 @@ from . import (  # noqa: E402
     methods_prompt as _methods_prompt,
     methods_session as _methods_session,
     methods_tools as _methods_tools,
+    cdp_relay_methods as _cdp_relay_methods,
 )
 
 for _m in (
@@ -15333,6 +15334,7 @@ for _m in (
     _methods_tools,
     _methods_profiles,
     _methods_images,
+    _cdp_relay_methods,
 ):
     _m.register(sys.modules[__name__])
 del _m

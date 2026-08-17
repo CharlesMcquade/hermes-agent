@@ -388,6 +388,23 @@ async def handle_ws(ws: Any) -> None:
             # response dict, which we write here from the loop.
             req_id = req.get("id") if isinstance(req, dict) else None
             req_method = req.get("method") if isinstance(req, dict) else None
+
+            # Intercept JSON-RPC responses from connected browser extensions
+            # (CDP relay). These have an id but no method — route them to the
+            # CDP relay registry instead of failing on _normalize_request.
+            if req_method is None and req_id is not None and isinstance(req, dict):
+                try:
+                    from tui_gateway.cdp_relay import cdp_relay_registry
+                    routed = cdp_relay_registry.route_response(
+                        str(req_id),
+                        result=req.get("result"),
+                        error=req.get("error"),
+                    )
+                    if routed:
+                        continue  # Response was for a CDP relay call — done
+                except ImportError:
+                    pass  # CDP relay module not available
+
             try:
                 resp = await asyncio.to_thread(server.dispatch, req, transport)
             except Exception:
