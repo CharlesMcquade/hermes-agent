@@ -50,7 +50,7 @@ _HERMES_CORE_TOOLS = [
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
-    "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_vision", "browser_console", "browser_cdp", "browser_cdp_remote", "browser_cdp_extension", "browser_cdp_sidecar", "browser_dialog",
     # replaces other tools when browser.backend is "browser-use"
     "browser_exec",
     # Text-to-speech
@@ -185,7 +185,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp",
+            "browser_vision", "browser_console", "browser_cdp", "browser_cdp_remote", "browser_cdp_sidecar",
             "browser_dialog", "browser_exec", "web_search"
         ],
         "includes": []
@@ -393,7 +393,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_vision", "browser_console", "browser_cdp", "browser_cdp_remote", "browser_cdp_extension", "browser_cdp_sidecar", "browser_dialog",
             "browser_exec",
             "todo", "memory",
             "session_search", "clarify",
@@ -426,7 +426,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_vision", "browser_console", "browser_cdp", "browser_cdp_remote", "browser_cdp_extension", "browser_cdp_sidecar", "browser_dialog",
             "browser_exec",
             "todo", "memory",
             "session_search",
@@ -452,7 +452,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_vision", "browser_console", "browser_cdp", "browser_cdp_remote", "browser_cdp_extension", "browser_cdp_sidecar", "browser_dialog",
             "browser_exec",
             # Planning & memory
             "todo", "memory",
