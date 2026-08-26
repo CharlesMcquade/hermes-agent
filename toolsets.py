@@ -17,8 +17,9 @@ _HERMES_CORE_TOOLS = [
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
-    "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_vision", "browser_console", "browser_cdp", "browser_cdp_remote", "browser_cdp_extension", "browser_cdp_sidecar", "browser_dialog",
     "browser_vault",  # rides with the browser; deferred by default (tools.tool_search.defer)
+    "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # granular vault ops (fork)
     "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"
     "text_to_speech",
     "todo_list", "memory",
