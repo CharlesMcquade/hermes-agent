@@ -1193,10 +1193,10 @@ class AIAgent:
         unlike transient retry chatter that ``_clear_status_buffer`` drops.
         ``try_activate_fallback`` records the switch in
         ``self._pending_fallback_notice``; this emits it exactly once via
-        ``_emit_status`` and then clears it, so a successful fallback still
-        produces one visible notice.  On terminal failure the buffered switch
-        line is flushed instead (and this notice discarded) — see
-        ``_flush_status_buffer`` — so the user always sees the switch once.
+        ``_emit_warning`` and then clears it, so a successful fallback still
+        produces one durable user-visible warning.  On terminal failure the
+        buffered switch line is flushed instead (and this notice discarded) —
+        see ``_flush_status_buffer`` — so the user always sees the switch once.
         """
         try:
             notice = getattr(self, "_pending_fallback_notice", None)
@@ -1207,7 +1207,7 @@ class AIAgent:
                 notices = notice if isinstance(notice, list) else [notice]
                 for item in notices:
                     try:
-                        self._emit_status(str(item))
+                        self._emit_warning(str(item))
                     except Exception:
                         # A single surface callback failure must not hide later
                         # switches from the same fallback chain.
