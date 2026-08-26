@@ -169,7 +169,10 @@ class StatusOutputMixin:
         self._pending_fallback_notice = None
         for item in notice if isinstance(notice, list) else [notice]:
             try:
-                self._emit_status(str(item))
+                # Fork: a fallback switch is a durable warning (persists in
+                # transcript), not lifecycle status — matches the test contract
+                # in tests/run_agent/test_retry_status_buffer.py.
+                self._emit_warning(str(item))
             except Exception:
                 # One surface failure must not hide later switches from the same chain.
                 continue
