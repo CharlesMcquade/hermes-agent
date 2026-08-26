@@ -201,7 +201,8 @@ class StatusOutputMixin:
         self._pending_fallback_notice = None
         for item in notice if isinstance(notice, list) else [notice]:
             try:
-                self._emit_diagnostic_status(item)
+                # Fallback switches are durable warnings, not transient status.
+                self._emit_warning(str(item))
             except Exception:
                 # One surface failure must not hide later switches from the same chain.
                 continue
