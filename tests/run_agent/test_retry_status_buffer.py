@@ -128,8 +128,10 @@ def test_pending_fallback_notice_emitted_once_on_success():
     """On successful recovery the one-shot fallback notice is surfaced even
     though the noisy retry buffer is dropped."""
     agent = _make_bare_agent()
-    emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
+    statuses = []
+    warnings = []
+    agent._emit_status = lambda msg: statuses.append(msg)
+    agent._emit_warning = lambda msg: warnings.append(msg)
 
     # Simulate try_activate_fallback: buffer the noisy switch line AND record
     # the durable one-shot notice.
@@ -140,16 +142,17 @@ def test_pending_fallback_notice_emitted_once_on_success():
     agent._emit_pending_fallback_notice()
     agent._clear_status_buffer()
 
-    # The durable notice was shown exactly once; the buffered retry noise was
-    # silently dropped.
-    assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+    # The durable notice was shown exactly once via warning plumbing; the
+    # buffered retry noise was silently dropped.
+    assert statuses == []
+    assert warnings == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
     assert agent._retry_status_buffer == []
     # Notice is cleared so it cannot re-emit on a later turn.
     assert agent._pending_fallback_notice is None
 
     # A second success path with no new fallback emits nothing.
     agent._emit_pending_fallback_notice()
-    assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+    assert warnings == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
 
 
 def test_pending_fallback_notice_noop_when_unset():
