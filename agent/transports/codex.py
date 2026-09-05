@@ -654,7 +654,27 @@ class ResponsesApiTransport(ProviderTransport):
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")
                 if github_reasoning is not None:
-                    kwargs["reasoning"] = github_reasoning
+                    # ``github_reasoning_extra`` mirrors the GitHub model
+                    # catalog's ``capabilities.supports.reasoning_effort``
+                    # list — advisory data that has drifted from the live
+                    # backend (the catalog advertises ``minimal`` for
+                    # gpt-5.6-sol, which the endpoint 400s on, and omits
+                    # ``xhigh``/``max``, which it accepts). Trusting it
+                    # verbatim 400'd sessions configured with ``minimal``
+                    # into model fallback and silently downgraded
+                    # ``xhigh`` sessions to ``medium`` (#local, 2026-09-04).
+                    #
+                    # The catalog extra remains the gate for WHETHER
+                    # reasoning is emitted (it also proves the model is
+                    # reasoning-capable per GitHub's own metadata); the
+                    # LEVEL comes from ``reasoning_effort`` above — the
+                    # agent's requested effort already clamped against the
+                    # live-verified per-model vocabulary at the shared
+                    # chokepoint this function runs a few lines up. Emitting
+                    # the clamped agent effort keeps one authoritative value
+                    # flowing through every branch of this wire.
+                    kwargs["reasoning"] = dict(github_reasoning)
+                    kwargs["reasoning"]["effort"] = reasoning_effort
             else:
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = (

@@ -128,3 +128,102 @@ class TestCodexUltraForEveryModel:
                 reasoning_config={"enabled": True, "effort": "ultra"},
             )
             assert kw["reasoning"]["effort"] == wire, model
+
+
+class TestGithubResponsesEffortVocabulary:
+    """GitHub Models (Copilot) codex_responses: catalog-declared effort sets
+    are advisory, not authoritative.
+
+    The GitHub model catalog advertises ``minimal`` for gpt-5.6-sol
+    (verified 2026-09-04) but the live backend rejects it with HTTP 400
+    "unsupported value: 'minimal' is not supported with the
+    'gpt-5.6-sol-2026-07-09' model" — while ``xhigh``/``max``, absent from
+    the catalog, ARE accepted. Pre-fix, the transport forwarded the
+    catalog-declared dict verbatim, so a session configured with
+    ``reasoning_effort: minimal`` 400'd on its first request and dragged the
+    fallback chain onto the next model, and a session configured with
+    ``xhigh`` was silently downgraded to ``medium`` (nearest catalog entry).
+
+    Fix: clamp the catalog-sourced effort against the same live-verified
+    per-model vocabulary (``codex_supported_efforts``) every other branch on
+    this wire uses. Catalog remains the source for *whether* reasoning is
+    configured at all; the shared clamp owns the *level*.
+    """
+
+    def _kwargs(self, model, reasoning_config, github_extra):
+        return get_transport("codex_responses").build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_github_responses=True,
+            reasoning_config=reasoning_config,
+            github_reasoning_extra=github_extra,
+        )
+
+    def test_minimal_from_catalog_clamps_to_low(self):
+        """Regression: catalog advertises minimal for gpt-5.6-sol, endpoint
+        rejects it. Must clamp to the nearest weaker supported level."""
+        kw = self._kwargs(
+            "gpt-5.6-sol",
+            {"enabled": True, "effort": "minimal"},
+            {"effort": "minimal"},
+        )
+        assert kw["reasoning"]["effort"] == "low"
+
+    def test_xhigh_not_in_catalog_survives_via_shared_clamp(self):
+        """Regression (silent downgrade): catalog for gpt-5.6-sol lacks
+        xhigh, but the endpoint accepts it. The shared vocabulary must win
+        over the catalog's shorter list."""
+        kw = self._kwargs(
+            "gpt-5.6-sol",
+            {"enabled": True, "effort": "xhigh"},
+            {"effort": "medium"},
+        )
+        assert kw["reasoning"]["effort"] == "xhigh"
+
+    def test_max_gpt56_passes_through(self):
+        kw = self._kwargs(
+            "gpt-5.6-sol",
+            {"enabled": True, "effort": "max"},
+            {"effort": "high"},
+        )
+        assert kw["reasoning"]["effort"] == "max"
+
+    def test_ultra_never_reaches_github_wire(self):
+        kw = self._kwargs(
+            "gpt-5.6-sol",
+            {"enabled": True, "effort": "ultra"},
+            {"effort": "medium"},
+        )
+        assert kw["reasoning"]["effort"] == "max"
+
+    def test_legacy_model_caps_at_xhigh(self):
+        """Non-5.6 GitHub Models models keep the legacy vocabulary."""
+        kw = self._kwargs(
+            "gpt-5.5",
+            {"enabled": True, "effort": "max"},
+            {"effort": "max"},
+        )
+        assert kw["reasoning"]["effort"] == "xhigh"
+
+    def test_none_effort_preserved(self):
+        """Explicit disable must not be re-enabled by clamping."""
+        kw = self._kwargs(
+            "gpt-5.6-sol",
+            {"enabled": True, "effort": "none"},
+            {"effort": "none"},
+        )
+        assert kw["reasoning"]["effort"] == "none"
+
+    def test_missing_github_extra_omits_reasoning_fail_closed(self):
+        """Catalog-silent model (no reasoning_effort data at all): the
+        ``reasoning`` key is omitted entirely. Fail-closed — without catalog
+        evidence the endpoint supports the parameter, sending it risks a
+        400 on non-reasoning GitHub Models. Unset stays unset; the shared
+        clamp never invents a request (agent/reasoning_effort.py rule 2)."""
+        kw = self._kwargs(
+            "gpt-5.6-sol",
+            {"enabled": True, "effort": "minimal"},
+            None,
+        )
+        assert "reasoning" not in kw
