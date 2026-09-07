@@ -80,7 +80,7 @@ _TITLE_PROMPT_TEMPLATE = (
     "  [Shop] — Lakeway/Austin local: stores (HEB), services, venues, "
     "clubs, weather, shopping.\n"
     "  [Food] — recipes, grilling, cooking technique, groceries.\n"
-    "  [Family] — Audrey, Ford, reminders, health, school, household "
+    "  [Fam] — Audrey, Ford, reminders, health, school, household "
     "coordination.\n"
     "  [Travel] — flights, hotels, airlines, trips.\n"
     "  [Tech] — consumer devices and car/EV company news: phones, Mac/iOS, "
