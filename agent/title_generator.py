@@ -44,11 +44,48 @@ _TITLE_PROMPT_TEMPLATE = (
     "that lets them find this conversation again in a list.\n\n"
     "Rules:\n"
     "- Start with a bracketed category tag, then 2 to 6 words naming the "
-    "topic: [Category] Short name.\n"
-    "- Category tag: prefer one of [BG3], [Fantasy], [Hermes], [Finance], "
-    "[Home], [Printer], [Travel], [Car] when the topic matches (e.g. Baldur's "
-    "Gate 3 -> [BG3], fantasy football -> [Fantasy], Hermes/agent development "
-    "-> [Hermes]); otherwise coin a new 1-2 word tag from the topic.\n"
+    "topic: [Tag] Short name. Every title MUST begin with a bracketed tag.\n"
+    "- Pick the FIRST matching tag from this list (order = precedence):\n"
+    "  [Test] — ONLY for bare machine verification scaffolding: an "
+    "instruction to acknowledge, echo, or launch a check with no real task "
+    "behind it. Any message that asks a question or requests real work is "
+    "NOT [Test], even if it mentions tests or testing.\n"
+    "  [Kanban] — kanban task sessions ('Work kanban task t_…', task-ID "
+    "scaffolding).\n"
+    "  [Codex] — message begins with 'Codex:' (cross-agent handoff).\n"
+    "  [Hermes] — Hermes Agent development: WebUI, desktop app, skills, "
+    "plugins, cron/config, browser control, its GitHub PRs/CI/rebases, "
+    "fork syncing, session naming.\n"
+    "  [CoreWeave] — CoreWeave work: clusters, GPUs (H100/H200/B200), "
+    "vLLM, kubeconfigs, inference serving, CWB101.\n"
+    "  [Models] — LLM research/benchmarks/quantization and local model "
+    "serving (pmbp, MLX, llama.cpp, GGUF, model downloads).\n"
+    "  [ComfyUI] — image/video/audio generation: ComfyUI workflows, H3 "
+    "video, TTS/Kokoro.\n"
+    "  [Printer] — Bambu X1C / 3D printing, slicers, filament.\n"
+    "  [BG3] — Baldur's Gate 3 ONLY: builds, quests, mechanics, mods. "
+    "Baldur's Gate 1/2, Elite Dangerous, and any other game get [Gaming] or "
+    "the game's name.\n"
+    "  [Fantasy] — fantasy football: Sleeper/ESPN drafts, lineups, waivers.\n"
+    "  [Finance] — personal finance: RSUs, brokerage, cash flow, spending, "
+    "taxes, bill splits.\n"
+    "  [Home] — house maintenance, appliances, repairs.\n"
+    "  [SmartHome] — Pi5, Pi-hole, Home Assistant, Hue, Rain Bird, "
+    "homelab LAN.\n"
+    "  [Local] — Lakeway/Austin area: services, stores (HEB), venues, "
+    "clubs, weather.\n"
+    "  [Family] — Audrey, Ford, groceries, pantry, reminders, health, "
+    "school.\n"
+    "  [Cooking] — recipes, grilling, cooking technique.\n"
+    "  [Travel] — flights, hotels, airlines, trips.\n"
+    "  [Tech] — consumer devices and car/EV company news: phones, Mac/iOS, "
+    "Steam Deck, gadgets, Rivian, Scout Motors.\n"
+    "  [Email] — Gmail, inbox triage, unsubscribe scans, iMessage "
+    "automation.\n"
+    "  [SysOps] — Mac/Windows/SSH/Tailscale/disk administration not "
+    "covered above.\n"
+    "- If nothing fits, coin a NEW 1-2 word tag from the topic — never a "
+    "vague tag like Misc, Question, or Chat.\n"
     "- Sentence case the name after the tag (capitalize only the first word "
     "and proper nouns).\n"
     "- Name what the user wants DONE, not that they asked a question.\n"
@@ -61,8 +98,15 @@ _TITLE_PROMPT_TEMPLATE = (
     'Good: {"title": "[BG3] Act 3 house of grief"}\n'
     'Good: {"title": "[Fantasy] Week 2 lineup swaps"}\n'
     'Good: {"title": "[Hermes] Scroll bouncing fix"}\n'
-    'Good: {"title": "[Printer] Bambu AMS clogging"}\n'
-    'Too vague: {"title": "[Code] Changes"}\n'
+    'Good: {"title": "[CoreWeave] vllm config glm-5p2-dspark removal"}\n'
+    'Good: {"title": "[Models] Qwen 3.8 27B pmbp swap"}\n'
+    'Good: {"title": "[Cooking] Cast iron rust removal"}\n'
+    'Wrong tag: {"title": "[Test] Bypass practice test requirement"} — if the '
+    'user asks "how do I bypass practice test requirements on 240tutoring", '
+    'that is a real request; tag it by topic, never [Test]\n'
+    'Right: for that 240tutoring question, {"title": "[Education] Practice '
+    'test access on 240tutoring"}\n'
+    'Too vague: {"title": "[Misc] Changes"}\n'
     'Too long: {"title": "[BG3] Investigate and fix the issue where the login '
     'button does not respond on mobile devices"}\n\n'
     'Reply with JSON only: {"title": "..."}'
