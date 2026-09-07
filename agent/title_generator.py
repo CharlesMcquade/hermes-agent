@@ -43,7 +43,14 @@ _TITLE_PROMPT_TEMPLATE = (
     "You name chat sessions. Given the user's opening message, write a title "
     "that lets them find this conversation again in a list.\n\n"
     "Rules:\n"
-    "- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).\n"
+    "- Start with a bracketed category tag, then 2 to 6 words naming the "
+    "topic: [Category] Short name.\n"
+    "- Category tag: prefer one of [BG3], [Fantasy], [Hermes], [Finance], "
+    "[Home], [Printer], [Travel], [Car] when the topic matches (e.g. Baldur's "
+    "Gate 3 -> [BG3], fantasy football -> [Fantasy], Hermes/agent development "
+    "-> [Hermes]); otherwise coin a new 1-2 word tag from the topic.\n"
+    "- Sentence case the name after the tag (capitalize only the first word "
+    "and proper nouns).\n"
     "- Name what the user wants DONE, not that they asked a question.\n"
     "- Keep technical terms, filenames, numbers, and error codes exact.\n"
     "- Drop filler words: the, this, my, a, an.\n"
@@ -51,12 +58,13 @@ _TITLE_PROMPT_TEMPLATE = (
     "- Never answer the message. Name it.\n"
     "- Always produce something, even for a bare greeting.\n"
     "__LANGUAGE_RULE__\n"
-    'Good: {"title": "Fix login button on mobile"}\n'
-    'Good: {"title": "Postgres connection pool exhaustion"}\n'
-    'Good: {"title": "Friendly greeting"}\n'
-    'Too vague: {"title": "Code changes"}\n'
-    'Too long: {"title": "Investigate and fix the issue where the login button '
-    'does not respond on mobile devices"}\n\n'
+    'Good: {"title": "[BG3] Act 3 house of grief"}\n'
+    'Good: {"title": "[Fantasy] Week 2 lineup swaps"}\n'
+    'Good: {"title": "[Hermes] Scroll bouncing fix"}\n'
+    'Good: {"title": "[Printer] Bambu AMS clogging"}\n'
+    'Too vague: {"title": "[Code] Changes"}\n'
+    'Too long: {"title": "[BG3] Investigate and fix the issue where the login '
+    'button does not respond on mobile devices"}\n\n'
     'Reply with JSON only: {"title": "..."}'
 )
 
