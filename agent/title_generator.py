@@ -56,27 +56,32 @@ _TITLE_PROMPT_TEMPLATE = (
     "  [Hermes] — Hermes Agent development: WebUI, desktop app, skills, "
     "plugins, cron/config, browser control, its GitHub PRs/CI/rebases, "
     "fork syncing, session naming.\n"
-    "  [CoreWeave] — CoreWeave work: clusters, GPUs (H100/H200/B200), "
-    "vLLM, kubeconfigs, inference serving, CWB101.\n"
-    "  [Models] — LLM research/benchmarks/quantization and local model "
+    "  [CRWV] — CoreWeave work: clusters, GPUs (H100/H200/B200), vLLM, "
+    "kubeconfigs, inference serving, CWB101.\n"
+    "  [LLM] — LLM research/benchmarks/quantization and local model "
     "serving (pmbp, MLX, llama.cpp, GGUF, model downloads).\n"
     "  [ComfyUI] — image/video/audio generation: ComfyUI workflows, H3 "
     "video, TTS/Kokoro.\n"
     "  [Printer] — Bambu X1C / 3D printing, slicers, filament.\n"
-    "  [BG3] — Baldur's Gate 3 ONLY: builds, quests, mechanics, mods. "
-    "Baldur's Gate 1/2, Elite Dangerous, and any other game get [Gaming] or "
-    "the game's name.\n"
-    "  [Fantasy] — fantasy football: Sleeper/ESPN drafts, lineups, waivers.\n"
+    "  [BG3] — Baldur's Gate 3 ONLY: builds, quests, mechanics, mods.\n"
+    "  [E:D] — Elite Dangerous.\n"
+    "  [GTA6] — Grand Theft Auto 6 news, leaks, trailers.\n"
+    "  [Skyrim] — Skyrim / Elder Scrolls, including its mods "
+    "(ImprovedCameraSF etc.).\n"
+    "  [G] — gaming generally: gaming news, game opinions, Steam game "
+    "questions. Any OTHER specific game gets the game's name as its tag "
+    "(e.g. [Stellaris], [KCD2], [Oblivion]) instead of [G].\n"
+    "  [FF] — fantasy football: Sleeper/ESPN drafts, lineups, waivers.\n"
     "  [Finance] — personal finance: RSUs, brokerage, cash flow, spending, "
     "taxes, bill splits.\n"
     "  [Home] — house maintenance, appliances, repairs.\n"
     "  [SmartHome] — Pi5, Pi-hole, Home Assistant, Hue, Rain Bird, "
     "homelab LAN.\n"
-    "  [Local] — Lakeway/Austin area: services, stores (HEB), venues, "
-    "clubs, weather.\n"
-    "  [Family] — Audrey, Ford, groceries, pantry, reminders, health, "
-    "school.\n"
-    "  [Cooking] — recipes, grilling, cooking technique.\n"
+    "  [Shop] — Lakeway/Austin local: stores (HEB), services, venues, "
+    "clubs, weather, shopping.\n"
+    "  [Food] — recipes, grilling, cooking technique, groceries.\n"
+    "  [Family] — Audrey, Ford, reminders, health, school, household "
+    "coordination.\n"
     "  [Travel] — flights, hotels, airlines, trips.\n"
     "  [Tech] — consumer devices and car/EV company news: phones, Mac/iOS, "
     "Steam Deck, gadgets, Rivian, Scout Motors.\n"
@@ -96,11 +101,11 @@ _TITLE_PROMPT_TEMPLATE = (
     "- Always produce something, even for a bare greeting.\n"
     "__LANGUAGE_RULE__\n"
     'Good: {"title": "[BG3] Act 3 house of grief"}\n'
-    'Good: {"title": "[Fantasy] Week 2 lineup swaps"}\n'
+    'Good: {"title": "[FF] Week 2 lineup swaps"}\n'
     'Good: {"title": "[Hermes] Scroll bouncing fix"}\n'
-    'Good: {"title": "[CoreWeave] vllm config glm-5p2-dspark removal"}\n'
-    'Good: {"title": "[Models] Qwen 3.8 27B pmbp swap"}\n'
-    'Good: {"title": "[Cooking] Cast iron rust removal"}\n'
+    'Good: {"title": "[CRWV] vllm config glm-5p2-dspark removal"}\n'
+    'Good: {"title": "[LLM] Qwen 3.8 27B pmbp swap"}\n'
+    'Good: {"title": "[Food] Cast iron rust removal"}\n'
     'Wrong tag: {"title": "[Test] Bypass practice test requirement"} — if the '
     'user asks "how do I bypass practice test requirements on 240tutoring", '
     'that is a real request; tag it by topic, never [Test]\n'
