@@ -1627,43 +1627,71 @@ def _items_by_unique_name(items):
     return indexed
 
 
-def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
+def _preserve_env_ref_templates(current, raw, loaded_expanded=None, string_policy=None):
     """Restore raw ``${VAR}`` templates where the value is otherwise unchanged, so persisting a
-    loaded (expanded) config never writes the plaintext secret back to ``config.yaml``."""
-    if isinstance(current, str) and isinstance(raw, str) and _ENV_REF_RE.search(raw):
-        if current in (raw, loaded_expanded) or _expand_env_vars(raw) == current:
-            return raw
-        return current
+    loaded (expanded) config never writes the plaintext secret back to ``config.yaml``.
 
-    if isinstance(current, dict) and isinstance(raw, dict):
-        return {
-            key: _preserve_env_ref_templates(
-                value, raw.get(key),
-                loaded_expanded.get(key) if isinstance(loaded_expanded, dict) else None)
-            for key, value in current.items()}
+    ``string_policy(current, raw, field)`` is an optional paired-policy hook for save
+    boundaries (used by the WebUI config save). It is consulted only when traversal cannot
+    prove the template is unchanged and would otherwise return the runtime-expanded
+    ``current``: the policy may return a replacement string (e.g. the previous reference
+    template) for credential-named fields, or ``None`` to keep ordinary handling. Callers
+    must fail closed when a paired policy is required but the installed helper predates
+    this parameter (the extra keyword raises ``TypeError``), rather than silently
+    persisting expansions through an old traversal.
+    """
 
-    if isinstance(current, list) and isinstance(raw, list):
-        # Match named objects (e.g. custom_providers) by name so reordering keeps templates;
-        # with duplicate names fall back to positional matching rather than shadowing an entry.
-        current_by_name = _items_by_unique_name(current)
-        raw_by_name = _items_by_unique_name(raw)
-        loaded_by_name = _items_by_unique_name(loaded_expanded)
-        if current_by_name is not None and raw_by_name is not None:
+    def _restore(cur, prev, expanded, field):
+        if isinstance(cur, str) and isinstance(prev, str) and _ENV_REF_RE.search(prev):
+            if cur in (prev, expanded) or _expand_env_vars(prev) == cur:
+                return prev
+            if string_policy is not None:
+                replacement = string_policy(cur, prev, field)
+                if isinstance(replacement, str):
+                    return replacement
+            return cur
+
+        if isinstance(cur, dict) and isinstance(prev, dict):
+            return {
+                key: _restore(
+                    value, prev.get(key),
+                    expanded.get(key) if isinstance(expanded, dict) else None,
+                    key)
+                for key, value in cur.items()}
+
+        if isinstance(cur, list) and isinstance(prev, list):
+            # Match named objects (e.g. custom_providers) by name so reordering keeps templates;
+            # with duplicate names fall back to positional matching rather than shadowing an entry.
+            current_by_name = _items_by_unique_name(cur)
+            raw_by_name = _items_by_unique_name(prev)
+            if current_by_name is None and raw_by_name is None and cur and all(
+                    isinstance(item, dict) and isinstance(item.get("name"), str)
+                    for item in cur):
+                # Name-based matching is the only safe traversal here; duplicate names
+                # would let one entry's template shadow another's (fail closed).
+                raise ValueError(
+                    "ambiguous named list entries cannot be safely reference-preserved")
+            loaded_by_name = _items_by_unique_name(expanded)
+            if current_by_name is not None and raw_by_name is not None:
+                return [
+                    _restore(
+                        item, raw_by_name.get(item.get("name")),
+                        loaded_by_name.get(item.get("name")) if loaded_by_name is not None else None,
+                        field)
+                    for item in cur]
             return [
-                _preserve_env_ref_templates(
-                    item, raw_by_name.get(item.get("name")),
-                    loaded_by_name.get(item.get("name")) if loaded_by_name is not None else None)
-                for item in current]
-        return [
-            _preserve_env_ref_templates(
-                item,
-                raw[index] if index < len(raw) else None,
-                loaded_expanded[index]
-                if isinstance(loaded_expanded, list) and index < len(loaded_expanded)
-                else None)
-            for index, item in enumerate(current)]
+                _restore(
+                    item,
+                    prev[index] if index < len(prev) else None,
+                    expanded[index]
+                    if isinstance(expanded, list) and index < len(expanded)
+                    else None,
+                    field)
+                for index, item in enumerate(cur)]
 
-    return current
+        return cur
+
+    return _restore(current, raw, loaded_expanded, "")
 
 
 def _explicit_config_paths(config: Dict[str, Any]) -> Set[Tuple[str, ...]]:
