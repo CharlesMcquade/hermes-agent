@@ -37,11 +37,11 @@ class TestGenerateTitle:
             captured_kwargs.update(kwargs)
             resp = MagicMock()
             resp.choices = [MagicMock()]
-            resp.choices[0].message.content = "Configured Timeout"
+            resp.choices[0].message.content = "[Tech] Configured timeout"
             return resp
 
         with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
-            assert generate_title("question") == "Configured Timeout"
+            assert generate_title("question") == "[Tech] Configured timeout"
 
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
@@ -55,12 +55,12 @@ class TestGenerateTitle:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = (
             "<think>The user wants a title. I'll summarize the topic "
-            "concisely.</think>Debugging Python Import Errors"
+            "concisely.</think>[Tech] Debugging Python import errors"
         )
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("help me fix this import")
-            assert title == "Debugging Python Import Errors"
+            assert title == "[Tech] Debugging Python import errors"
             assert "<think>" not in title
             assert "summarize" not in title
 
@@ -80,15 +80,14 @@ class TestGenerateTitle:
             assert title is None
 
 
-    def test_truncates_long_titles(self):
+    def test_rejects_overlong_titles(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "A" * 100
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("question")
-            assert len(title) == 80
-            assert title.endswith("...")
+            assert title is None
 
     def test_rejects_answer_shaped_output(self):
         """A model that ignores the titling task and answers the user's
@@ -122,10 +121,10 @@ class TestGenerateTitle:
         """A normal 3-7 word title is unaffected by the answer-shape guard."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Investigate the title resolver bug"
+        mock_response.choices[0].message.content = "[Hermes] Investigate title resolver bug"
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
-            assert generate_title("question", "answer") == "Investigate the title resolver bug"
+            assert generate_title("question", "answer") == "[Hermes] Investigate title resolver bug"
 
 
 
@@ -481,7 +480,7 @@ class TestRuntimeValidator:
     def test_broken_validator_fails_open(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Resilient Title"
+        mock_response.choices[0].message.content = "[Tech] Resilient title"
 
         def _bad_validator():
             raise RuntimeError("validator gone")
@@ -491,7 +490,7 @@ class TestRuntimeValidator:
                 "question", "answer",
                 runtime_validator=_bad_validator,
             )
-            assert title == "Resilient Title"
+            assert title == "[Tech] Resilient title"
             mock_llm.assert_called_once()
 
     def test_forwards_runtime_validator_to_worker(self):

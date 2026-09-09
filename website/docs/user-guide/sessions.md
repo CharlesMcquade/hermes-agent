@@ -259,9 +259,13 @@ Give sessions human-readable titles so you can find and resume them easily.
 
 ### Auto-Generated Titles
 
-Hermes automatically generates a short descriptive title (3–7 words) for each session after the first exchange. This runs in a background thread using a fast auxiliary model, so it adds no latency. You'll see auto-generated titles when browsing sessions with `hermes sessions list` or `hermes sessions browse`.
+Hermes writes a provisional title from the opening message immediately, then upgrades it in a background thread using the title-generation auxiliary model. You'll see titles when browsing sessions with `hermes sessions list` or `hermes sessions browse`.
 
-Auto-titling only fires once per session and is skipped if you've already set a title manually.
+Model titles follow `[Tag] Short name`: one canonical category and a name of up to six words, at most 80 characters combined. `agent/title_policy.py` owns the finite registry, model prompt, structured `tag`/`name` response schema, aliases and validation. Legacy `{"title":"[Tag] Name"}` and plain tagged responses are accepted, but untagged, malformed, invented-category and overlong output are not.
+
+Categories describe the requested task, not incidental names. Gaming titles use controlled game tags (including Starfield, BOTW, Wolverine, WARDOGS, Gothic, CrimsonDesert, Subnautica2 and FF7Rebirth); other games and multi-game topics use `G`. `FF` means fantasy football, never Final Fantasy. ImprovedCameraSF belongs to Starfield, not Skyrim. Recognized aliases such as `Gaming` and `Family` normalize to `G` and `Fam`. Deterministic game refinement requires the same single game in both the opening and generated name, and never overrides a non-gaming classification.
+
+Invalid output gets one repair attempt. If it remains invalid or the auxiliary provider fails, no model title is persisted; the provisional raw-text title remains `derived`, eligible for a later upgrade. An accepted model title is not renamed again, and a manually chosen title is never overwritten. Manual titles do not have to use the automatic taxonomy.
 
 ### Setting a Title Manually
 

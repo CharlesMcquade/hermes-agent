@@ -1,13 +1,11 @@
 """Auto-generate short session titles from the user's opening message.
 
 Two stages, both off the critical path: an **instant** deterministic title (written before the model
-is called, cannot fail), then an **upgrade** from one small-model call (cheap tier, thinking off,
-JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
+is called, cannot fail), then an **upgrade** from a small-model call with at most one invalid-output repair
+(cheap tier, thinking off, JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
 and neither replaces a name the user typed."""
 
-import json
 import logging
-import re
 import threading
 from contextlib import suppress
 from typing import Any, Callable, Optional
@@ -15,6 +13,9 @@ from typing import Any, Callable, Optional
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.message_content import flatten_message_text
+from agent.title_policy import (
+    MAX_TITLE_ATTEMPTS, TITLE_REPAIR_INSTRUCTION, TITLE_RESPONSE_FORMAT, normalize_title, title_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,102 +33,6 @@ RuntimeValidator = Callable[[], bool]
 MAX_TITLE_INPUT_CHARS = 1000
 # Cap on the instant derived title; a raw fragment reads worse the longer it runs.
 MAX_DERIVED_TITLE_CHARS = 48
-# Answer-shaped guard: a tiny model sometimes answers instead of titling; longer is rejected, not truncated.
-# Upper bound on accepted title word count. Titling is a 3-7 word task; a small tiny-model sometimes ignores
-# the task and answers the user's message instead — that answer must never become the session title (see the
-# answer-shaped output guard in generate_title; port of can1357/oh-my-pi#7306). 12 leaves headroom for
-# legitimate wordy titles while excluding full-sentence answers.
-_MAX_TITLE_WORDS = 12
-
-_TITLE_PROMPT_TEMPLATE = (
-    "You name chat sessions. Given the user's opening message, write a title "
-    "that lets them find this conversation again in a list.\n\n"
-    "Rules:\n"
-    "- Start with a bracketed category tag, then 2 to 6 words naming the "
-    "topic: [Tag] Short name. Every title MUST begin with a bracketed tag.\n"
-    "- Pick the FIRST matching tag from this list (order = precedence):\n"
-    "  [Test] — ONLY for bare machine verification scaffolding: an "
-    "instruction to acknowledge, echo, or launch a check with no real task "
-    "behind it ('Reply with exactly: GLMOK', 'Acknowledge request'). Any "
-    "message that asks a question or requests real work is "
-    "NOT [Test], even if it mentions tests, model names, or testing.\n"
-    "  [Kanban] — kanban task sessions ('Work kanban task t_…', task-ID "
-    "scaffolding).\n"
-    "  [Codex] — message begins with 'Codex:' (cross-agent handoff).\n"
-    "  [Hermes] — Hermes Agent development: WebUI, desktop app, skills, "
-    "plugins, cron/config, browser control, its GitHub PRs/CI/rebases, "
-    "fork syncing, session naming.\n"
-    "  [CRWV] — CoreWeave work: clusters, GPUs (H100/H200/B200), vLLM, "
-    "kubeconfigs, inference serving, CWB101.\n"
-    "  [LLM] — LLM research/benchmarks/quantization and local model "
-    "serving (pmbp, MLX, llama.cpp, GGUF, model downloads).\n"
-    "  [ComfyUI] — image/video/audio generation: ComfyUI workflows, H3 "
-    "video, TTS/Kokoro.\n"
-    "  [Printer] — Bambu X1C / 3D printing, slicers, filament.\n"
-    "  [BG3] — Baldur's Gate 3 ONLY: builds, quests, mechanics, mods.\n"
-    "  [E:D] — Elite Dangerous.\n"
-    "  [GTA6] — Grand Theft Auto 6 news, leaks, trailers.\n"
-    "  [Skyrim] — Skyrim / Elder Scrolls, including its mods "
-    "(ImprovedCameraSF etc.).\n"
-    "  [G] — gaming generally: gaming news, game opinions, Steam game "
-    "questions. Any OTHER specific game gets the game's name as its tag "
-    "(e.g. [Stellaris], [KCD2], [Oblivion]) instead of [G].\n"
-    "  [FF] — fantasy football: Sleeper/ESPN drafts, lineups, waivers.\n"
-    "  [Finance] — personal finance: RSUs, brokerage, cash flow, spending, "
-    "taxes, bill splits.\n"
-    "  [Home] — house maintenance, appliances, repairs.\n"
-    "  [SmartHome] — Pi5, Pi-hole, Home Assistant, Hue, Rain Bird, "
-    "homelab LAN.\n"
-    "  [Shop] — Lakeway/Austin local: stores (HEB), services, venues, "
-    "clubs, weather, shopping.\n"
-    "  [Food] — recipes, grilling, cooking technique, groceries.\n"
-    "  [Fam] — Audrey, Ford, reminders, health, school, household "
-    "coordination.\n"
-    "  [Travel] — flights, hotels, airlines, trips.\n"
-    "  [Tech] — consumer devices and car/EV company news: phones, Mac/iOS, "
-    "Steam Deck, gadgets, Rivian, Scout Motors.\n"
-    "  [Email] — Gmail, inbox triage, unsubscribe scans, iMessage "
-    "automation.\n"
-    "  [SysOps] — Mac/Windows/SSH/Tailscale/disk administration not "
-    "covered above.\n"
-    "- If nothing fits, coin a NEW 1-2 word tag from the topic — never a "
-    "vague tag like Misc, Question, or Chat.\n"
-    "- Sentence case the name after the tag (capitalize only the first word "
-    "and proper nouns).\n"
-    "- Name what the user wants DONE, not that they asked a question.\n"
-    "- Keep technical terms, filenames, numbers, and error codes exact.\n"
-    "- Drop filler words: the, this, my, a, an.\n"
-    "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
-    "- Never answer the message. Name it.\n"
-    "- Always produce something, even for a bare greeting.\n"
-    "__LANGUAGE_RULE__\n"
-    'Good: {"title": "[BG3] Act 3 house of grief"}\n'
-    'Good: {"title": "[FF] Week 2 lineup swaps"}\n'
-    'Good: {"title": "[Hermes] Scroll bouncing fix"}\n'
-    'Good: {"title": "[CRWV] vllm config glm-5p2-dspark removal"}\n'
-    'Good: {"title": "[LLM] Qwen 3.8 27B pmbp swap"}\n'
-    'Good: {"title": "[Food] Cast iron rust removal"}\n'
-    'Wrong tag: {"title": "[Test] Bypass practice test requirement"} — if the '
-    'user asks "how do I bypass practice test requirements on 240tutoring", '
-    'that is a real request; tag it by topic, never [Test]\n'
-    'Right: for that 240tutoring question, {"title": "[Education] Practice '
-    'test access on 240tutoring"}\n'
-    'Too vague: {"title": "[Misc] Changes"}\n'
-    'Too long: {"title": "[BG3] Investigate and fix the issue where the login '
-    'button does not respond on mobile devices"}\n\n'
-    'Reply with JSON only: {"title": "..."}'
-)
-
-_LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
-_LANGUAGE_RULE_PINNED = "- Write the title in {language}."
-
-# Constrains the response to a single title field ("model answered instead of titling" failure class).
-_TITLE_RESPONSE_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {"name": "session_title", "strict": True, "schema": {
-        "type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"], "additionalProperties": False}},
-}
-
 # Control-tag wrappers around machine-authored content inside a nominal "user" message (Codex CLI's
 # RECOGNIZED_CONTROL_WRAPPERS): stripped, titling continues on what remains.
 _CONTROL_WRAPPERS = tuple(
@@ -226,48 +131,8 @@ def derive_title(user_message: str) -> Optional[str]:
     return line or None
 
 
-def _strip_title_prefix(text: str) -> str:
-    return text[6:].strip() if text.lower().startswith("title:") else text
-
-
 def _first_line(text: str) -> str:
     return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-
-
-def _extract_title_text(content: str) -> str:
-    """Strict JSON, then a loose JSON scan, then first-line prose (a provider ignoring ``response_format`` still titles)."""
-    if not content:
-        return ""
-    raw = content.strip()
-    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL)
-    if fenced:
-        raw = fenced.group(1).strip()
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict) and isinstance(parsed.get("title"), str):
-            return parsed["title"].strip()
-    except (ValueError, TypeError):
-        pass
-    match = re.search(r'"title\"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
-    if match:
-        with suppress(ValueError):
-            return json.loads(f'"{match.group(1)}"').strip()
-        return match.group(1).strip()
-    # Prose fallback: scrub <think> blocks so reasoning can't leak into a title.
-    try:
-        from agent.agent_runtime_helpers import strip_think_blocks
-        raw = strip_think_blocks(None, raw).strip()
-    except Exception:
-        logger.debug("strip_think_blocks unavailable for title output", exc_info=True)
-    return _strip_title_prefix(_first_line(raw)).strip("\"'").strip()
-
-
-def _clean_title(text: str) -> Optional[str]:
-    """Normalize a model-produced title, or None when nothing usable remains."""
-    title = _strip_title_prefix(" ".join((text or "").split()).strip("\"'").strip()).rstrip(".!,;:")
-    if len(title) > 80:
-        title = title[:77].rstrip() + "..."
-    return title or None
 
 
 def _safe_callback(callback: Optional[Callable], args: tuple, log_fmt: str, label: str) -> None:
@@ -304,41 +169,38 @@ def generate_title(
     if not _auto_title_enabled():
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return None
-    try:
-        if runtime_validator is not None and not runtime_validator():
-            logger.debug("Title generation skipped: runtime validator returned False")
-            return None
-    except Exception:  # fail open: a broken validator must not disable titling
-        logger.debug("Title runtime validator raised; proceeding", exc_info=True)
     user_snippet = _summarize_user_message(user_message)[:MAX_TITLE_INPUT_CHARS]
     if not user_snippet.strip():
         return None
-    language = _title_language()
-    # str.replace, not str.format: the prompt embeds literal JSON braces.
-    prompt = _TITLE_PROMPT_TEMPLATE.replace(
-        "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
-    )
+    prompt = title_prompt(_title_language())
+    messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}]
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
-            # A title is a handful of tokens; a larger ceiling let chatty models burn seconds.
-            max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-        )
-        title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
-        # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
-        # ignored the task and answered the user's message instead ("I don't have context on X — that's not
-        # something I recognize..."). Truncating would store half an assistant blob as the session title,
-        # which is still an assistant blob — reject instead so the caller retries on the next exchange
-        # (maybe_auto_title fires for the first two exchanges). Port of can1357/oh-my-pi#7306.
-        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
-            # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
-            logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
-            return None
-        return title
+        for attempt in range(MAX_TITLE_ATTEMPTS):
+            # Recheck for each repair: the runtime can change during the first request.
+            try:
+                if runtime_validator is not None and not runtime_validator():
+                    logger.debug("Title generation skipped: runtime validator returned False")
+                    return None
+            except Exception:  # preserve fail-open behavior for a broken validator
+                logger.debug("Title runtime validator raised; proceeding", exc_info=True)
+            response = call_llm(
+                task="title_generation", messages=messages,
+                max_tokens=96, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
+                extra_body={"response_format": TITLE_RESPONSE_FORMAT},
+            )
+            content = response.choices[0].message.content or ""
+            title = normalize_title(content, user_snippet)
+            if title is not None:
+                return title
+            if attempt + 1 < MAX_TITLE_ATTEMPTS:
+                # A separate auxiliary conversation, not a mutation of the main chat.
+                messages = messages + [
+                    {"role": "assistant", "content": str(content)[:1000]},
+                    {"role": "user", "content": TITLE_REPAIR_INSTRUCTION},
+                ]
+        raise ValueError("Title model returned invalid output after bounded repair")
     except Exception as e:
-        # WARNING so it shows in agent.log without debug mode; stack at debug.
+        # Invalid output uses the same failure/fallback contract as a provider error.
         logger.warning("Title generation failed: %s", e)
         logger.debug("Title generation traceback", exc_info=True)
         _report_failure(failure_callback, e, "Title generation")
