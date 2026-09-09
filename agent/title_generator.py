@@ -1,14 +1,14 @@
 """Auto-generate short session titles from the user's opening message.
 
 Two stages, both off the critical path: an **instant** deterministic title (written before the model
-is called, cannot fail), then an **upgrade** from one small-model call (cheap tier, thinking off,
-JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
+is called, cannot fail), then an **upgrade** from a small-model call with at most one invalid-output repair
+(cheap tier, thinking off, JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
 and neither replaces a name the user typed."""
 
-import json
 import logging
 import os
 import re
+
 import threading
 import time
 import weakref
@@ -19,6 +19,9 @@ from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
+from agent.title_policy import (
+    MAX_TITLE_ATTEMPTS, TITLE_REPAIR_INSTRUCTION, TITLE_RESPONSE_FORMAT, normalize_title, title_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +175,7 @@ _TITLE_RESPONSE_FORMAT = {
     "json_schema": {"name": "session_title", "strict": True, "schema": {
         "type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"], "additionalProperties": False}},
 }
+
 
 # Control-tag wrappers around machine-authored content inside a nominal "user" message (Codex CLI's
 # RECOGNIZED_CONTROL_WRAPPERS): stripped, titling continues on what remains.
@@ -374,10 +378,6 @@ def derive_title(user_message: str, title_preview: str | None = None) -> Optiona
     return line or None
 
 
-def _strip_title_prefix(text: str) -> str:
-    return text[6:].strip() if text.lower().startswith("title:") else text
-
-
 def _first_line(text: str) -> str:
     return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
 
@@ -453,6 +453,7 @@ def _clean_title(text: str) -> Optional[str]:
     return title or None
 
 
+
 def _safe_callback(callback: Optional[Callable], args: tuple, log_fmt: str, label: str) -> None:
     """Invoke an optional consumer callback, never raising."""
     try:
@@ -513,13 +514,11 @@ def generate_title(
     except Exception:  # fail open: a broken validator must not disable titling
         logger.debug("Title runtime validator raised; proceeding", exc_info=True)
     user_snippet = build_title_input(user_message, title_preview)
+
     if not user_snippet.strip():
         return None
-    language = _title_language()
-    # str.replace, not str.format: the prompt embeds literal JSON braces.
-    prompt = _TITLE_PROMPT_TEMPLATE.replace(
-        "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
-    )
+    prompt = title_prompt(_title_language())
+    messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}]
     try:
         # Use the provider's default temperature instead of forcing 0.3.
         # Some models (e.g. GPT-5.6) only accept their server-side default
@@ -567,8 +566,9 @@ def generate_title(
             logger.debug("Rejecting prompt-example echo title: %r", title)
             return None
         return title
+
     except Exception as e:
-        # WARNING so it shows in agent.log without debug mode; stack at debug.
+        # Invalid output uses the same failure/fallback contract as a provider error.
         logger.warning("Title generation failed: %s", e)
         logger.debug("Title generation traceback", exc_info=True)
         _report_failure(failure_callback, e, "Title generation")
