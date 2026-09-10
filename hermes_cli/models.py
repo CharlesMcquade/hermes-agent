@@ -482,7 +482,11 @@ _nous_caps_disk_checked = False
 _nous_caps_warm_started = False
 
 
-from agent.reasoning_effort import clamp_effort as _clamp_effort, is_astra_model
+from agent.reasoning_effort import (
+    CODEX_ASTRA_EFFORTS,
+    clamp_effort as _clamp_effort,
+    is_astra_model,
+)
 
 
 def clamp_reasoning_effort_to_supported(
@@ -1910,6 +1914,10 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     if raw.startswith(("openai/o1", "openai/o3", "openai/o4", "o1", "o3", "o4")):
         return list(COPILOT_REASONING_EFFORTS_O_SERIES)
     normalized = normalize_copilot_model_id(model_id).lower()
+    if is_astra_model(normalized):
+        # Static fallback for callers without a catalog key (standalone WebUI):
+        # matches the live catalog's advertised ladder for gpt-6-astra.
+        return list(CODEX_ASTRA_EFFORTS)
     if normalized.startswith("gpt-5"):
         return list(COPILOT_REASONING_EFFORTS_GPT5)
     return []
@@ -2144,6 +2152,12 @@ def github_model_reasoning_efforts(
     if not normalized:
         return []
 
+    if catalog is None and not api_key:
+        # No key passed (standalone WebUI calls this keyless): self-resolve the
+        # Copilot catalog token so the LIVE catalog ladder is used instead of the
+        # static per-family fallbacks, which lag new model families. Resolution
+        # failure is non-fatal (statics + is_astra_model still answer below).
+        api_key = _resolve_copilot_catalog_api_key() or None
     if catalog is None and api_key:
         catalog = fetch_github_model_catalog(api_key=api_key)
     catalog_entry = next((item for item in catalog if item.get("id") == normalized), None) if catalog else None
