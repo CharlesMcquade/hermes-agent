@@ -2365,6 +2365,7 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
         return list(COPILOT_REASONING_EFFORTS_O_SERIES)
     normalized = normalize_copilot_model_id(model_id).lower()
     if is_astra_model(normalized):
+        # Static fallback for keyless callers matches the live Astra ladder.
         return list(CODEX_ASTRA_EFFORTS)
     if normalized.startswith("gpt-5"):
         return list(COPILOT_REASONING_EFFORTS_GPT5)
@@ -2496,6 +2497,12 @@ def github_model_reasoning_efforts(
     if not normalized:
         return []
 
+    if catalog is None and not api_key:
+        # No key passed (standalone WebUI calls this keyless): self-resolve the
+        # Copilot catalog token so the LIVE catalog ladder is used instead of the
+        # static per-family fallbacks, which lag new model families. Resolution
+        # failure is non-fatal (statics + is_astra_model still answer below).
+        api_key = _resolve_copilot_catalog_api_key() or None
     if catalog is None and api_key:
         catalog = fetch_github_model_catalog(api_key=api_key)
     catalog_entry = next((item for item in catalog if item.get("id") == normalized), None) if catalog else None
