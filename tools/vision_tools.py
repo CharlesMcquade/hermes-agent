@@ -625,20 +625,20 @@ async def _vision_analyze_native(
 
 
 def _aux_call_kwargs(messages: list, model: Optional[str], default_timeout: float, *,
-                     min_timeout: Optional[float] = None) -> dict:
-    """``async_call_llm`` kwargs with ``auxiliary.vision.timeout`` / ``.temperature`` from config.
+                     min_timeout: Optional[float] = None, task: str = "vision") -> dict:
+    """``async_call_llm`` kwargs with ``auxiliary.<task>.timeout`` / ``.temperature`` from config.
     Local vision models (llama.cpp, ollama) can take well over 30s, hence generous defaults
     (temperature 0.1); ``min_timeout`` lets video enforce a floor."""
     timeout, temperature = default_timeout, 0.1
     try:
-        _vision_cfg = _cfg_auxiliary("vision", default={}) or {}
-        if _vision_cfg.get("timeout") is not None:
-            timeout = max(float(_vision_cfg["timeout"]), float("-inf") if min_timeout is None else min_timeout)
-        if _vision_cfg.get("temperature") is not None:
-            temperature = float(_vision_cfg["temperature"])
+        _task_cfg = _cfg_auxiliary(task, default={}) or {}
+        if _task_cfg.get("timeout") is not None:
+            timeout = max(float(_task_cfg["timeout"]), float("-inf") if min_timeout is None else min_timeout)
+        if _task_cfg.get("temperature") is not None:
+            temperature = float(_task_cfg["temperature"])
     except Exception:
         pass
-    return {"task": "vision", "messages": messages, "temperature": temperature, "timeout": timeout,
+    return {"task": task, "messages": messages, "temperature": temperature, "timeout": timeout,
             **({"model": model} if model else {})}
 
 
@@ -797,23 +797,32 @@ async def vision_analyze_tool(
     return await _run_analysis("image", image_url, user_prompt, model, stage)
 
 
-def check_vision_requirements() -> bool:
-    """True when ``call_llm(task="vision")`` could resolve a client.
+def check_video_requirements() -> bool:
+    """True when a multimodal aux call (task ``vision`` or ``video``) could resolve a client.
 
-    Mirrors its fallback chain: explicit ``auxiliary.vision.provider``, then auto (main
+    Mirrors the shared fallback chain: explicit ``auxiliary.<task>.provider``, then auto (main
     provider → openrouter → nous) — without the auto step the tool would vanish whenever
     the explicit name was unresolvable. Probe mode skips real SDK client construction.
 
     See #31179.
     """
-    try:
-        from agent.auxiliary_client import aux_probe_mode, resolve_vision_provider_client
-        with aux_probe_mode():
-            return any(
-                resolve_vision_provider_client(**kw)[1] is not None for kw in ({}, {"provider": "auto"})
-            )
-    except Exception:
-        return False
+    from agent.auxiliary_client import aux_probe_mode, resolve_vision_provider_client
+    # No blanket except: a resolver crash must reach the registry, which logs it with a
+    # traceback; a swallowed exception reads as "no vision backend configured" (#87950).
+    with aux_probe_mode():
+        return any(
+            resolve_vision_provider_client(task=task, **kw)[1] is not None
+            for task in ("vision", "video") for kw in ({}, {"provider": "auto"})
+        )
+
+
+def check_vision_requirements() -> bool:
+    """Image gate (``vision_analyze``, ``browser_vision``): an aux vision client OR the native fast
+    path. Both handlers attach pixels straight to a vision-capable main model, so a main model on a
+    provider the aux resolver does not know (OAuth, local vLLM) must not hide a working tool (#47149).
+    ``video_analyze`` keeps the aux-only gate — its handler has no native path.
+    """
+    return _should_use_native_vision_fast_path() or check_video_requirements()
 
 
 from tools.registry import registry, tool_error
@@ -978,8 +987,12 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
 
 
 async def video_analyze_tool(
-    video_url: str, user_prompt: str, model: str = None, task_id: Optional[str] = None) -> str:
-    """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
+    video_url: str, user_prompt: str, model: str = None, task_id: Optional[str] = None,
+    aux_task: str = "video") -> str:
+    """Analyze a video via multimodal LLM. Returns JSON {success, analysis}.
+
+    ``aux_task`` selects the auxiliary config section (``auxiliary.video`` by default;
+    resolution falls back through the shared vision chain when unset)."""
     async def stage(prompt: str, debug_call_data: dict, temp_paths: list) -> tuple:
         temp_video_path = await _materialize_video(video_url, task_id, temp_paths)
         video_size_bytes = temp_video_path.stat().st_size
@@ -998,7 +1011,7 @@ async def video_analyze_tool(
                 f"Compress or trim the video and retry.")
         debug_call_data["video_size_bytes"] = video_size_bytes
         messages = _media_messages(prompt, "video_url", video_data_url)
-        call_kwargs = _aux_call_kwargs(messages, model, 180.0, min_timeout=180.0)
+        call_kwargs = _aux_call_kwargs(messages, model, 180.0, min_timeout=180.0, task=aux_task)
         analysis = await _call_vision_llm(call_kwargs, "Empty video response, retrying once")
         return analysis, None
     return await _run_analysis("video", video_url, user_prompt, model, stage)
@@ -1045,7 +1058,7 @@ registry.register(
     toolset="video",
     schema=VIDEO_ANALYZE_SCHEMA,
     handler=_handle_video_analyze,
-    check_fn=check_vision_requirements,
+    check_fn=check_video_requirements,
     is_async=True,
     emoji="🎬")
 
