@@ -602,7 +602,7 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
 def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch, tmp_path):
     """Three completed calls whose payload is an error still open the breaker (#10447), but the
     open-breaker message must not claim the server is unreachable — it answered every time
-    (#11113); a single transport strike in the streak makes it "unreachable" again."""
+    (#11113); a transport strike switches to the neutral "unavailable" wording."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
@@ -630,7 +630,8 @@ def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch
         mcp_tool._bump_server_error("srv")                      # transport strike
         mcp_tool._bump_server_error("srv", application=True)
         mcp_tool._bump_server_error("srv", application=True)
-        assert "unreachable" in json.loads(handler({}))["error"].lower()
+        mixed_error = json.loads(handler({}))["error"].lower()
+        assert "unavailable" in mixed_error and "rejected" not in mixed_error
     finally:
         _cleanup(mcp_tool, "srv")
         mcp_tool._server_errors_all_application.pop("srv", None)
