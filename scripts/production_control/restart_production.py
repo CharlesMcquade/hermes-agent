@@ -184,14 +184,49 @@ class Controller:
             data = plistlib.loads(saved[service] if saved is not None else path.read_bytes())
             argv = data.get('ProgramArguments', [])
             require(data.get('Label') == manifest['labels'][service], 'Plist label mismatch')
-            require(len(argv) == 3 and Path(argv[0]).is_absolute() and
+            require(isinstance(argv, list) and len(argv) == 3 and
+                    all(isinstance(v, str) and v and '\x00' not in v for v in argv) and
+                    Path(argv[0]).is_absolute() and Path(argv[1]).is_absolute() and
                     argv[1:] == [str(manifest.get('launcher_path', self.base / 'production_launcher.py')), service], 'Unexpected launcher argv')
+            require(Path(argv[0]).is_file() and os.access(argv[0], os.X_OK), 'Launcher Python is not executable')
+            require(data.get('Program', argv[0]) == argv[0], 'Conflicting launchd Program')
             require(data.get('RunAtLoad') is True and data.get('KeepAlive') is True, 'Invalid lifecycle policy')
             # launchd has a stable anchor; the launcher chdirs into the selected release.
             anchor = Path(data.get('WorkingDirectory', ''))
             require(anchor.is_absolute() and anchor.is_dir(), 'Plist cwd is unavailable')
             result[service] = data
         return result
+
+    def candidate_definitions(self, old, new, saved, reload):
+        require(new.get('launcher_path', str(self.base / 'production_launcher.py')) ==
+                old.get('launcher_path', str(self.base / 'production_launcher.py')),
+                'Activation cannot change the stable launcher path')
+        overrides = new.get('launchd_overrides', {})
+        require(isinstance(overrides, dict) and set(overrides) <= set(SERVICES),
+                'Unknown launchd override service')
+        proposed = {}
+        for service in SERVICES:
+            data = plistlib.loads(saved[service])
+            override = overrides.get(service, {})
+            require(isinstance(override, dict) and set(override) <=
+                    {'ProgramArguments', 'WorkingDirectory', 'EnvironmentVariables'},
+                    'Unsupported launchd override field')
+            if override:
+                require({'ProgramArguments', 'WorkingDirectory'} <= set(override),
+                        'Launchd override requires explicit argv and anchor')
+            if 'EnvironmentVariables' in override:
+                env = override['EnvironmentVariables']
+                require(isinstance(env, dict) and all(
+                    isinstance(k, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k)
+                    and isinstance(v, str) and '\x00' not in v for k, v in env.items()),
+                    'Invalid launchd environment')
+            require('WorkingDirectory' not in override or
+                    isinstance(override['WorkingDirectory'], str), 'Invalid launchd anchor')
+            changed = any(data.get(k) != v for k, v in override.items())
+            require(not changed or reload, 'Changed launchd overrides require explicit --reload')
+            data.update(override)
+            proposed[service] = plistlib.dumps(data)
+        return self.definitions(new, saved=proposed)
 
     def loaded(self, manifest, definitions):
         jobs = {}
@@ -277,6 +312,15 @@ class Controller:
             stream.flush()
             os.fsync(stream.fileno())
         return result
+
+    def receipt(self, operation_id, status, **fields):
+        # Informational receipts must not gate recovery; the transaction is the
+        # durable authority. Prepared receipts deliberately use journal directly.
+        try:
+            return self.journal(operation_id, status, **fields)
+        except OSError as exc:
+            return dict(operation_id=operation_id, status=status,
+                        timestamp=self.clock(), journal_error=str(exc), **fields)
 
     @property
     def transaction_path(self):
@@ -376,9 +420,9 @@ class Controller:
             proof = self.wait_ready(old, definitions, since, before)
         except Exception as exc:
             self.save_transaction(txn, 'rollback_failed')
-            return self.journal(txn['operation_id'], 'rollback_failed', recovery_error=str(exc))
+            return self.receipt(txn['operation_id'], 'rollback_failed', recovery_error=str(exc))
         self.save_transaction(txn, 'rolled_back')
-        return self.journal(txn['operation_id'], 'rolled_back', recovery=proof)
+        return self.receipt(txn['operation_id'], 'rolled_back', recovery=proof)
 
     def restart(self, candidate=None, reload=False, yes=False, confirm=None):
         if yes:
@@ -406,21 +450,21 @@ class Controller:
             require(old['labels'] == new['labels'] and old['state_dir'] == new['state_dir'], 'Activation cannot migrate labels or user state')
             for service in SERVICES:
                 require(self.plist_path(old, service) == self.plist_path(new, service), 'Activation cannot move plists')
-            definitions = self.definitions(old)
+            saved_plists = {s: self.plist_path(old, s).read_bytes() for s in SERVICES}
+            definitions = self.definitions(old, saved=saved_plists)
             if reload:
                 before = {s: self.host.job(self.target(old, s)) for s in SERVICES}
             else:
                 before = self.loaded(old, definitions)
-            new_definitions = definitions
             if candidate:
                 self.snapshot(old, definitions)  # Only a proven live pair can be a candidate's fallback.
-            saved_plists = {s: self.plist_path(old, s).read_bytes() for s in SERVICES}
+            new_definitions = self.candidate_definitions(old, new, saved_plists, reload) if candidate else definitions
             txn = {'operation_id': operation_id, 'reload': reload,
                    'authorization': 'verified-live-fallback' if candidate else 'same-release-restart',
                    'manifest': base64.b64encode(old_bytes).decode('ascii'),
                    'plists': {s: base64.b64encode(b).decode('ascii') for s, b in saved_plists.items()}}
-            self.save_transaction(txn, 'prepared')
             self.journal(operation_id, 'prepared')
+            self.save_transaction(txn, 'prepared')
             since = self.clock()
             touched = True  # Atomic replacement can succeed before a following fsync fails.
             if candidate:
@@ -436,14 +480,14 @@ class Controller:
             proof = self.wait_ready(new, new_definitions, since, before)
             self.save_transaction(txn, 'verified')
         except Exception as exc:
-            self.journal(operation_id, 'failed', error=str(exc))
+            self.receipt(operation_id, 'failed', error=str(exc))
             if not touched:
                 raise
             recovery = self.recover_locked()
             if recovery is None:  # Final fsync may fail after the terminal rename.
                 raise
             return recovery
-        return self.journal(operation_id, 'verified', **proof)
+        return self.receipt(operation_id, 'verified', **proof)
 
 
 def main(argv=None):

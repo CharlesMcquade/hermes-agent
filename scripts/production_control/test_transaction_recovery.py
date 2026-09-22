@@ -54,6 +54,28 @@ class TransactionTests(unittest.TestCase):
                 self.assertEqual(self.c.manifest_path.read_bytes(), old)
                 self.assertEqual({s: p.read_bytes() for s, p in self.plists.items()}, saved)
 
+    def test_interrupted_anchor_migration_recovers_old_loaded_definitions(self):
+        overrides = fixtures.ControlTests.migration(self)
+        candidate = self.candidate(launchd_overrides=overrides)
+        old = self.c.manifest_path.read_bytes()
+        saved = {s: p.read_bytes() for s, p in self.plists.items()}
+        jobs = {s: self.host.job(self.c.target(self.manifest, s)) for s in self.plists}
+        reload = self.host.reload
+        def crash_reload(target, plist):
+            reload(target, plist)
+            raise PowerLoss()
+        with patch.object(self.host, 'reload', side_effect=crash_reload):
+            with self.assertRaises(PowerLoss):
+                self.c.restart(candidate=candidate, reload=True, yes=True)
+        self.assertEqual(self.host.jobs['agent']['argv'], overrides['agent']['ProgramArguments'])
+        self.assertEqual(tick(self.fresh())['status'], 'rolled_back')
+        self.assertEqual(self.c.manifest_path.read_bytes(), old)
+        self.assertEqual({s: p.read_bytes() for s, p in self.plists.items()}, saved)
+        for s in self.plists:
+            self.assertEqual(self.host.jobs[s]['argv'], jobs[s]['argv'])
+            self.assertEqual(self.host.jobs[s]['cwd'], jobs[s]['cwd'])
+            self.assertNotEqual(self.host.jobs[s]['pid'], jobs[s]['pid'])
+
     def test_unhealthy_candidate_rejected_but_same_release_restart_allowed(self):
         self.host.deep = False
         with self.assertRaisesRegex(control.ControlError, 'Health JSON'):
@@ -156,6 +178,50 @@ class TransactionTests(unittest.TestCase):
                 self.assertEqual(tick(self.fresh(), grace=0)['status'], 'healthy')
                 self.assertEqual(self.c.manifest_path.read_bytes(), current)
                 self.assertEqual(self.host.calls, calls)
+
+    def test_receipt_io_failure_cannot_prevent_rollback(self):
+        old = self.c.manifest_path.read_bytes()
+        saved = {s: p.read_bytes() for s, p in self.plists.items()}
+        before = {s: job['pid'] for s, job in self.host.jobs.items()}
+        self.host.fail_kicks = {2}
+        journal = self.c.journal
+        def fail_receipts(operation_id, status, **fields):
+            if status != 'prepared':
+                raise OSError('receipt disk unavailable')
+            return journal(operation_id, status, **fields)
+        with patch.object(self.c, 'journal', side_effect=fail_receipts):
+            result = self.c.restart(candidate=self.candidate(release_id='new'), yes=True)
+        self.assertEqual(result['status'], 'rolled_back')
+        self.assertIn('receipt disk unavailable', result['journal_error'])
+        self.assertEqual(self.c.manifest_path.read_bytes(), old)
+        self.assertEqual({s: p.read_bytes() for s, p in self.plists.items()}, saved)
+        self.assertEqual(self.c.read_transaction()['phase'], 'rolled_back')
+        self.assertEqual(self.host.kicks, 4)
+        for service, pid in result['recovery']['pids'].items():
+            self.assertEqual(pid, self.host.jobs[service]['pid'])
+            self.assertNotEqual(pid, before[service])
+        self.c.snapshot(self.c.load(), self.c.definitions(self.c.load()))
+
+    def test_prepare_receipt_failure_leaves_no_recovery_work(self):
+        with patch.object(self.c, 'journal', side_effect=OSError('receipt full')):
+            with self.assertRaisesRegex(OSError, 'receipt full'):
+                self.c.restart(candidate=self.candidate(), yes=True)
+        self.assertFalse(self.c.transaction_path.exists())
+        self.assertEqual(tick(self.fresh(), grace=0)['status'], 'healthy')
+        self.assertEqual(self.host.calls, [])
+
+    def test_transaction_io_failure_blocks_destructive_actions(self):
+        with patch.object(self.c, 'save_transaction', side_effect=OSError('txn full')):
+            with self.assertRaisesRegex(OSError, 'txn full'):
+                self.c.restart(candidate=self.candidate(), yes=True)
+        self.assertEqual(self.host.calls, [])
+        self.interrupt(self.c.manifest_path)
+        current = self.c.manifest_path.read_bytes()
+        with patch.object(self.c, 'save_transaction', side_effect=OSError('txn full')):
+            with self.assertRaisesRegex(OSError, 'txn full'):
+                self.c.recover_locked()
+        self.assertEqual(self.host.calls, [])
+        self.assertEqual(self.c.manifest_path.read_bytes(), current)
 
     def test_restart_recovers_without_blessing_requested_candidate(self):
         self.interrupt(self.c.manifest_path)

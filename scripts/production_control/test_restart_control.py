@@ -204,6 +204,63 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(self.host.jobs['webui']['cwd'], str(self.base))
         self.assertEqual(self.host.calls, [('kickstart', 'agent'), ('kickstart', 'webui')])
 
+    def migration(self):
+        import sys
+        anchor = self.base / 'stable-anchor'
+        anchor.mkdir(exist_ok=True)
+        return {s: {'ProgramArguments': [sys.executable, str(self.base / 'production_launcher.py'), s],
+                    'WorkingDirectory': str(anchor),
+                    'EnvironmentVariables': {'HERMES_HOME': str(self.base), 'PYTHONNOUSERSITE': '1'}}
+                for s in self.plists}
+
+    def test_explicit_anchor_migration_and_exact_rollback(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                self.setUp()
+                overrides = self.migration()
+                old = self.c.manifest_path.read_bytes()
+                saved = {s: p.read_bytes() for s, p in self.plists.items()}
+                old_jobs = copy.deepcopy(self.host.jobs)
+                self.host.fail_kicks = {2} if fail else set()
+                result = self.c.restart(candidate=self.candidate(launchd_overrides=overrides), reload=True, yes=True)
+                self.assertEqual(result['status'], 'rolled_back' if fail else 'verified')
+                if fail:
+                    self.assertEqual(self.c.manifest_path.read_bytes(), old)
+                    self.assertEqual({s: p.read_bytes() for s, p in self.plists.items()}, saved)
+                for s, path in self.plists.items():
+                    definition = plistlib.loads(path.read_bytes())
+                    self.assertEqual(self.host.jobs[s]['argv'], old_jobs[s]['argv'] if fail else overrides[s]['ProgramArguments'])
+                    self.assertEqual(self.host.jobs[s]['cwd'], old_jobs[s]['cwd'] if fail else overrides[s]['WorkingDirectory'])
+                    self.assertNotEqual(self.host.jobs[s]['pid'], old_jobs[s]['pid'])
+                    self.assertTrue(definition['KeepAlive'])
+                    if not fail:
+                        self.assertEqual(definition['EnvironmentVariables'], overrides[s]['EnvironmentVariables'])
+                self.assertEqual(self.host.kicks, 4 if fail else 2)
+
+    def test_anchor_override_validation_is_fail_closed(self):
+        overrides = self.migration()
+        cases = [({'launchd_overrides': overrides}, False),
+                 ({'launchd_overrides': {'unknown': overrides['agent']}}, True)]
+        for key, value in [('KeepAlive', False), ('Program', '/bin/sh'),
+                           ('ProgramArguments', ['/missing/python', str(self.base / 'production_launcher.py'), 'agent']),
+                           ('ProgramArguments', ['/usr/bin/python3', '/other/production_launcher.py', 'agent']),
+                           ('ProgramArguments', ['/usr/bin/python3', str(self.base / 'production_launcher.py'), 'webui']),
+                           ('WorkingDirectory', 'relative'), ('WorkingDirectory', str(self.base / 'missing')),
+                           ('EnvironmentVariables', {'PATH': 123})]:
+            bad = copy.deepcopy(overrides)
+            bad['agent'][key] = value
+            cases.append(({'launchd_overrides': bad}, True))
+        cases.append(({'launchd_overrides': overrides, 'launcher_path': '/other/production_launcher.py'}, True))
+        old = self.c.manifest_path.read_bytes()
+        saved = {s: p.read_bytes() for s, p in self.plists.items()}
+        for updates, reload in cases:
+            with self.subTest(updates=updates, reload=reload), self.assertRaises(ControlError):
+                self.c.restart(candidate=self.candidate(**updates), reload=reload, yes=True)
+            self.assertEqual(self.c.manifest_path.read_bytes(), old)
+            self.assertEqual({s: p.read_bytes() for s, p in self.plists.items()}, saved)
+            self.assertFalse(self.c.transaction_path.exists())
+            self.assertEqual(self.host.calls, [])
+
     def test_idle_gateway_state_is_not_a_heartbeat(self):
         self.clock.sleep(3600)
         proof = self.c.snapshot(self.manifest, self.c.definitions(self.manifest))
@@ -258,6 +315,7 @@ class ControlTests(unittest.TestCase):
         data = copy.deepcopy(self.manifest)
         for item in data['services'].values():
             item.update(repo=str(repo), argv=[sys.executable, '-c', 'pass'],
+                        env={'PYTHONPATH': str(repo)},
                         inventory=inventory(repo), probe_modules=['probe_fixture'])
         save_json(self.base / 'production-release.json', data)
         c = Controller(self.base, host=self.host, owner=lambda: 1)
