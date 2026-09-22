@@ -3909,6 +3909,9 @@ def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
     re-reads it immediately."""
     plist_path = get_launchd_plist_path()
+    from hermes_cli.managed_service import preserve_service_definition
+    if preserve_service_definition(plist_path):
+        return False
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
@@ -3970,6 +3973,8 @@ def refresh_launchd_plist_if_needed() -> bool:
 
 def launchd_install(force: bool = False):
     plist_path = get_launchd_plist_path()
+    from hermes_cli.managed_service import preserve_service_definition
+    preserve_service_definition(plist_path, refuse=True)
 
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
@@ -4018,6 +4023,8 @@ def launchd_uninstall():
 
 def launchd_start():
     plist_path = get_launchd_plist_path()
+    from hermes_cli.managed_service import preflight_service
+    manager = preflight_service(plist_path)
     label = get_launchd_label()
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
@@ -4032,7 +4039,8 @@ def launchd_start():
             _launchd_ok("✓ Service started")
         return
 
-    refresh_launchd_plist_if_needed()
+    if manager is None:
+        refresh_launchd_plist_if_needed()
     try:
         _launchctl_kickstart_current(label)
     except subprocess.CalledProcessError as e:
@@ -4040,6 +4048,11 @@ def launchd_start():
             raise
         # Job not loaded in this domain — re-bootstrap the plist and retry.
         print("↻ launchd job was unloaded; reloading service definition")
+        if manager is not None:
+            _launchctl_bootstrap(_launchd_domain(), plist_path, label, timeout=30)
+            _launchctl_kickstart_current(label)
+            _launchd_ok("✓ Service started")
+            return
         if not _launchd_bootstrap_and_kickstart(plist_path, label):
             return
     _launchd_ok("✓ Service started")
@@ -4137,6 +4150,8 @@ def _wait_for_launchd_service_pid(
 
 
 def launchd_restart():
+    from hermes_cli.managed_service import preflight_service
+    manager = preflight_service(get_launchd_plist_path())
     label = get_launchd_label()
     domain = _launchd_domain()
     target = f"{domain}/{label}"
@@ -4173,6 +4188,8 @@ def launchd_restart():
         _launchd_ok("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
+            if manager is not None:
+                raise
             _launchd_degrade_or_raise(e, "launchctl kickstart")
             return
         # Job not loaded — bootstrap and start fresh
@@ -4186,6 +4203,8 @@ def launchd_restart():
             subprocess.run(["launchctl", "bootstrap", _launchd_domain(), plist_path], check=True, timeout=30)
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         except subprocess.CalledProcessError as e2:
+            if manager is not None:
+                raise
             _launchd_degrade_or_raise(e2, "launchctl")
             return
         _launchd_ok("✓ Service restarted")
