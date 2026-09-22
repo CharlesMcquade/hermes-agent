@@ -88,7 +88,8 @@ def build(args):
     refs = {'agent': args.agent_ref, 'webui': args.webui_ref}
     commits = {name: snapshot(source, refs[name], root / name) for name, source in source_paths.items()}
     runtime = root / 'runtime'
-    python = private_python(args.python.resolve(), runtime)
+    # Do not resolve a venv's executable symlink: that loses its site-packages.
+    python = private_python(args.python.absolute(), runtime)
     state = args.state_dir.resolve()
     agent = root / 'agent'
     webui = root / 'webui'
@@ -139,7 +140,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--agent-ref', default='HEAD')
     parser.add_argument('--webui-ref', default='HEAD')
-    parser.add_argument('--health-url', default='http://127.0.0.1:8787')
+    parser.add_argument('--health-url', default='http://127.0.0.1:8787/health')
     args = parser.parse_args()
     if not args.verification_note.is_file():
         parser.error('An existing verification note is required; preparation is not test certification')

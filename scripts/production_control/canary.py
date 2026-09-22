@@ -13,6 +13,8 @@ from pathlib import Path
 import plistlib
 import re
 import signal
+import sys
+import urllib.error
 import socket
 import subprocess
 import tempfile
@@ -58,6 +60,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('manifest', type=Path)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--test-api', action='store_true')
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
     item = manifest['services']['webui']
@@ -73,14 +76,25 @@ def main():
         env.update(HOME=str(root), HERMES_HOME=str(root), HERMES_BASE_HOME=str(root),
                    HERMES_CONFIG_PATH=str(root / 'config.yaml'), HERMES_WEBUI_STATE_DIR=str(root / 'webui'),
                    HERMES_WEBUI_HOST='127.0.0.1', HERMES_WEBUI_PORT=str(port),
-                   HERMES_WEBUI_DEFAULT_WORKSPACE=str(root), HERMES_WEBUI_PASSWORD='canary-only-not-production',
+                   HERMES_WEBUI_DEFAULT_WORKSPACE=str(root), HERMES_WEBUI_PASSWORD='',
                    HERMES_WEBUI_TEST_NETWORK_BLOCK='1', HERMES_WEBUI_AUTO_INSTALL='0',
                    HERMES_WEBUI_SKIP_ONBOARDING='1', PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1')
         label = f'com.charles.hermes-restart-canary.{os.getpid()}'
         domain = f'gui/{os.getuid()}'
         target = domain + '/' + label
+        # Exercise the real launcher too, not just the server argv.
+        isolated = json.loads(json.dumps(manifest))
+        isolated['services']['webui'].update(env=env, env_files=[])
+        manifest_path = root / 'production-release.json'
+        manifest_path.write_text(json.dumps(isolated))
+        launcher = root / 'production_launcher.py'
+        launcher.write_bytes(Path(__file__).with_name('production_launcher.py').read_bytes())
+        state = root / 'webui'
+        state.mkdir()
+        (state / 'service-manager.json').write_text(json.dumps({
+            'webui_restart_preflight': [sys.executable, str(launcher), 'webui', '--check']}))
         plist = root / 'canary.plist'
-        plist.write_bytes(plistlib.dumps({'Label': label, 'ProgramArguments': item['argv'],
+        plist.write_bytes(plistlib.dumps({'Label': label, 'ProgramArguments': [sys.executable, str(launcher), 'webui'],
             'WorkingDirectory': str(repo), 'EnvironmentVariables': env, 'RunAtLoad': True,
             'KeepAlive': True, 'ThrottleInterval': 1, 'StandardOutPath': str(root / 'out.log'),
             'StandardErrorPath': str(root / 'err.log')}))
@@ -100,6 +114,29 @@ def main():
                 os.kill(before, signum)
                 current, health = await_ready(target, url, before)
                 events.append({'event': event, 'old_pid': before, 'pid': current, 'status': health['status']})
+            if args.test_api:
+                def post_restart():
+                    request = urllib.request.Request(url + '/api/webui/restart', data=b'{}',
+                        headers={'Content-Type': 'application/json', 'Origin': url})
+                    try:
+                        with urllib.request.urlopen(request, timeout=40) as response:
+                            return response.status, json.loads(response.read())
+                    except urllib.error.HTTPError as exc:
+                        return exc.code, json.loads(exc.read())
+                broken = json.loads(json.dumps(isolated))
+                broken['services']['webui']['inventory'] = {'rejected': {'sha256': 'wrong'}}
+                manifest_path.write_text(json.dumps(broken))
+                status, data = post_restart()
+                if status != 503 or data.get('ok') is not False or pid(target) != current:
+                    raise RuntimeError('API preflight did not preserve running service: ' + str((status, data)))
+                events.append({'event': 'api_refusal_preserved_pid', 'pid': current, 'status': status})
+                manifest_path.write_text(json.dumps(isolated))
+                status, data = post_restart()
+                if status != 200 or data.get('status') != 'restarting':
+                    raise RuntimeError('API restart not accepted: ' + str((status, data)))
+                before = current
+                current, health = await_ready(target, url, before)
+                events.append({'event': 'api_restart_verified', 'old_pid': before, 'pid': current, 'status': health['status']})
             receipt = {'status': 'passed', 'manifest': str(args.manifest), 'release_id': manifest.get('release_id'),
                        'events': events, 'served_assets': 5, 'elapsed_seconds': round(time.monotonic() - started, 2),
                        'production_services_touched': False, 'messaging_delivery_tested': False}
