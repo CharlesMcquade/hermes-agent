@@ -78,6 +78,31 @@ class ReleaseTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_mutable_cwd_cannot_shadow_runtime_or_startup(self):
+        marker = self.root / 'shadow-executed'
+        poison = f'from pathlib import Path; Path({str(marker)!r}).write_text("bad"); raise RuntimeError("shadow")\n'
+        for name in ('json.py', 'sitecustomize.py', 'hermes_cli.py'):
+            (self.source / name).write_text(poison)
+        (self.release / 'hermes_cli.py').write_text('import json; print("approved")\n')
+        self.item.update(cwd=str(self.source), env={'PYTHONPATH': str(self.release)},
+                         argv=[sys.executable, '-m', 'hermes_cli'])
+        result = subprocess.run(launcher.launch_command(self.item), cwd=self.source,
+                                env=launcher.launch_environment(self.item), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'approved')
+        self.assertFalse(marker.exists())
+
+    def test_launch_rejects_revoked_and_malformed_policy(self):
+        manifest = self.root / 'release.json'
+        manifest.write_text(json.dumps({'schema_version': 2, 'release_id': 'bad', 'services': self.services}))
+        policy = self.root / 'revoked-releases.json'
+        policy.write_text(json.dumps({'schema_version': 1, 'release_ids': ['bad'], 'content_digests': []}))
+        with self.assertRaisesRegex(RuntimeError, 'revoked'):
+            launcher.load_manifest(manifest)
+        policy.write_text('{}')
+        with self.assertRaisesRegex(RuntimeError, 'Malformed'):
+            launcher.load_manifest(manifest)
+
     def test_runtime_environment_cannot_redirect_source(self):
         self.item['env'] = {'PYTHONPATH': str(self.release)}
         old = os.environ.get('PYTHONPATH')

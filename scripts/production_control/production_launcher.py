@@ -58,6 +58,18 @@ def load_manifest(path=None):
         raise RuntimeError('Unsupported release manifest; prepare a frozen schema-2 release')
     if not isinstance(data.get('services'), dict) or not data['services']:
         raise RuntimeError('Release has no services')
+    policy_path = path.parent / 'revoked-releases.json'
+    if policy_path.exists() or policy_path.is_symlink():
+        policy = json.loads(policy_path.read_text())
+        if (not isinstance(policy, dict) or set(policy) != {'schema_version', 'release_ids', 'content_digests'}
+                or type(policy['schema_version']) is not int or policy['schema_version'] != 1
+                or any(not isinstance(policy[k], list) or any(not isinstance(v, str) or not v for v in policy[k])
+                       for k in ('release_ids', 'content_digests'))
+                or any(len(v) != 64 or any(c not in '0123456789abcdef' for c in v) for v in policy['content_digests'])):
+            raise RuntimeError('Malformed revocation policy')
+        digest = hashlib.sha256(json.dumps(data['services'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        if data.get('release_id') in policy['release_ids'] or digest in policy['content_digests']:
+            raise RuntimeError('Release is revoked')
     return data
 
 
@@ -102,6 +114,7 @@ def launch_environment(item):
     env.update(item.get('env', {}))
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['PYTHONNOUSERSITE'] = '1'
+    env['PYTHONSAFEPATH'] = '1'
     return env
 
 
@@ -118,6 +131,7 @@ for name in ("PYTHONPATH","PYTHONHOME","PYTHONSTARTUP","_HERMES_GATEWAY"):
 os.environ.update(item.get("env",{}))
 os.environ["PYTHONDONTWRITEBYTECODE"]="1"
 os.environ["PYTHONNOUSERSITE"]="1"
+os.environ["PYTHONSAFEPATH"]="1"
 os.chdir(item["cwd"])
 os.execve(item["argv"][0],item["argv"],os.environ)
 '''
@@ -137,7 +151,7 @@ def probe(item):
         return
     with tempfile.TemporaryDirectory(prefix='hermes-preflight-') as temporary:
         env = {k: v for k, v in launch_environment(item).items()
-               if k in {'PATH', 'PYTHONPATH', 'PYTHONNOUSERSITE', 'PYTHONDONTWRITEBYTECODE',
+               if k in {'PATH', 'PYTHONPATH', 'PYTHONNOUSERSITE', 'PYTHONDONTWRITEBYTECODE', 'PYTHONSAFEPATH',
                         'HERMES_WEBUI_AGENT_DIR', 'HERMES_WEBUI_AUTO_INSTALL'}}
         env.update(HOME=temporary, HERMES_HOME=temporary, HERMES_BASE_HOME=temporary,
                    HERMES_WEBUI_STATE_DIR=temporary, HERMES_CONFIG_PATH=str(Path(temporary) / 'config.yaml'))
@@ -147,7 +161,7 @@ def probe(item):
                 'bad=[m.__name__ for m in loaded if not pathlib.Path(m.__file__).resolve().is_relative_to(expected)]; '
                 'sys.exit(2 if bad else 0)')
         result = subprocess.run([item['argv'][0], '-c', code, json.dumps(modules), item['repo']],
-                                cwd=item['repo'], env=env, capture_output=True, timeout=30)
+                                cwd=temporary, env=env, capture_output=True, timeout=30)
         if result.returncode:
             # Imports can print config/auth material: never return their raw stderr.
             raise RuntimeError('Runtime import preflight failed; inspect isolated dependency installation')

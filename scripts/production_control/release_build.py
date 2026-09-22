@@ -111,7 +111,10 @@ def build(args):
     }
     # The local manager, not generic install/update, owns release activation.
     for name, item in services.items():
-        item.update(env=dict(env), commit=commits[name],
+        service_env = dict(env, PYTHONSAFEPATH='1')
+        if name == 'webui':
+            service_env['PYTHONPATH'] = str(webui) + os.pathsep + str(agent)
+        item.update(env=service_env, commit=commits[name],
                     version=git(root / name, 'describe', '--tags', '--always'),
                     plist_path=str(Path.home() / 'Library/LaunchAgents' /
                                    ('ai.hermes.gateway.plist' if name == 'agent' else 'com.charles.hermes-webui.plist')))
