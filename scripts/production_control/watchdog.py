@@ -28,7 +28,11 @@ def _tick(c, path, grace, cooldown, max_backoff):
         save_json(path, state)
         return state
     try:
+        recovery = c.recover_locked()
+        if recovery is not None:
+            return finish(recovery['status'], recovery=recovery, failures=0)
         manifest = c.load()
+        c.check_revocation(manifest)
         definitions = c.definitions(manifest)
         jobs = c.loaded(manifest, definitions)
     except Exception as exc:

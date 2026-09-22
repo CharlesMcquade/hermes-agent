@@ -157,7 +157,7 @@ class ControlTests(unittest.TestCase):
             self.assertEqual(tick(self.c)['status'], 'busy')
         self.assertEqual(self.host.calls, [])
     def test_stale_gateway_and_wrong_sha_rejected(self):
-        for field, value in [('updated_at', self.clock() - 120), ('code_sha', 'bad'), ('pid', 999)]:
+        for field, value in [('updated_at', self.clock() + 120), ('code_sha', 'bad'), ('pid', 999)]:
             self.write_gateway(101)
             path = self.base / 'gateway_state.json'
             state = json.loads(path.read_text())
@@ -196,12 +196,21 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(self.plists['webui'].read_bytes(), original)
         self.assertEqual(self.host.jobs['webui']['cwd'], str(self.base))
 
-    def test_changed_cwd_requires_reload_before_stop(self):
+    def test_runtime_cwd_change_keeps_stable_launchd_anchor(self):
         data = copy.deepcopy(self.manifest)
         data['services']['webui']['cwd'] = str(self.base / 'new-cwd')
-        with self.assertRaisesRegex(ControlError, 'requires explicit --reload'):
-            self.c.restart(candidate=self.candidate(**data), yes=True)
-        self.assertEqual(self.host.calls, [])
+        result = self.c.restart(candidate=self.candidate(**data), yes=True)
+        self.assertEqual(result['status'], 'verified')
+        self.assertEqual(self.host.jobs['webui']['cwd'], str(self.base))
+        self.assertEqual(self.host.calls, [('kickstart', 'agent'), ('kickstart', 'webui')])
+
+    def test_idle_gateway_state_is_not_a_heartbeat(self):
+        self.clock.sleep(3600)
+        proof = self.c.snapshot(self.manifest, self.c.definitions(self.manifest))
+        self.assertEqual(proof['gateway_child_pid'], 101)
+        self.host.started = self.clock()
+        with self.assertRaisesRegex(ControlError, 'predates restart'):
+            self.c.snapshot(self.manifest, self.c.definitions(self.manifest), since=self.clock())
 
     def test_watchdog_requires_two_failures_and_cooldown(self):
         self.host.shallow = False

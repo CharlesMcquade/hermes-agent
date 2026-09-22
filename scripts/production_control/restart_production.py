@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed launchd restart/activation; no user-state or source-tree rollback."""
 import argparse
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -116,7 +117,7 @@ class Host:
         existing = self.run('launchctl', 'print', target, check=False)
         require(existing.returncode in (0, 113), 'Cannot inspect job for explicit reload')
         if existing.returncode == 0:
-            self.run('launchctl', 'bootout', target)
+            self.run('launchctl', 'bootout', '--wait', target)
         self.run('launchctl', 'bootstrap', target.rsplit('/', 1)[0], str(plist))
 
     def fetch(self, url):
@@ -158,8 +159,10 @@ class Controller:
         self.domain = f'gui/{os.getuid()}'
 
     def load(self, path=None):
-        data = json.loads(Path(path or self.manifest_path).read_text())
-        require(data.get('schema_version') == 2, 'Manifest must have schema_version 2')
+        return self.validate_manifest(json.loads(Path(path or self.manifest_path).read_text()))
+
+    def validate_manifest(self, data):
+        require(isinstance(data, dict) and data.get('schema_version') == 2, 'Manifest must have schema_version 2')
         require(set(data['services']) == set(SERVICES), 'Expected agent and webui')
         require(set(data['labels']) == set(SERVICES), 'Expected explicit labels')
         require(len(set(data['labels'].values())) == 2, 'Service labels must differ')
@@ -174,18 +177,19 @@ class Controller:
         return Path(manifest['services'][service].get('plist_path') or
                     Path.home() / 'Library/LaunchAgents' / (manifest['labels'][service] + '.plist'))
 
-    def definitions(self, manifest, allow_cwd_change=False):
+    def definitions(self, manifest, allow_cwd_change=False, saved=None):
         result = {}
         for service in SERVICES:
             path = self.plist_path(manifest, service)
-            data = plistlib.loads(path.read_bytes())
+            data = plistlib.loads(saved[service] if saved is not None else path.read_bytes())
             argv = data.get('ProgramArguments', [])
             require(data.get('Label') == manifest['labels'][service], 'Plist label mismatch')
             require(len(argv) == 3 and Path(argv[0]).is_absolute() and
-                    argv[1:] == [str(self.base / 'production_launcher.py'), service], 'Unexpected launcher argv')
+                    argv[1:] == [str(manifest.get('launcher_path', self.base / 'production_launcher.py')), service], 'Unexpected launcher argv')
             require(data.get('RunAtLoad') is True and data.get('KeepAlive') is True, 'Invalid lifecycle policy')
-            if not allow_cwd_change:
-                require(data.get('WorkingDirectory') == manifest['services'][service]['cwd'], 'Plist cwd mismatch')
+            # launchd has a stable anchor; the launcher chdirs into the selected release.
+            anchor = Path(data.get('WorkingDirectory', ''))
+            require(anchor.is_absolute() and anchor.is_dir(), 'Plist cwd is unavailable')
             result[service] = data
         return result
 
@@ -237,7 +241,9 @@ class Controller:
         require(state.get('gateway_state') == 'running', 'Gateway is not running')
         require(state.get('code_sha') == manifest['services']['agent']['commit'], 'Gateway code SHA mismatch')
         updated = epoch(state['updated_at'])
-        require(self.clock() - 60 <= updated <= self.clock() + 5, 'Stale gateway state')
+        require(updated <= self.clock() + 5, 'Future gateway state timestamp')
+        # Runtime state updates on transitions, not idle heartbeats. Child ownership
+        # proves liveness; only a post-restart check requires a fresh state write.
         if since is not None:
             require(updated >= since - 1, 'Gateway state predates restart')
         return {'pids': pids, 'gateway_child_pid': child, 'health': 'ok', 'deep_health': 'ok',
@@ -272,6 +278,108 @@ class Controller:
             os.fsync(stream.fileno())
         return result
 
+    @property
+    def transaction_path(self):
+        return self.base / 'activation-transaction.json'
+
+    @staticmethod
+    def content_digest(manifest):
+        """Stable digest of the service pair, including approved file inventories."""
+        return hashlib.sha256(json.dumps(manifest['services'], sort_keys=True,
+                                         separators=(',', ':')).encode()).hexdigest()
+
+    def check_revocation(self, manifest):
+        # Absence means no revocations. A present policy must be completely valid;
+        # misspelled keys must never silently disable an operator's revocation.
+        path = self.base / 'revoked-releases.json'
+        if not path.exists():
+            return
+        policy = json.loads(path.read_text())
+        require(isinstance(policy, dict) and set(policy) ==
+                {'schema_version', 'release_ids', 'content_digests'} and
+                type(policy['schema_version']) is int and policy['schema_version'] == 1,
+                'Malformed revocation policy')
+        for key in ('release_ids', 'content_digests'):
+            require(isinstance(policy[key], list) and
+                    all(isinstance(v, str) and v for v in policy[key]),
+                    'Malformed revocation policy')
+        require(all(re.fullmatch(r'[0-9a-f]{64}', v) for v in policy['content_digests']),
+                'Malformed revocation digest')
+        require(manifest.get('release_id') not in policy['release_ids'] and
+                self.content_digest(manifest) not in policy['content_digests'],
+                'Release is revoked')
+
+    def save_transaction(self, txn, phase):
+        txn['phase'] = phase
+        payload = json.dumps(txn, sort_keys=True, separators=(',', ':')).encode()
+        save_json(self.transaction_path, {'schema_version': 1, 'transaction': txn,
+                                         'sha256': hashlib.sha256(payload).hexdigest()})
+
+    def read_transaction(self):
+        if not self.transaction_path.exists():
+            return None
+        envelope = json.loads(self.transaction_path.read_text())
+        require(isinstance(envelope, dict) and type(envelope.get('schema_version')) is int
+                and envelope['schema_version'] == 1, 'Unsupported transaction schema')
+        txn = envelope['transaction']
+        payload = json.dumps(txn, sort_keys=True, separators=(',', ':')).encode()
+        require(hashlib.sha256(payload).hexdigest() == envelope['sha256'],
+                'Corrupt transaction backup')
+        require(txn['phase'] in {'prepared', 'verified', 'rollback_started',
+                                'rolled_back', 'rollback_failed'}, 'Invalid transaction phase')
+        require(type(txn['reload']) is bool and isinstance(txn['operation_id'], str),
+                'Invalid transaction identity')
+        require(txn['authorization'] in {'verified-live-fallback', 'same-release-restart'},
+                'Missing fallback authorization')
+        return txn
+
+    def recover_locked(self):
+        """Caller holds control.lock. No inference from the current candidate.
+
+        The backup is transaction-scoped authorization, not an expiring canary
+        receipt or a global blessing. A consumed rollback is never attempted twice.
+        """
+        txn = self.read_transaction()
+        if txn is None or txn['phase'] in {'verified', 'rolled_back'}:
+            return None
+        if txn['phase'] == 'rollback_started':
+            self.save_transaction(txn, 'rollback_failed')
+        require(txn['phase'] != 'rollback_failed',
+                'rollback_failed: manual reconciliation required')
+        # Consume the sole attempt durably BEFORE any restoration or launchctl.
+        self.save_transaction(txn, 'rollback_started')
+        try:
+            old_bytes = base64.b64decode(txn['manifest'], validate=True)
+            old = self.validate_manifest(json.loads(old_bytes))
+            require(set(txn['plists']) == set(SERVICES), 'Incomplete plist backup')
+            saved = {s: base64.b64decode(txn['plists'][s], validate=True) for s in SERVICES}
+            definitions = self.definitions(old, saved=saved)
+            self.check_revocation(old)
+            self.preflight(old)
+            if not txn['reload']:
+                self.loaded(old, definitions)
+            before = {}
+            for service in SERVICES:
+                try:
+                    before[service] = self.host.job(self.target(old, service))
+                except Exception:
+                    before[service] = {'pid': None}
+            since = self.clock()
+            atomic_write(self.manifest_path, old_bytes)
+            for service in SERVICES:
+                atomic_write(self.plist_path(old, service), saved[service])
+            for service in SERVICES:
+                if txn['reload']:
+                    self.host.reload(self.target(old, service), self.plist_path(old, service))
+                else:
+                    self.host.kickstart(self.target(old, service))
+            proof = self.wait_ready(old, definitions, since, before)
+        except Exception as exc:
+            self.save_transaction(txn, 'rollback_failed')
+            return self.journal(txn['operation_id'], 'rollback_failed', recovery_error=str(exc))
+        self.save_transaction(txn, 'rolled_back')
+        return self.journal(txn['operation_id'], 'rolled_back', recovery=proof)
+
     def restart(self, candidate=None, reload=False, yes=False, confirm=None):
         if yes:
             require(self.owner() == 1, '--yes requires a launchd-owned independent controller (ppid 1)')
@@ -279,6 +387,9 @@ class Controller:
             require(confirm is not None and confirm(), 'Explicit interactive confirmation required')
         operation_id = str(uuid.uuid4())
         with control_lock(self.base):
+            recovery = self.recover_locked()
+            if recovery is not None:
+                return recovery  # Recovery never activates the supplied candidate.
             return self._restart(operation_id, candidate, reload)
 
     def _restart(self, operation_id, candidate, reload):
@@ -288,6 +399,8 @@ class Controller:
         try:
             old = self.load()
             new = self.load(candidate) if candidate else old
+            self.check_revocation(old)
+            self.check_revocation(new)
             self.preflight(old)
             self.preflight(new)
             require(old['labels'] == new['labels'] and old['state_dir'] == new['state_dir'], 'Activation cannot migrate labels or user state')
@@ -298,9 +411,15 @@ class Controller:
                 before = {s: self.host.job(self.target(old, s)) for s in SERVICES}
             else:
                 before = self.loaded(old, definitions)
-            new_definitions = {s: dict(definitions[s], WorkingDirectory=new['services'][s]['cwd']) for s in SERVICES}
-            require(reload or new_definitions == definitions, 'Changed cwd requires explicit --reload')
-            saved_plists = {self.plist_path(old, s): self.plist_path(old, s).read_bytes() for s in SERVICES}
+            new_definitions = definitions
+            if candidate:
+                self.snapshot(old, definitions)  # Only a proven live pair can be a candidate's fallback.
+            saved_plists = {s: self.plist_path(old, s).read_bytes() for s in SERVICES}
+            txn = {'operation_id': operation_id, 'reload': reload,
+                   'authorization': 'verified-live-fallback' if candidate else 'same-release-restart',
+                   'manifest': base64.b64encode(old_bytes).decode('ascii'),
+                   'plists': {s: base64.b64encode(b).decode('ascii') for s, b in saved_plists.items()}}
+            self.save_transaction(txn, 'prepared')
             self.journal(operation_id, 'prepared')
             since = self.clock()
             touched = True  # Atomic replacement can succeed before a following fsync fails.
@@ -315,33 +434,16 @@ class Controller:
                 else:
                     self.host.kickstart(self.target(new, service))
             proof = self.wait_ready(new, new_definitions, since, before)
-            return self.journal(operation_id, 'verified', **proof)
+            self.save_transaction(txn, 'verified')
         except Exception as exc:
             self.journal(operation_id, 'failed', error=str(exc))
             if not touched:
                 raise
-            try:
-                atomic_write(self.manifest_path, old_bytes)
-                for path, content in saved_plists.items():
-                    atomic_write(path, content)
-                self.preflight(old)
-                since = self.clock()
-                recovery_before = {}
-                for service in SERVICES:
-                    try:
-                        recovery_before[service] = self.host.job(self.target(old, service))
-                    except Exception:
-                        recovery_before[service] = {'pid': None}
-                for service in SERVICES:
-                    if reload:
-                        self.host.reload(self.target(old, service), self.plist_path(old, service))
-                    else:
-                        self.loaded(old, definitions)
-                        self.host.kickstart(self.target(old, service))
-                proof = self.wait_ready(old, definitions, since, recovery_before)
-                return self.journal(operation_id, 'rolled_back', error=str(exc), recovery=proof)
-            except Exception as recovery_error:
-                return self.journal(operation_id, 'rollback_failed', error=str(exc), recovery_error=str(recovery_error))
+            recovery = self.recover_locked()
+            if recovery is None:  # Final fsync may fail after the terminal rename.
+                raise
+            return recovery
+        return self.journal(operation_id, 'verified', **proof)
 
 
 def main(argv=None):
