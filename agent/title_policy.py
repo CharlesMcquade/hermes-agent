@@ -39,6 +39,7 @@ TAG_DESCRIPTIONS = {
 # such as Switch, SF, camera, Marvel or Elder Scrolls: they identify no single game.
 GAME_ALIASES = {
     "BG3": ("BG3", "Baldur's Gate 3"),
+    "BoD": ("BoD", "Blood of Dawnwalker", "Dawnwalker", "blood of dawn walker"),
     "E:D": ("E:D", "Elite Dangerous"),
     "GTA6": ("GTA6", "GTA 6", "Grand Theft Auto 6", "Grand Theft Auto VI"),
     "Skyrim": ("Skyrim",),
