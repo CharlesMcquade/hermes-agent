@@ -6,6 +6,7 @@ is called, cannot fail), then an **upgrade** from a small-model call with at mos
 and neither replaces a name the user typed."""
 
 import logging
+import re
 import threading
 from contextlib import suppress
 from typing import Any, Callable, Optional
@@ -102,23 +103,51 @@ def _strip_one_wrapper(text: str) -> str:
     return text
 
 
+# Match only transport envelopes at message boundaries, never arbitrary brackets.
+# Workspace paths escape backslashes and closing brackets in the WebUI producer.
+_TITLE_METADATA_PREFIX = re.compile(
+    r"\A(?:\[Workspace::v1:[ \t]*(?:\\[^\r\n]|[^\]\\\r\n])+\]\s*"
+    r"|\[\d+ images?\](?:\s+|\Z)|\[screenshot\](?:\s+|\Z))+"
+)
+_TITLE_ATTACHMENT_SUFFIX = re.compile(
+    r"(?:\A|\n\n)\[Attached files: [^\r\n]+\](?:\s*\[screenshot\])*\s*\Z"
+)
+_TITLE_SCREENSHOT_SUFFIX = re.compile(r"(?:\A|\n)\[screenshot\](?:\s*\[screenshot\])*\s*\Z")
+
+
+def _strip_title_metadata(text: str) -> str:
+    text = _TITLE_METADATA_PREFIX.sub("", text.strip())
+    text = _TITLE_ATTACHMENT_SUFFIX.sub("", text)
+    return _TITLE_SCREENSHOT_SUFFIX.sub("", text).strip()
+
+
 def _summarize_user_message(user_message: str) -> str:
-    """Text worth titling: describe a ``/skill`` invocation (it embeds the whole skill body), then strip wrappers."""
+    """Title-only projection; keep transport metadata out of both title paths."""
     if not user_message:
         return ""
+    # Strip before skill recognition and the input budget. Wrappers can nest in
+    # either order; each changing pass removes text, so this reaches a fixed point.
+    text = user_message
+    while True:
+        stripped = strip_control_wrappers(_strip_title_metadata(text))
+        if stripped == text:
+            break
+        text = stripped
     described = None
     try:
         from agent.skill_commands import describe_skill_invocation
-        described = describe_skill_invocation(user_message)
+        described = describe_skill_invocation(text)
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
-    return strip_control_wrappers(user_message if described is None else described)
+    return text if described is None else strip_control_wrappers(described)
 
 
 def is_titleable_user_message(user_message: str) -> bool:
     """False for machine-authored openers and turns that reduce to nothing once scaffolding is stripped."""
-    return (isinstance(user_message, str) and bool(user_message.strip()) and not user_message.lstrip().startswith(_MACHINE_PREFIXES)
-            and bool(_summarize_user_message(user_message).strip()))
+    if not isinstance(user_message, str):
+        return False
+    text = _summarize_user_message(user_message)
+    return bool(text) and not text.startswith(_MACHINE_PREFIXES)
 
 
 def derive_title(user_message: str) -> Optional[str]:
