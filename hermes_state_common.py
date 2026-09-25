@@ -571,6 +571,17 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     origin_session_id TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS async_delegation_triage (
+    delegation_id TEXT PRIMARY KEY REFERENCES async_delegations(delegation_id),
+    parent_session_id TEXT NOT NULL,
+    finalized_at REAL NOT NULL,
+    triage_state TEXT NOT NULL DEFAULT 'pending',
+    triage_claim TEXT,
+    triage_claimed_at REAL,
+    settled_at REAL,
+    decision TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);

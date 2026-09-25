@@ -443,6 +443,8 @@ def delegate_task(
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
+    message: Optional[str] = None, delegation_ids: Optional[List[str]] = None,
+
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -452,10 +454,20 @@ def delegate_task(
         return tool_error("delegate_task requires a parent agent context.")
 
     normalized_action = (action or "").strip().lower()
+    if normalized_action == "finalize":
+        from tools.async_delegation import finalize_parent_delegations
+        owner = getattr(parent_agent, "session_id", None)
+        if not isinstance(owner, str) or not owner or not isinstance(delegation_ids, list) or not delegation_ids or any(
+            not isinstance(item, str) or not item for item in delegation_ids
+        ):
+            return tool_error("finalize requires the current parent session and nonempty delegation_ids (strings).")
+        enrolled = finalize_parent_delegations(owner, delegation_ids)
+        return json.dumps({"action": "finalize", "finalized_delegation_ids": enrolled,
+                           "rejected_delegation_ids": [item for item in dict.fromkeys(delegation_ids) if item not in enrolled]})
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
-        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, stop, or finalize.")
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -699,10 +711,14 @@ DELEGATE_TASK_SCHEMA = {
                 "course-correction text into one child (subagent_id + "
                 "message) without stopping it; 'stop' = end one child "
                 "early (subagent_id; partial result still returns). "
+                "'finalize' = opt exact async delegation_ids into late-result triage when your TASK is complete; "
+                "call BEFORE your final answer, never merely because a turn ends. "
                 "Control actions return immediately; goal/tasks are ignored unless spawning.",
-                enum=["spawn", "list", "steer", "stop"],
+                enum=["spawn", "list", "steer", "stop", "finalize"],
             ),
             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
+            "delegation_ids": {"type": "array", "items": {"type": "string"},
+                               "description": "Exact async completion-unit ids from background dispatch (action='finalize' only)."},
             "message": _p(
                 "string",
                 "For action='steer': the course correction, appended to "
@@ -743,6 +759,8 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        delegation_ids=args.get("delegation_ids"),
+
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
