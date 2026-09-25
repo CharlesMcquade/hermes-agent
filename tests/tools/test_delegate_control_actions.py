@@ -45,6 +45,39 @@ class _StubParent:
     pass
 
 
+def test_finalize_exact_ids_from_parent_agent_not_caller(monkeypatch, tmp_path):
+    from tools import async_delegation as ledger
+    from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+    from agent.tool_guardrails import _subagent_spawn_count
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for ident, owner in (("mine", "owner"), ("foreign", "other")):
+        with ledger._DB_LOCK, ledger._transaction() as conn:
+            conn.execute("""INSERT INTO async_delegations
+                (delegation_id, origin_session, parent_session_id, state, dispatched_at, updated_at)
+                VALUES (?, 'route', ?, 'running', 1, 1)""", (ident, owner))
+    parent = _StubParent()
+    parent.session_id = "owner"
+    result = json.loads(delegate_task(action="finalize", delegation_ids=["mine", "foreign", "missing", "mine"], parent_agent=parent))
+    assert result == {"action": "finalize", "finalized_delegation_ids": ["mine"],
+                      "rejected_delegation_ids": ["foreign", "missing"]}
+    with ledger._DB_LOCK, ledger._transaction() as conn:
+        assert conn.execute("SELECT triage_state FROM async_delegation_triage WHERE delegation_id='mine'").fetchone() == ("pending",)
+    assert ledger.late_result_disposition("other", "foreign") == "wake"
+    assert _subagent_spawn_count({"action": "finalize", "delegation_ids": ["mine"]}) == 0
+    assert "finalize" in DELEGATE_TASK_SCHEMA["parameters"]["properties"]["action"]["enum"]
+    from tools.registry import registry
+    raw_registry = registry.dispatch(
+        "delegate_task", {"action": "finalize", "delegation_ids": ["mine", "foreign"]},
+        parent_agent=parent,
+    )
+    assert isinstance(raw_registry, str)
+    through_registry = json.loads(raw_registry)
+    assert through_registry["finalized_delegation_ids"] == ["mine"]
+    assert through_registry["rejected_delegation_ids"] == ["foreign"]
+    assert "error" in delegate_task(action="finalize", delegation_ids=["mine"], parent_agent=_StubParent())
+    assert "error" in delegate_task(action="finalize", delegation_ids="mine", parent_agent=parent)
+
+
 def _register(sid: str, child, **extra) -> None:
     record = {
         "subagent_id": sid,
