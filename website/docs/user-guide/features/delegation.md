@@ -25,6 +25,15 @@ Malformed messaging routes still produce diagnostics. On the API server, an asyn
 completion adds a durable timeline delivery row only: the client owns the next model turn.
 Setting background process notifications to `off` still drains pattern-watch events silently.
 
+A parent that has genuinely concluded its task can call
+`delegate_task(action="finalize", delegation_ids=["deleg_..."])` **before** its final answer.
+This is an explicit, per-completion-unit opt-in for late-result triage, not a signal emitted
+whenever a model turn ends. Only IDs owned by the current parent session are enrolled;
+unknown or foreign IDs are reported as rejected. Completion results remain in the durable
+ledger. A consumer must actually assess an opted-in result and record `wake` or `suppress`
+before changing its delivery; without such a consumer, ordinary delivery remains the safe
+fallback. This action alone does not hide results or decide whether an update matters.
+
 ## Background process lifetime
 
 Background terminal processes belong to the agent that starts them. Closing a child during delegation teardown terminates its remaining processes, including work started in earlier turns, without stopping processes owned by the parent or sibling agents. Sharing a terminal environment does not transfer process ownership.
