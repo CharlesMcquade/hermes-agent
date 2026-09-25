@@ -131,6 +131,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     reconcile_state_schema(conn)
 
 
+
 def _transaction():
     from hermes_cli.sqlite_util import transaction
 
@@ -180,25 +181,28 @@ def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
     cutoff = time.time() - _DURABLE_RETENTION_SECONDS
     with _DB_LOCK, _transaction() as conn:
+        # SQLite connections do not universally enable FK enforcement. Remove only
+        # triage rows whose parent ledger row is already gone, then delete acknowledged
+        # rows and their triage metadata together in this transaction.
+        conn.execute("""DELETE FROM async_delegation_triage WHERE NOT EXISTS
+            (SELECT 1 FROM async_delegations d WHERE d.delegation_id=async_delegation_triage.delegation_id)""")
+        conn.execute("""DELETE FROM async_delegation_triage WHERE delegation_id IN
+            (SELECT delegation_id FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?)""", (cutoff,))
         conn.execute(
             "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?", (cutoff,))
-        terminal_count = conn.execute(
-            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')").fetchone()[0]
-        if terminal_count > _MAX_RETAINED_COMPLETED:
+        # Only acknowledged deliveries are disposable. Pending, dropped and explicitly
+        # suppressed results remain queryable; capacity limits must never erase an
+        # unresolved result (including a triage result after a process restart).
+        delivered_count = conn.execute("SELECT COUNT(*) FROM async_delegations WHERE delivery_state='delivered'").fetchone()[0]
+        if delivered_count > _MAX_RETAINED_COMPLETED:
+            conn.execute("""DELETE FROM async_delegation_triage WHERE delegation_id IN (
+                     SELECT delegation_id FROM async_delegations
+                     WHERE delivery_state='delivered' ORDER BY updated_at ASC LIMIT ?
+                   )""", (delivered_count - _MAX_RETAINED_COMPLETED,))
             conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
                      SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing')
-                     ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
-                              updated_at ASC LIMIT ?
-                   )""", (terminal_count - _MAX_RETAINED_COMPLETED,))
-        pending_count = conn.execute("""SELECT COUNT(*) FROM async_delegations
-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'""").fetchone()[0]
-        if pending_count > _MAX_DURABLE_PENDING:
-            conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
-                     SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
-                     ORDER BY updated_at ASC LIMIT ?
-                   )""", (pending_count - _MAX_DURABLE_PENDING,))
+                     WHERE delivery_state='delivered' ORDER BY updated_at ASC LIMIT ?
+                   )""", (delivered_count - _MAX_RETAINED_COMPLETED,))
 
 
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -310,7 +314,7 @@ def restore_undelivered_completions(target_queue) -> int:
     Restored events are stamped ``restored=True`` in memory only: they came from a PREVIOUS
     process, so drains without an ownership filter must leave them for a consumer that can
     prove ownership. Rows older than ``_MAX_COMPLETION_REPLAY_AGE_S`` are terminally dropped
-    instead of replaying a turn nobody is waiting on.
+    unless explicitly opted into unresolved late-result triage; those remain replayable.
 
     Every restored event is stamped ``restored=True`` (in-memory only — the stamp is added after the durable
     payload is deserialized and is never persisted). Restored events originate from a *previous* process, so
@@ -336,7 +340,8 @@ def _replay_pending(conn, rows, target_queue, now: float) -> int:
     home, restored = hermes_home_key(get_hermes_home()), 0
     for delegation_id, payload, completed_at, dispatched_at in rows:
         age_basis = completed_at or dispatched_at
-        if age_basis and (now - age_basis) > _MAX_COMPLETION_REPLAY_AGE_S:
+        opted_in = conn.execute("""SELECT 1 FROM async_delegation_triage WHERE delegation_id=? AND (triage_state IN ('pending','claimed') OR (triage_state='settled' AND decision='wake'))""", (delegation_id,)).fetchone()
+        if not opted_in and age_basis and (now - age_basis) > _MAX_COMPLETION_REPLAY_AGE_S:
             conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
                           delivery_claim=NULL, delivery_claimed_at=NULL,
                           updated_at=?
@@ -352,6 +357,7 @@ def _replay_pending(conn, rows, target_queue, now: float) -> int:
         with _orphan_lock:
             _offered.add((home, delegation_id))
         restored += 1
+
     return restored
 
 
@@ -557,6 +563,115 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
         "delegation_id": delegation_id, "origin_session": row[0], "state": row[1], "dispatched_at": row[2],
         "completed_at": row[3], "result": json.loads(row[4]) if row[4] else None, "delivery_state": row[5],
         "delivery_attempts": row[6], "origin_session_id": row[7] or ""}
+
+
+# ── Explicit parent-owned late-result triage (opt-in only) ────────────────
+def finalize_parent_delegations(parent_session_id: str, delegation_ids: List[str]) -> List[str]:
+    """Opt in exact owned units after the parent declares its TASK final.
+
+    Never call at model stop or WebUI turn completion. Unknown/foreign ids are ignored;
+    return only ids actually enrolled. Repeated calls preserve prior triage state.
+    """
+    if not parent_session_id or not delegation_ids:
+        return []
+    enrolled = []
+    with _DB_LOCK, _transaction() as conn:
+        for delegation_id in dict.fromkeys(delegation_ids):
+            if not delegation_id:
+                continue
+            row = conn.execute("SELECT parent_session_id FROM async_delegations WHERE delegation_id=?",
+                               (delegation_id,)).fetchone()
+            if row is None or row[0] != parent_session_id:
+                continue
+            conn.execute("""INSERT OR IGNORE INTO async_delegation_triage
+                         (delegation_id, parent_session_id, finalized_at) VALUES (?, ?, ?)""",
+                         (delegation_id, parent_session_id, time.time()))
+            enrolled.append(delegation_id)
+    return enrolled
+
+
+def late_result_disposition(parent_session_id: str, delegation_id: str) -> str:
+    """Return 'wake' (including unknown/no opt-in), 'triage', 'claimed', or 'settled'.
+
+    Advisory only: use admit_late_result for an atomic decision at consumption.
+    """
+    if not parent_session_id or not delegation_id:
+        return "wake"
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute("""SELECT t.triage_state, d.delivery_state
+            FROM async_delegation_triage t JOIN async_delegations d USING (delegation_id)
+            WHERE t.delegation_id=? AND t.parent_session_id=?
+              AND d.parent_session_id=?""",
+            (delegation_id, parent_session_id, parent_session_id)).fetchone()
+    if not row:
+        return "wake"
+    if row[0] == "settled" or row[1] == "suppressed":
+        return "settled"
+    if row[1] != "pending":
+        return "wake"
+    return "claimed" if row[0] == "claimed" else "triage"
+
+
+def admit_late_result(parent_session_id: str, delegation_id: str) -> Optional[str]:
+    """Atomically reserve an opted-in terminal completion for explicit triage.
+
+    Returns a claim token, or None (caller MUST use existing wakeup path). The
+    ordinary delivery claim and triage claim share one transaction; no claimed or
+    delivered completion can be silently intercepted. A stale claim can be reclaimed
+    after five minutes; the previous holder's token then loses settlement authority.
+    """
+    if not parent_session_id or not delegation_id:
+        return None
+    token = f"triage:{os.getpid()}:{uuid.uuid4().hex}"
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        cur = conn.execute("""UPDATE async_delegation_triage SET triage_state='claimed',
+              triage_claim=?, triage_claimed_at=?
+            WHERE delegation_id=? AND parent_session_id=?
+              AND (triage_state='pending' OR (triage_state='claimed' AND triage_claimed_at < ?))
+              AND EXISTS (SELECT 1 FROM async_delegations d WHERE d.delegation_id=?
+                AND d.parent_session_id=? AND d.state NOT IN ('running','finalizing')
+                AND d.event_json IS NOT NULL AND d.delivery_state='pending'
+                AND (d.delivery_claim IS NULL OR d.delivery_claimed_at < ?))""",
+            (token, now, delegation_id, parent_session_id, now - 300,
+             delegation_id, parent_session_id, now - 300))
+        if cur.rowcount != 1:
+            return None
+        conn.execute("""UPDATE async_delegations SET delivery_claim=?, delivery_claimed_at=?,
+              updated_at=? WHERE delegation_id=?""", (token, now, now, delegation_id))
+    return token
+
+
+def settle_late_result(parent_session_id: str, delegation_id: str, token: str, decision: str) -> bool:
+    """Resolve triage as 'wake' or explicit 'suppress' (parent/user intent).
+
+    Suppress is not a materiality guess: the caller must assess the durable result
+    before invoking it. Wake releases the claim for ordinary delivery; suppress
+    records an auditable terminal state while retaining the result JSON. No implicit
+    acknowledgment occurs on failed triage; the five-minute lease permits retry.
+    """
+    if decision not in {"wake", "suppress"} or not all((parent_session_id, delegation_id, token)):
+        return False
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute("""SELECT d.delivery_state FROM async_delegation_triage t
+            JOIN async_delegations d USING (delegation_id)
+            WHERE t.delegation_id=? AND t.parent_session_id=? AND d.parent_session_id=?
+              AND t.triage_state='claimed' AND t.triage_claim=? AND d.delivery_claim=?""",
+            (delegation_id, parent_session_id, parent_session_id, token, token)).fetchone()
+        if row is None or row[0] != "pending":
+            return False
+        if decision == "wake":
+            conn.execute("""UPDATE async_delegations SET delivery_claim=NULL,
+                delivery_claimed_at=NULL, updated_at=? WHERE delegation_id=?""", (now, delegation_id))
+        else:
+            conn.execute("""UPDATE async_delegations SET delivery_state='suppressed',
+                delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
+                WHERE delegation_id=?""", (now, delegation_id))
+        conn.execute("""UPDATE async_delegation_triage SET triage_state='settled',
+            triage_claim=NULL, triage_claimed_at=NULL, settled_at=?, decision=?
+            WHERE delegation_id=?""", (now, decision, delegation_id))
+    return True
 
 
 # ── In-memory registry queries ──────────────────────────────────────────────
