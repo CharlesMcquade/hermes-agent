@@ -403,9 +403,10 @@ def decide_image_input_mode(
         return mode_cfg
     agent_cfg = _dict_or_empty(_dict_or_empty(cfg).get("agent"))
     capability_first = agent_cfg.get("vision_capability_first") is True
+    # Preserve the lookup seam's three-argument form when there is no requested identity.
+    extra = {"requested_provider": requested_provider} if requested_provider else {}
+    verdict = None
     if capability_first:
-        # Keep the three-argument call contract for callers/tests that replace the lookup hook.
-        extra = {"requested_provider": requested_provider} if requested_provider else {}
         verdict = _lookup_supports_vision(provider, model, cfg, **extra)
         if verdict is True:
             logger.info(
@@ -421,7 +422,8 @@ def decide_image_input_mode(
         # so a configured auxiliary.vision backend still decides for unknown
         # models (the declaration check is already covered — it is step one of
         # _lookup_supports_vision, so None implies no declaration exists).
-    if (
+    # Unknown capability retains the existing aux-first fallback; do not probe twice.
+    if not capability_first and (
         _supports_vision_override(cfg, provider, model, requested_provider=requested_provider) is True
     ):  # user-declared capability beats the #97339 aux-de-facto rule
         logger.info(
@@ -438,9 +440,9 @@ def decide_image_input_mode(
             model,
         )
         return "text"
-    # Keep the three-argument call contract for callers/tests that replace the lookup hook.
-    extra = {"requested_provider": requested_provider} if requested_provider else {}
-    return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
+    if not capability_first:
+        verdict = _lookup_supports_vision(provider, model, cfg, **extra)
+    return "native" if verdict is True else "text"
 
 
 # Image size handling is REACTIVE: attach at full size and let

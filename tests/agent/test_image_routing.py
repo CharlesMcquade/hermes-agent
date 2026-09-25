@@ -150,6 +150,19 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", cfg) == "text"
 
+    def test_vision_capability_first_unknown_probes_once_without_aux(self):
+        cfg = {"agent": {"vision_capability_first": True}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None) as lookup:
+            assert decide_image_input_mode("custom", "unknown", cfg) == "text"
+        lookup.assert_called_once_with("custom", "unknown", cfg)
+
+    def test_vision_capability_first_unknown_probes_once_with_aux(self):
+        cfg = {"agent": {"vision_capability_first": True},
+               "auxiliary": {"vision": {"provider": "openrouter", "model": "vision"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None) as lookup:
+            assert decide_image_input_mode("custom", "unknown", cfg) == "text"
+        lookup.assert_called_once_with("custom", "unknown", cfg)
+
     def test_vision_capability_first_off_keeps_aux_defacto(self):
         """Default (key absent/false) is untouched #97339: aux wins for a
         catalog-vision model."""

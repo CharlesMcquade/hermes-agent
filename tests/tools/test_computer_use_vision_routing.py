@@ -137,6 +137,31 @@ class TestRouteDecision:
         ) is False
 
 
+    def test_capability_first_capture_respects_tool_result_gate(self):
+        from tools.computer_use import vision_routing
+
+        cfg = {"agent": {"vision_capability_first": True},
+               "auxiliary": {"vision": {"provider": "openrouter", "model": "vision"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True) as lookup, \
+             patch.object(vision_routing, "_provider_accepts_multimodal_tool_result", return_value=True):
+            assert vision_routing.should_route_capture_to_aux_vision("openrouter", "vision-main", cfg) is False
+        lookup.assert_called_once_with("openrouter", "vision-main", cfg)
+
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True), \
+             patch.object(vision_routing, "_provider_accepts_multimodal_tool_result", return_value=False):
+            assert vision_routing.should_route_capture_to_aux_vision("openrouter", "vision-main", cfg) is True
+
+    def test_capability_first_capture_unknown_and_text_only_keep_aux(self):
+        from tools.computer_use import vision_routing
+
+        cfg = {"agent": {"vision_capability_first": True},
+               "auxiliary": {"vision": {"provider": "openrouter", "model": "vision"}}}
+        for verdict in (None, False):
+            with patch("agent.image_routing._lookup_supports_vision", return_value=verdict), \
+                 patch.object(vision_routing, "_provider_accepts_multimodal_tool_result") as gate:
+                assert vision_routing.should_route_capture_to_aux_vision("openrouter", "unknown", cfg) is True
+            gate.assert_not_called()
+
     def test_unknown_provider_capabilities_fail_closed(self):
         """When tool-result lookup returns None, route to aux (safe default)."""
         from tools.computer_use import vision_routing
