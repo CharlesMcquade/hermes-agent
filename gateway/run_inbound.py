@@ -2007,7 +2007,7 @@ class GatewayInboundMixin:
         prefix = "\n\n".join(enriched_parts)
         return f"{prefix}\n\n{user_text}" if user_text else prefix
 
-    def _decide_video_enrichment_mode(self) -> str:
+    def _decide_video_enrichment_mode(self, user_config: Optional[dict] = None) -> str:
         """``agent.video_input_mode`` resolution for inbound video attachments.
 
         "off" → path note only; "text" → always auto-analyze via video_analyze; "auto" →
@@ -2015,15 +2015,14 @@ class GatewayInboundMixin:
         base_url set), so a default install never silently ships every video attachment to
         an auto-picked aux backend. The video_analyze tool remains available either way.
         """
-        agent_cfg = {}
-        aux_cfg = {}
-        try:
-            from hermes_cli.config import cfg_get, load_config
-            _cfg = load_config()
-            agent_cfg = cfg_get(_cfg, "agent", default={}) or {}
-            aux_cfg = cfg_get(_cfg, "auxiliary", "video", default={}) or {}
-        except Exception:
-            pass
+        # Presence matters: merged defaults include provider='auto', which is not an
+        # explicit video opt-in. Use the gateway's unmerged effective user layer.
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_cli.config import cfg_get
+
+        cfg = user_config if user_config is not None else load_user_config_effective()
+        agent_cfg = cfg_get(cfg, "agent", default={}) or {}
+        aux_cfg = cfg_get(cfg, "auxiliary", "video", default={}) or {}
         if not isinstance(agent_cfg, dict):
             agent_cfg = {}
         if not isinstance(aux_cfg, dict):
@@ -2031,7 +2030,10 @@ class GatewayInboundMixin:
         mode = str(agent_cfg.get("video_input_mode") or "auto").strip().lower()
         if mode in ("off", "text"):
             return mode
-        if any(str(aux_cfg.get(k) or "").strip() for k in ("provider", "model", "base_url")):
+        provider = str(aux_cfg.get("provider") or "").strip().lower()
+        if (provider and provider != "auto") or any(
+            str(aux_cfg.get(k) or "").strip() for k in ("model", "base_url")
+        ):
             return "text"
         return "off"
 
