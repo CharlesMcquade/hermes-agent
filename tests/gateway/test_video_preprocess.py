@@ -16,9 +16,22 @@ def _make_runner():
 
 
 def _patch_load_config(monkeypatch, cfg):
-    from hermes_cli import config as config_mod
+    from hermes_cli import config_effective as config_mod
 
-    monkeypatch.setattr(config_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(config_mod, "load_user_config_effective", lambda: cfg)
+
+
+def test_video_auto_mode_requires_explicit_route_in_effective_config(tmp_path, monkeypatch):
+    """Merged default provider=auto cannot opt in to sending inbound clips."""
+    from hermes_cli.config import load_config
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = GatewayRunner.__new__(GatewayRunner)
+    assert load_config()["auxiliary"]["video"]["provider"] == "auto"
+    assert runner._decide_video_enrichment_mode() == "off"
+    assert runner._decide_video_enrichment_mode({"auxiliary": {"video": {"provider": "auto"}}}) == "off"
+    assert runner._decide_video_enrichment_mode({"auxiliary": {"video": {"model": "video-model"}}}) == "text"
 
 
 @pytest.mark.asyncio
