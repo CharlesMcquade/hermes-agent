@@ -378,6 +378,10 @@ def resolve_billing_route(
     elif model.startswith("@") and ":" in model:
         declared_provider, model = model[1:].split(":", 1)
         if not provider_name:
+            # A routed custom endpoint includes its name as part of the provider.
+            if declared_provider.lower() == "custom" and ":" in model:
+                custom_name, model = model.split(":", 1)
+                declared_provider = f"custom:{custom_name}"
             provider_name = declared_provider.strip().lower()
     if not provider_name and "/" in model:
         inferred_provider, bare_model = model.split("/", 1)

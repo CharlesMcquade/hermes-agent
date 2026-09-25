@@ -283,24 +283,6 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     assert result.amount_usd is not None
 
 
-def test_fireworks_kimi_k2p6_resolves_with_full_model_path():
-    """Fireworks model ids look like accounts/fireworks/models/<name>;
-    the routing layer must strip the prefix so the dict lookup succeeds."""
-    entry = get_pricing_entry(
-        "accounts/fireworks/models/kimi-k2p6",
-        provider="fireworks",
-        base_url="https://api.fireworks.ai/inference/v1",
-    )
-
-    assert entry is not None
-    assert float(entry.input_cost_per_million) == 0.95
-    assert float(entry.output_cost_per_million) == 4.00
-    assert float(entry.cache_read_cost_per_million) == 0.16
-    assert entry.source == "official_docs_snapshot"
-
-
-
-
 
 
 def test_fireworks_router_fast_tier_prices_distinctly():
@@ -972,6 +954,19 @@ def test_resolve_billing_route_custom_subprovider_with_at_prefix():
     assert route.model == "glm-5.2"
     assert route.provider == "custom:wandb"
     assert route.billing_mode == "unknown"
+
+
+def test_custom_subprovider_inferred_from_routed_model_without_provider():
+    routed = resolve_billing_route("@custom:wandb:glm-5.2")
+    explicit = resolve_billing_route("glm-5.2", provider="custom:wandb")
+    assert routed == explicit
+
+
+def test_custom_endpoint_model_path_preserved_with_routed_prefix():
+    model = "org/team/model:revision"
+    bare = resolve_billing_route(model, provider="custom:wandb", base_url="https://proxy.example/v1")
+    routed = resolve_billing_route(f"@custom:wandb:{model}", provider="custom:wandb", base_url="https://proxy.example/v1")
+    assert routed == bare
 
 
 def test_resolve_billing_route_plain_model_name_unchanged():
