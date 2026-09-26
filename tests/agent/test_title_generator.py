@@ -94,11 +94,11 @@ class TestGenerateTitle:
             captured_kwargs.update(kwargs)
             resp = MagicMock()
             resp.choices = [MagicMock()]
-            resp.choices[0].message.content = '{"title": "Reasoning Off"}'
+            resp.choices[0].message.content = '{"tag":"LLM","name":"Reasoning off"}'
             return resp
 
         with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
-            assert generate_title("question") == "Reasoning Off"
+            assert generate_title("question") == "[LLM] Reasoning off"
 
 
         assert captured_kwargs.get("reasoning_config") == {"enabled": False}
@@ -111,15 +111,16 @@ class TestGenerateTitle:
             ('{"title":"Investigate and fix the login butt', None),
             ("```json", None),
             ('{"title"', None),
-            # Legit titles the structural check must keep: emphasized/quoted prose, non-Latin, numeric.
-            ("*Fix the login flow*", "*Fix the login flow*"),
-            ("修复登录按钮", "修复登录按钮"),
-            ("42", "42"),
-            ('```json\n{"title": "Fix login button"', "Fix login button"),
-            # Bracket/brace-prefixed prose and a literal fence inside a sentence are titles, not
-            # truncated JSON — a provider that ignores response_format still gets its title kept.
-            ("[WIP] Fix login flow", "[WIP] Fix login flow"),
-            ("Fix ``` rendering in chat", "Fix ``` rendering in chat"),
+            # Untagged prose, unknown tags and incomplete JSON fail closed; canonical
+            # structured or legacy tagged outputs still survive provider schema drift.
+            ("*Fix the login flow*", None),
+            ("修复登录按钮", None),
+            ("42", None),
+            ('```json\n{"title": "Fix login button"', None),
+            ("[WIP] Fix login flow", None),
+            ("Fix ``` rendering in chat", None),
+            ('{"tag":"Tech","name":"Fix login button"}', "[Tech] Fix login button"),
+            ('[Tech] Fix login button', '[Tech] Fix login button'),
         ],
     )
     def test_truncated_structured_output_never_becomes_the_title(self, content, expected):
@@ -142,8 +143,8 @@ class TestGenerateTitle:
             return resp
 
         cases = [
-            (response("", reasoning_content='{"title": "Check FFmpeg on this machine"}'), "Check FFmpeg on this machine"),
-            (response(None, reasoning='{"title": "Check FFmpeg on this machine"}'), "Check FFmpeg on this machine"),
+            (response("", reasoning_content='{"tag":"SysOps","name":"Check FFmpeg on machine"}'), "[SysOps] Check FFmpeg on machine"),
+            (response(None, reasoning='{"tag":"SysOps","name":"Check FFmpeg on machine"}'), "[SysOps] Check FFmpeg on machine"),
             (response("", reasoning_content="The user wants ffmpeg checked. A short title would be"), None),
         ]
         for resp, expected in cases:
@@ -244,26 +245,25 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("help me with something unrelated") is None
 
-    def test_friendly_greeting_example_is_allowed(self):
-        """'Friendly greeting' is prescribed output for bare greetings, not an
-        echo failure — it must pass the guard."""
+    def test_friendly_greeting_example_requires_canonical_tag(self):
+        """A greeting remains titleable, but model output must carry a category."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Friendly greeting"
+        mock_response.choices[0].message.content = '{"tag":"Fam","name":"Friendly greeting"}'
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
-            assert generate_title("hey there!") == "Friendly greeting"
+            assert generate_title("hey there!") == "[Fam] Friendly greeting"
 
     def test_topical_title_resembling_example_passes(self):
         """The guard is exact-match only: a genuinely topical title that merely
         resembles an example must not be rejected."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Fix login button on desktop"
+        mock_response.choices[0].message.content = '[Tech] Fix login button on desktop'
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("the login button is broken on desktop") == (
-                "Fix login button on desktop"
+                "[Tech] Fix login button on desktop"
             )
 
 
@@ -548,10 +548,10 @@ class TestMaybeAutoTitle:
         # (``hermes sessions retitle-skills``) still asks the model.
         resp = MagicMock()
         resp.choices = [MagicMock()]
-        resp.choices[0].message.content = '{"title": "Repair startup memory routing"}'
+        resp.choices[0].message.content = '{"tag":"Hermes","name":"Repair startup memory routing"}'
         with patch("hermes_cli.config.load_config_readonly", return_value=config), \
              patch("agent.title_generator.call_llm", return_value=resp):
-            assert generate_title("repair startup memory routing") == "Repair startup memory routing"
+            assert generate_title("repair startup memory routing") == "[Hermes] Repair startup memory routing"
 
     def test_enabled_false_still_disables_derived_and_model_titles(self, tmp_path):
         db = SessionDB(tmp_path / "state.db")
@@ -662,7 +662,8 @@ class TestMaybeAutoTitle:
         the next real request must still be allowed to name the session."""
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="sess-1", source="cli")
-        answers = iter(["Friendly greeting", "Debug scheduler failures"])
+        answers = iter(['{"tag":"Fam","name":"Friendly greeting"}',
+                        '{"tag":"SysOps","name":"Debug scheduler failures"}'])
 
         def stub_call_llm(**kwargs):
             resp = MagicMock()
@@ -682,7 +683,7 @@ class TestMaybeAutoTitle:
             maybe_auto_title(db, "sess-1", "help me debug the scheduler", history)
             wait_for_title_upgrades(10)
 
-        assert db.get_session_title("sess-1") == "Debug scheduler failures"
+        assert db.get_session_title("sess-1") == "[SysOps] Debug scheduler failures"
         assert db.get_session_title_source("sess-1") == "llm"
 
     def test_a_placeholder_title_stops_retrying_after_the_third_turn(self, tmp_path):

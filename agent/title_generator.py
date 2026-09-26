@@ -463,12 +463,19 @@ def _extract_title_text(content: str) -> str:
 
 
 def _title_from_reasoning(message: Any) -> str:
-    """The ``{"title": ...}`` payload when a reasoning model put it in ``reasoning_content`` / ``reasoning``
-    and left ``content`` empty (glm-5 / minimax under ``json_schema``, #82291). Structured extraction only:
-    chain-of-thought prose is never a title, so there is no prose fallback here."""
+    """Structured title payload in reasoning when content is empty (#82291).
+
+    Keep the full payload for the canonical validator; never accept reasoning prose.
+    """
     for field in ("reasoning_content", "reasoning"):
         text = getattr(message, field, None)
         if isinstance(text, str) and text.strip():
+            try:
+                parsed = json.loads(text.strip())
+                if isinstance(parsed, dict) and set(parsed) == {"tag", "name"}:
+                    return text.strip()
+            except ValueError:
+                pass
             title = _extract_json_title(text.strip())
             if title:
                 return title
@@ -504,6 +511,8 @@ def _notify_title(title_callback: Optional[TitleCallback], title: str, source: s
 def _is_provisional_greeting_title(title: str) -> bool:
     """The prompt's greeting placeholder (also "Friendly greeting in chat" and quoted/bracketed variants)."""
     normalized = re.sub(r"^[\W_]+|[\W_]+$", "", title.strip(), flags=re.UNICODE).lower()
+    if normalized.startswith("fam] "):
+        normalized = normalized[5:]
     return normalized in (_PROVISIONAL_GREETING_TITLE, _PROVISIONAL_GREETING_TITLE + " in chat")
 
 
