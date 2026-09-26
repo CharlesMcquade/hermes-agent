@@ -1748,6 +1748,9 @@ def test_retained_gateway_state_keeps_watchdog_degraded_like_startup_failed():
     assert status.retained_gateway_state({**watchdog, "desired_state": "stopped"}) == "stopped"
     assert status.retained_gateway_state({"gateway_state": "degraded", "exit_reason": None}) == "stopped"
     assert status.retained_gateway_state({"gateway_state": "startup_failed", "exit_reason": "x"}) == "startup_failed"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX password database is required")
 def test_runtime_status_refuses_live_home_when_env_is_cleared(tmp_path, monkeypatch):
     """The adapter's clear=True decorators must not enqueue a live status write."""
     import pwd
