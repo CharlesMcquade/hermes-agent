@@ -82,6 +82,24 @@ def sent_server_requests() -> set[str]:
     return names
 
 
+def test_cdp_relay_contract_matches_registry_rows_and_rejects_unknown_params():
+    from tui_gateway.cdp_relay import CdpRelayRegistry
+    from tui_gateway.contracts import METHODS, registry
+
+    transport = object()
+    relays = CdpRelayRegistry()
+    relay_id = relays.register(transport, peer="extension")
+    registered = METHODS["cdp.register"]
+    listed = METHODS["cdp.listRelays"]
+    registry.check_params_accepted(registered, {})
+    registry.check_params_accepted(listed, {})
+    assert registry.validate_params(registered, {"relay_id": relay_id})[1] is not None
+    assert registry.validate_params(listed, {"peer": "extension"})[1] is not None
+    registry.check_result(registered, {"relay_id": relay_id, "status": "registered"})
+    registry.check_result(listed, {"relays": relays.list_relays()})
+    assert listed.result.model_validate({"relays": relays.list_relays()}).model_dump()["relays"][0]["relay_id"] == relay_id
+
+
 def test_catalog_covers_the_whole_wire():
     """Every registered method, every emitted event and every sent server request has a contract,
     and no contract is orphaned (a deleted handler must take its contract with it)."""

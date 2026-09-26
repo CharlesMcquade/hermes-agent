@@ -458,6 +458,21 @@ export interface ProjectFacts {
   verifyCommands: string[]
   contextFiles: string[]
 }
+export type CdpRegisterParams = Record<string, never>
+export interface CdpRegisterResult {
+  relay_id: string
+  status: 'registered'
+}
+export type CdpListRelaysParams = Record<string, never>
+export interface CdpListRelaysResult {
+  relays: CdpRelayRow[]
+}
+export interface CdpRelayRow {
+  relay_id: string
+  peer: string
+  registered_at: number
+  last_activity: number
+}
 /** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin. */
 export interface ConfigGetParams {
   profile?: string | null
@@ -4708,6 +4723,10 @@ export interface RpcMethods {
   'browser.controller.result': { params: BrowserControllerResultParams; result: BrowserControllerResultResult }
   /** Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect. */
   'browser.manage': { params: BrowserManageParams; result: BrowserManageResult }
+  /** List currently connected CDP relay extensions. */
+  'cdp.listRelays': { params: CdpListRelaysParams; result: CdpListRelaysResult }
+  /** Register this WebSocket transport as a CDP relay extension. */
+  'cdp.register': { params: CdpRegisterParams; result: CdpRegisterResult }
   /** Lock one answer of a batch clarify request (editable until every question is locked). */
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Run ``hermes <argv>`` non-interactively and capture its output; ``blocked`` explains a refusal. */
@@ -5167,6 +5186,8 @@ export const RPC_METHODS = [
   'browser.controller.register',
   'browser.controller.result',
   'browser.manage',
+  'cdp.listRelays',
+  'cdp.register',
   'clarify.lock',
   'cli.exec',
   'client.capabilities',

@@ -331,6 +331,42 @@
       }
     },
     {
+      "name": "cdp.listRelays",
+      "summary": "List currently connected CDP relay extensions.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CdpListRelaysParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CdpListRelaysResult"
+        }
+      }
+    },
+    {
+      "name": "cdp.register",
+      "summary": "Register this WebSocket transport as a CDP relay extension.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CdpRegisterParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CdpRegisterResult"
+        }
+      }
+    },
+    {
       "name": "clarify.lock",
       "summary": "Lock one answer of a batch clarify request (editable until every question is locked).",
       "params": [
@@ -7261,6 +7297,84 @@
         ],
         "title": "CatalogTier",
         "type": "string"
+      },
+      "CdpListRelaysParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "CdpListRelaysParams",
+        "type": "object"
+      },
+      "CdpListRelaysResult": {
+        "additionalProperties": false,
+        "properties": {
+          "relays": {
+            "items": {
+              "$ref": "#/components/schemas/CdpRelayRow"
+            },
+            "title": "Relays",
+            "type": "array"
+          }
+        },
+        "required": [
+          "relays"
+        ],
+        "title": "CdpListRelaysResult",
+        "type": "object"
+      },
+      "CdpRegisterParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "CdpRegisterParams",
+        "type": "object"
+      },
+      "CdpRegisterResult": {
+        "additionalProperties": false,
+        "properties": {
+          "relay_id": {
+            "title": "Relay Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "registered",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "relay_id",
+          "status"
+        ],
+        "title": "CdpRegisterResult",
+        "type": "object"
+      },
+      "CdpRelayRow": {
+        "additionalProperties": false,
+        "properties": {
+          "relay_id": {
+            "title": "Relay Id",
+            "type": "string"
+          },
+          "peer": {
+            "title": "Peer",
+            "type": "string"
+          },
+          "registered_at": {
+            "title": "Registered At",
+            "type": "number"
+          },
+          "last_activity": {
+            "title": "Last Activity",
+            "type": "number"
+          }
+        },
+        "required": [
+          "relay_id",
+          "peer",
+          "registered_at",
+          "last_activity"
+        ],
+        "title": "CdpRelayRow",
+        "type": "object"
       },
       "ChangeSignalPayload": {
         "additionalProperties": true,

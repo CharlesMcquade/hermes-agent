@@ -48,11 +48,20 @@ def test_optional_wire_caps_omitted_required_and_internal_preserved():
     )
     assert "max_tokens" not in chat
     from providers import get_provider_profile
+    custom_profile = get_provider_profile("custom")
+    assert custom_profile is not None
     custom = ChatCompletionsTransport().build_kwargs(
-        "fixture", messages, provider_profile=get_provider_profile("custom"),
+        "fixture", messages, provider_profile=custom_profile,
         max_tokens_param_fn=lambda value: {"max_tokens": value},
     )
-    assert "max_tokens" not in custom
+    # The custom profile deliberately supplies a wire default for local servers
+    # such as Ollama, whose uncapped fallback truncates output at 128 tokens.
+    assert custom["max_tokens"] == custom_profile.get_max_tokens("fixture")
+    custom_bounded = ChatCompletionsTransport().build_kwargs(
+        "fixture", messages, provider_profile=custom_profile, max_tokens=43,
+        max_tokens_param_fn=lambda value: {"max_tokens": value},
+    )
+    assert custom_bounded["max_tokens"] == 43
     bedrock = BedrockTransport().build_kwargs("amazon.nova-pro-v1:0", messages)
     assert "maxTokens" not in bedrock.get("inferenceConfig", {})
     native = AnthropicTransport().build_kwargs("claude-sonnet-4-5", messages)
