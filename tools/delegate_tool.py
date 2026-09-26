@@ -422,6 +422,14 @@ def delegate_task(
         return tool_error("delegate_task requires a parent agent context.")
 
     normalized_action = (action or "").strip().lower()
+    if normalized_action == "inspect":
+        from tools.async_delegation import inspect_parent_delegations
+        owner = getattr(parent_agent, "session_id", None)
+        if not isinstance(owner, str) or not owner or not isinstance(delegation_ids, list) or not 0 < len(delegation_ids) <= 20 or any(
+            not isinstance(item, str) or not item for item in delegation_ids
+        ):
+            return tool_error("inspect requires the current parent session and 1-20 exact delegation_ids (strings).")
+        return json.dumps({"action": "inspect", "results": inspect_parent_delegations(owner, delegation_ids)})
     if normalized_action == "finalize":
         from tools.async_delegation import finalize_parent_delegations
         owner = getattr(parent_agent, "session_id", None)
@@ -435,7 +443,7 @@ def delegate_task(
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
-        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, stop, or finalize.")
+        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, stop, finalize, or inspect.")
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -666,12 +674,13 @@ DELEGATE_TASK_SCHEMA = {
                 "early (subagent_id; partial result still returns). "
                 "'finalize' = opt exact async delegation_ids into late-result triage when your TASK is complete; "
                 "call BEFORE your final answer, never merely because a turn ends. "
+                "'inspect' = read retained results for exact IDs owned by this parent, including quiet results. "
                 "Control actions return immediately; goal/tasks are ignored unless spawning.",
-                enum=["spawn", "list", "steer", "stop", "finalize"],
+                enum=["spawn", "list", "steer", "stop", "finalize", "inspect"],
             ),
             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
             "delegation_ids": {"type": "array", "items": {"type": "string"},
-                               "description": "Exact async completion-unit ids from background dispatch (action='finalize' only)."},
+                               "description": "Exact async completion-unit ids from background dispatch (action='finalize' or 'inspect')."},
             "message": _p(
                 "string",
                 "For action='steer': the course correction, appended to "
