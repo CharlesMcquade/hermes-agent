@@ -33,6 +33,9 @@ unknown or foreign IDs are reported as rejected. Completion results remain in th
 ledger. A consumer must actually assess an opted-in result and record `wake` or `suppress`
 before changing its delivery; without such a consumer, ordinary delivery remains the safe
 fallback. This action alone does not hide results or decide whether an update matters.
+The parent can later call `delegate_task(action="inspect", delegation_ids=["deleg_..."])`
+to read its own retained result, delivery state, and triage verdict—even after a
+restart or a quiet `suppress`. Unknown and other parents' IDs disclose no data.
 
 ## Background process lifetime
 
