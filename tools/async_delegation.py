@@ -475,6 +475,37 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
 
 
 # ── Explicit parent-owned late-result triage (opt-in only) ────────────────
+def inspect_parent_delegations(parent_session_id: str, delegation_ids: List[str]) -> List[Dict[str, Any]]:
+    """Read exact owned results from the durable ledger, including suppressed ones.
+
+    Do not infer ownership from the originating WebUI session or from an in-memory
+    child cache: the authoritative owner is the persisted parent_session_id.
+    Unknown and foreign ids are omitted without revealing whether they exist.
+    """
+    if not parent_session_id or not delegation_ids:
+        return []
+    results: List[Dict[str, Any]] = []
+    with _DB_LOCK, _transaction() as conn:
+        for delegation_id in dict.fromkeys(delegation_ids[:20]):
+            if not isinstance(delegation_id, str) or not delegation_id:
+                continue
+            row = conn.execute("""SELECT d.state, d.dispatched_at, d.completed_at,
+                    d.result_json, d.delivery_state, t.triage_state, t.decision
+                FROM async_delegations d LEFT JOIN async_delegation_triage t
+                  ON t.delegation_id=d.delegation_id AND t.parent_session_id=d.parent_session_id
+                WHERE d.delegation_id=? AND d.parent_session_id=?""",
+                (delegation_id, parent_session_id)).fetchone()
+            if row is None:
+                continue
+            results.append({
+                "delegation_id": delegation_id, "state": row[0],
+                "dispatched_at": row[1], "completed_at": row[2],
+                "result": json.loads(row[3]) if row[3] else None,
+                "delivery_state": row[4], "triage_state": row[5], "triage_decision": row[6],
+            })
+    return results
+
+
 def finalize_parent_delegations(parent_session_id: str, delegation_ids: List[str]) -> List[str]:
     """Opt in exact owned units after the parent declares its TASK final.
 
