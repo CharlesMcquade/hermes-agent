@@ -1643,15 +1643,19 @@ class TestDedupTTL(unittest.TestCase):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
-        adapter = FeishuAdapter(PlatformConfig())
         loop_thread = threading.get_ident()
         write_threads = []
 
         def fake_write(path, data, *args, **kwargs):
             write_threads.append(threading.get_ident())
 
-        with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=fake_write):
-            is_dup = asyncio.run(adapter._is_duplicate("om_new"))
+        # The environment wipe removes the per-test HERMES_HOME. Keep the
+        # adapter's dedup store in scratch space throughout the async write.
+        with tempfile.TemporaryDirectory() as scratch:
+            with patch("plugins.platforms.feishu.adapter.get_hermes_home", return_value=Path(scratch)):
+                adapter = FeishuAdapter(PlatformConfig())
+            with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=fake_write):
+                is_dup = asyncio.run(adapter._is_duplicate("om_new"))
 
         self.assertFalse(is_dup)
         self.assertTrue(write_threads)
