@@ -537,66 +537,40 @@ def generate_title(
     if not _auto_title_enabled():
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return None
-    try:
-        if runtime_validator is not None and not runtime_validator():
-            logger.debug("Title generation skipped: runtime validator returned False")
-            return None
-    except Exception:  # fail open: a broken validator must not disable titling
-        logger.debug("Title runtime validator raised; proceeding", exc_info=True)
     user_snippet = build_title_input(user_message, title_preview)
-
     if not user_snippet.strip():
         return None
     prompt = title_prompt(_title_language())
     messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}]
     try:
-        # Use the provider's default temperature instead of forcing 0.3.
-        # Some models (e.g. GPT-5.6) only accept their server-side default
-        # and reject explicit temperature values, causing the daemon title
-        # thread to fail with "Unsupported value: 'temperature'".
-        # See: #72351, #51083, #51157
-        response = call_llm(
-            task="title_generation",
-            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
-            # A title is a handful of tokens, but 64 was cut mid-JSON by fenced/prefixed replies and by
-            # reasoning models whose thinking survives the disable below (#83903, #82291). A model that
-            # honours the JSON contract stops after ~15 tokens regardless, so the ceiling only costs on
-            # replies that would have been garbage anyway. temperature=None: omitted from the wire so
-            # default-only reasoning models accept the first request (#72351).
-            max_tokens=TITLE_MAX_TOKENS, temperature=None, timeout=timeout, main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-            # The module contract above promises thinking-disabled operation,
-            # but nothing enforced it: with the aux default reasoning_effort
-            # "" (provider default), Gemini enables internal thinking and
-            # bills thought tokens against max_tokens=64 — the JSON payload
-            # never lands, and the prose fallback stores the opening fence
-            # ("```json") as the session title (#91927).
-            reasoning_config={"enabled": False},
-        )
-        message = response.choices[0].message
-        title = _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
-        # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
-        # ignored the task and answered the user's message instead ("I don't have context on X — that's not
-        # something I recognize..."). Truncating would store half an assistant blob as the session title,
-        # which is still an assistant blob — reject instead so the caller retries on the next exchange
-        # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
-        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
-            # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
-            logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
-            return None
-        # Example-echo guard: a title that parrots one of the prompt's own
-        # examples back verbatim says nothing about the session — reject it so
-        # the instant derived title (a slice of the user's actual words)
-        # survives instead. Exact match after wrapper-stripping, deliberately
-        # not fuzzy, so a genuinely topical title that merely resembles an
-        # example still passes. Wrappers are stripped for the comparison only
-        # ("(Fix login button on mobile)" is the same canned echo as the bare
-        # example). Port of QwenLM/qwen-code#9709.
-        if title is not None and _is_prompt_example_echo(title):
-            logger.debug("Rejecting prompt-example echo title: %r", title)
-            return None
-        return title
-
+        for attempt in range(MAX_TITLE_ATTEMPTS):
+            # Recheck for each repair: the runtime can change during the first request.
+            try:
+                if runtime_validator is not None and not runtime_validator():
+                    logger.debug("Title generation skipped: runtime validator returned False")
+                    return None
+            except Exception:  # preserve fail-open behavior for a broken validator
+                logger.debug("Title runtime validator raised; proceeding", exc_info=True)
+            response = call_llm(
+                task="title_generation", messages=messages,
+                max_tokens=TITLE_MAX_TOKENS, temperature=None, timeout=timeout, main_runtime=main_runtime,
+                extra_body={"response_format": TITLE_RESPONSE_FORMAT},
+                reasoning_config={"enabled": False},
+            )
+            message = response.choices[0].message
+            content = message.content or ""
+            if not content:
+                content = _title_from_reasoning(message)
+            title = normalize_title(content, user_snippet)
+            if title is not None:
+                return title
+            if attempt + 1 < MAX_TITLE_ATTEMPTS:
+                # A separate auxiliary conversation, not a mutation of the main chat.
+                messages = messages + [
+                    {"role": "assistant", "content": str(content)[:1000]},
+                    {"role": "user", "content": TITLE_REPAIR_INSTRUCTION},
+                ]
+        raise ValueError("Title model returned invalid output after bounded repair")
     except Exception as e:
         # Invalid output uses the same failure/fallback contract as a provider error.
         logger.warning("Title generation failed: %s", e)
