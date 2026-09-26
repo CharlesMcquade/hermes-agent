@@ -53,7 +53,7 @@ def actual_endpoint(monkeypatch):
                 self.wfile.write(body)
                 return
             content = (
-                '{"title":"Actual background routing"}'
+                '{"tag":"Hermes","name":"Actual background routing"}'
                 if "response_format" in payload
                 else "The task is complete."
             )
@@ -188,7 +188,7 @@ def test_actual_background_tasks_reach_chat_completions(
     assert requests == []
     assert (
         generate_title("Check the background routing", timeout=5, main_runtime=runtime)
-        == "Actual background routing"
+        == "[Hermes] Actual background routing"
     )
     compressor = ContextCompressor(
         model=runtime["model"],
