@@ -1748,3 +1748,17 @@ def test_retained_gateway_state_keeps_watchdog_degraded_like_startup_failed():
     assert status.retained_gateway_state({**watchdog, "desired_state": "stopped"}) == "stopped"
     assert status.retained_gateway_state({"gateway_state": "degraded", "exit_reason": None}) == "stopped"
     assert status.retained_gateway_state({"gateway_state": "startup_failed", "exit_reason": "x"}) == "startup_failed"
+def test_runtime_status_refuses_live_home_when_env_is_cleared(tmp_path, monkeypatch):
+    """The adapter's clear=True decorators must not enqueue a live status write."""
+    import pwd
+    from unittest.mock import Mock, patch
+    from gateway import status
+
+    live_status = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes" / "gateway_state.json"
+    writer = Mock()
+    monkeypatch.setattr(status, "_get_runtime_status_path", lambda: live_status)
+    monkeypatch.setattr(status, "_get_runtime_status_writer", lambda: writer)
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(RuntimeError, match="test isolation"):
+            status.publish_runtime_status(platform="feishu", platform_state="starting")
+    writer.submit.assert_not_called()

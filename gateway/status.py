@@ -310,6 +310,33 @@ def _get_runtime_status_path() -> Path:
     return _get_process_hermes_home() / _RUNTIME_STATUS_FILE
 
 
+def _guard_runtime_status_test_write(path: Path) -> None:
+    """Never let a test's temporarily cleared environment target live gateway state."""
+    import sys
+
+    if "pytest" not in sys.modules:
+        return
+    if os.name == "posix":
+        import pwd
+        live_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    else:
+        # An absent Windows user profile cannot authorize a status write.
+        profile = os.environ.get("USERPROFILE")
+        if not profile:
+            raise RuntimeError("gateway status test isolation: user profile unknown")
+        live_home = Path(profile)
+    try:
+        live_root = (live_home / ".hermes").resolve(strict=False)
+        target = path.resolve(strict=False)
+    except OSError as exc:
+        raise RuntimeError("gateway status test isolation: path unresolvable") from exc
+    if target == live_root / _RUNTIME_STATUS_FILE or (
+        target.parent.parent == live_root / "profiles"
+        and target.name == _RUNTIME_STATUS_FILE
+    ):
+        raise RuntimeError("gateway status test isolation: refusing live gateway state")
+
+
 def _get_lock_dir() -> Path:
     """Cross-profile rendezvous dir for machine-local locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides.
 
@@ -1198,6 +1225,7 @@ def _prepare_runtime_status_update(
     """Merge one update into the process-wide canonical status snapshot."""
     global _runtime_status_state_path, _runtime_status_state
     path = _get_runtime_status_path()
+    _guard_runtime_status_test_write(path)
     with _runtime_status_state_lock:
         if reload_existing or _runtime_status_state_path != path or _runtime_status_state is None:
             _runtime_status_state_path = path
