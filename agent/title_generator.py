@@ -5,6 +5,7 @@ is called, cannot fail), then an **upgrade** from a small-model call with at mos
 (cheap tier, thinking off, JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
 and neither replaces a name the user typed."""
 
+import json
 import logging
 import os
 import re
