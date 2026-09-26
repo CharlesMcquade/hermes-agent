@@ -1,6 +1,8 @@
 """Durable opt-in triage uses the real SQLite ledger in isolated HERMES_HOME."""
 import queue
 import time
+import json
+from types import SimpleNamespace
 
 from tools import async_delegation as ledger
 
@@ -92,6 +94,30 @@ def test_prune_removes_orphans_and_acknowledged_only(monkeypatch, tmp_path):
         assert conn.execute("SELECT delegation_id FROM async_delegation_triage").fetchall() == [("pending",)]
     assert ledger.get_durable_delegation("pending") is not None
     assert ledger.get_durable_delegation("delivered") is None
+
+
+def test_owner_inspects_quiet_result_after_ledger_restart(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _finished("mine", parent="parent-A")
+    _finished("other", parent="parent-B")
+    assert ledger.finalize_parent_delegations("parent-A", ["mine"]) == ["mine"]
+    token = ledger.admit_late_result("parent-A", "mine")
+    assert token is not None
+    assert ledger.settle_late_result("parent-A", "mine", token, "suppress")
+    # Clear the live registry. Inspection uses only the on-disk DB and exact owner.
+    monkeypatch.setattr(ledger, "_records", {})
+    from tools.delegate_tool import delegate_task
+    parent = SimpleNamespace(session_id="parent-A")
+    response = json.loads(delegate_task(action="inspect", delegation_ids=["mine", "other", "missing"], parent_agent=parent))
+    assert response["action"] == "inspect"
+    assert len(response["results"]) == 1
+    mine = response["results"][0]
+    assert mine["delegation_id"] == "mine"
+    assert mine["delivery_state"] == "suppressed"
+    assert mine["triage_decision"] == "suppress"
+    assert mine["result"]["summary"] == "important correction"
+    assert json.loads(delegate_task(action="inspect", delegation_ids=["mine"],
+                                     parent_agent=SimpleNamespace(session_id="parent-B")))["results"] == []
 
 
 def test_normal_claim_precedes_triage_and_blocks_suppression(monkeypatch, tmp_path):

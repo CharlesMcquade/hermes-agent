@@ -78,6 +78,37 @@ def test_finalize_exact_ids_from_parent_agent_not_caller(monkeypatch, tmp_path):
     assert "error" in delegate_task(action="finalize", delegation_ids="mine", parent_agent=parent)
 
 
+def test_inspect_exact_ids_is_owner_scoped_and_registry_callable(monkeypatch, tmp_path):
+    from tools import async_delegation as ledger
+    from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+    from agent.tool_guardrails import _subagent_spawn_count
+    from tools.registry import registry
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for ident, owner in (("mine", "owner"), ("foreign", "other")):
+        with ledger._DB_LOCK, ledger._transaction() as conn:
+            conn.execute("""INSERT INTO async_delegations
+                (delegation_id, origin_session, parent_session_id, state, result_json,
+                 delivery_state, dispatched_at, updated_at)
+                VALUES (?, 'route', ?, 'completed', ?, 'suppressed', 1, 1)""",
+                         (ident, owner, json.dumps({"summary": ident})))
+    class InspectParent(_StubParent):
+        session_id = "owner"
+    parent = InspectParent()
+    raw_result = registry.dispatch(
+        "delegate_task", {"action": "inspect", "delegation_ids": ["mine", "foreign", "missing"]},
+        parent_agent=parent,
+    )
+    assert isinstance(raw_result, str)
+    result = json.loads(raw_result)
+    assert [entry["delegation_id"] for entry in result["results"]] == ["mine"]
+    assert result["results"][0]["result"] == {"summary": "mine"}
+    assert result["results"][0]["delivery_state"] == "suppressed"
+    assert "foreign" not in json.dumps(result) and "missing" not in json.dumps(result)
+    assert _subagent_spawn_count({"action": "inspect", "delegation_ids": ["mine"]}) == 0
+    assert "inspect" in DELEGATE_TASK_SCHEMA["parameters"]["properties"]["action"]["enum"]
+    assert "error" in delegate_task(action="inspect", delegation_ids=["mine"], parent_agent=_StubParent())
+
+
 def _register(sid: str, child, **extra) -> None:
     record = {
         "subagent_id": sid,
