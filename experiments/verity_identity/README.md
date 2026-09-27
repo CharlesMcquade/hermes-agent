@@ -1,7 +1,7 @@
 # Verity native identity: isolated experiments
 
 **Not a production launcher. Do not merge or deploy as one.** This branch preserves
-three experiments and their repeatable probes. None modifies Hermes startup,
+four experiments and their repeatable probes. None modifies Hermes startup,
 release selection, application credentials, or configuration. Phase 2 explicitly
 creates an operator-approved lab identity in the login Keychain.
 
@@ -15,6 +15,9 @@ Location and Local Network enforcement remain unproven.
 See [Phase 3: expanded permissions](EXPANDED-PERMISSIONS.md) for precise scope,
 limitations, and the fixed compiler-target/Settings-registration defect.
 [Phase 2](SIGNED-REBUILD.md) preserves the prior narrower result.
+[Phase 4](CONTROLLER-INTEGRATION.md) adds passing synthetic native-parent controller,
+watchdog, rollback and crash-cleanup gates; independent host review is pending.
+It does not establish real Hermes or permission behavior under that new host.
 The sections below describe phase 1 only.
 
 ## Question

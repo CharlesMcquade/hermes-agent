@@ -130,6 +130,18 @@ class Host:
         result = self.run('lsof', '-nP', f'-iTCP:{port}', '-sTCP:LISTEN', '-t')
         return {int(p) for p in result.stdout.split()}
 
+    def process_identity(self, pid):
+        from native_identity import process_identity
+        return process_identity(pid)
+
+    def verify_native_signature(self, pid, requirement):
+        from native_identity import verify_signature
+        return verify_signature(pid, requirement)
+
+    def verify_native_bundle(self, bundle, requirement):
+        return self.run('/usr/bin/codesign', '--verify', '--strict', '--deep',
+                        '-R', '=' + requirement, bundle, check=False).returncode == 0
+
     def descendant(self, child, parent):
         seen = set()
         while child > 1 and child not in seen:
@@ -166,6 +178,9 @@ class Controller:
         require(set(data['services']) == set(SERVICES), 'Expected agent and webui')
         require(set(data['labels']) == set(SERVICES), 'Expected explicit labels')
         require(len(set(data['labels'].values())) == 2, 'Service labels must differ')
+        if 'native_host' in data:
+            from native_identity import contract
+            contract(data)
         return data
 
     def target(self, manifest, service):
@@ -178,16 +193,25 @@ class Controller:
                     Path.home() / 'Library/LaunchAgents' / (manifest['labels'][service] + '.plist'))
 
     def definitions(self, manifest, allow_cwd_change=False, saved=None):
+        if 'native_host' in manifest:
+            from native_identity import validate_bundle
+            validate_bundle(manifest, self.base, self.host)
         result = {}
         for service in SERVICES:
             path = self.plist_path(manifest, service)
             data = plistlib.loads(saved[service] if saved is not None else path.read_bytes())
             argv = data.get('ProgramArguments', [])
             require(data.get('Label') == manifest['labels'][service], 'Plist label mismatch')
-            require(isinstance(argv, list) and len(argv) == 3 and
-                    all(isinstance(v, str) and v and '\x00' not in v for v in argv) and
-                    Path(argv[0]).is_absolute() and Path(argv[1]).is_absolute() and
-                    argv[1:] == [str(manifest.get('launcher_path', self.base / 'production_launcher.py')), service], 'Unexpected launcher argv')
+            if 'native_host' in manifest:
+                native = manifest['native_host']
+                require(argv == [native['executable'], service], 'Unexpected native host argv')
+                require(data.get('AssociatedBundleIdentifiers') == [native['bundle_id']],
+                        'Native associated bundle mismatch')
+            else:
+                require(isinstance(argv, list) and len(argv) == 3 and
+                        all(isinstance(v, str) and v and '\x00' not in v for v in argv) and
+                        Path(argv[0]).is_absolute() and Path(argv[1]).is_absolute() and
+                        argv[1:] == [str(manifest.get('launcher_path', self.base / 'production_launcher.py')), service], 'Unexpected launcher argv')
             require(Path(argv[0]).is_file() and os.access(argv[0], os.X_OK), 'Launcher Python is not executable')
             require(data.get('Program', argv[0]) == argv[0], 'Conflicting launchd Program')
             require(data.get('RunAtLoad') is True and data.get('KeepAlive') is True, 'Invalid lifecycle policy')
@@ -239,7 +263,25 @@ class Controller:
         return jobs
 
     def preflight(self, manifest):
+        if 'native_host' in manifest:
+            from native_identity import validate_bundle
+            validate_bundle(manifest, self.base, self.host)
         self.preflight_fn(manifest)
+
+    def listener_ownership(self, manifest, jobs, since=None):
+        listeners = self.host.listener(manifest['health_url'])
+        pid = jobs['webui']['pid']
+        if 'native_host' not in manifest:
+            require(listeners == {pid}, 'WebUI listener is not launchd PID')
+            return None
+        from native_identity import pair, unchanged
+        require(len(listeners) == 1, 'Ambiguous native WebUI listener')
+        identity = pair(manifest, 'webui', pid, next(iter(listeners)),
+                        self.host, self.clock(), since)
+        unchanged({'webui': identity}, self.host)
+        require(self.host.job(self.target(manifest, 'webui')) == jobs['webui'],
+                'Native launchd job changed during inspection')
+        return identity
 
     def health(self, manifest, deep=False):
         url = manifest['health_url']
@@ -255,7 +297,7 @@ class Controller:
         require(all(type(p) is int and p > 1 for p in pids.values()), 'Missing launchd PID')
         if previous is not None:
             require(all(pids[s] != previous[s].get('pid') for s in SERVICES), 'Launchd PID is not fresh')
-        require(self.host.listener(manifest['health_url']) == {pids['webui']}, 'WebUI listener is not launchd PID')
+        web_identity = self.listener_ownership(manifest, jobs, since)
         health = self.health(manifest)
         started = epoch(health['server_started_at'])
         require(started <= self.clock() + 5, 'Future WebUI start timestamp')
@@ -272,7 +314,14 @@ class Controller:
         state = json.loads((Path(manifest['state_dir']) / 'gateway_state.json').read_text())
         child = state.get('pid')
         require(type(child) is int and child > 1, 'Missing actual gateway child PID')
-        require(self.host.descendant(child, pids['agent']), 'Gateway child is not owned by launchd job')
+        process_identity = None
+        if 'native_host' in manifest:
+            from native_identity import pair
+            process_identity = {'webui': web_identity,
+                                'agent': pair(manifest, 'agent', pids['agent'], child,
+                                              self.host, self.clock(), since)}
+        else:
+            require(self.host.descendant(child, pids['agent']), 'Gateway child is not owned by launchd job')
         require(state.get('gateway_state') == 'running', 'Gateway is not running')
         require(state.get('code_sha') == manifest['services']['agent']['commit'], 'Gateway code SHA mismatch')
         updated = epoch(state['updated_at'])
@@ -281,8 +330,17 @@ class Controller:
         # proves liveness; only a post-restart check requires a fresh state write.
         if since is not None:
             require(updated >= since - 1, 'Gateway state predates restart')
-        return {'pids': pids, 'gateway_child_pid': child, 'health': 'ok', 'deep_health': 'ok',
-                'served_files_verified': list(ASSETS), 'messaging_delivery_tested': False}
+        if process_identity is not None:
+            from native_identity import unchanged
+            unchanged(process_identity, self.host)
+            require(self.loaded(manifest, definitions) == jobs, 'Native launchd PID changed during inspection')
+            require(self.host.listener(manifest['health_url']) == {web_identity['child']['pid']},
+                    'Native listener changed during inspection')
+        proof = {'pids': pids, 'gateway_child_pid': child, 'health': 'ok', 'deep_health': 'ok',
+                 'served_files_verified': list(ASSETS), 'messaging_delivery_tested': False}
+        if process_identity is not None:
+            proof['process_identity'] = process_identity
+        return proof
 
     def wait_ready(self, manifest, definitions, since, previous):
         deadline = self.monotonic() + self.timeout
@@ -292,7 +350,7 @@ class Controller:
         while self.monotonic() < deadline:
             try:
                 proof = self.snapshot(manifest, definitions, since, previous)
-                identity = (proof['pids'], proof['gateway_child_pid'])
+                identity = (proof['pids'], proof['gateway_child_pid'], proof.get('process_identity'))
                 if identity != stable:
                     stable, stable_at = identity, self.monotonic()
                 elif self.monotonic() - stable_at >= self.stable_seconds:

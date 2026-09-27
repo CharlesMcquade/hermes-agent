@@ -45,8 +45,7 @@ def _tick(c, path, grace, cooldown, max_backoff):
     try:
         if not pid:
             raise ControlError('No WebUI PID')
-        if c.host.listener(manifest['health_url']) != {pid}:
-            raise ControlError('WebUI listener identity mismatch')
+        c.listener_ownership(manifest, jobs)
         c.health(manifest)
     except Exception as exc:
         state['failures'] = min(2, state.get('failures', 0) + 1)
