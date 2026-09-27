@@ -5,7 +5,9 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import signal
 import subprocess
+import sys
 import time
 import uuid
 
@@ -21,6 +23,21 @@ def read_events(path):
             except json.JSONDecodeError:
                 continue  # A writer may be halfway through its next line.
     return events
+
+
+def job_state(target):
+    text = subprocess.check_output(["launchctl", "print", target], text=True)
+    # Exact job-level fields; ignore nested launchd resource-group state.
+    return dict(
+        line.strip().split(" = ", 1)
+        for line in text.splitlines()
+        if line.startswith((
+            "\tstate = ",
+            "\tpid = ",
+            "\tprogram = ",
+            "\tlast exit code = ",
+        ))
+    )
 
 
 def run(
@@ -96,6 +113,16 @@ def run(
         "run_dir": str(run_dir),
     }
     signal_sent = False
+    interrupted = 0
+
+    def on_signal(number, _frame):
+        nonlocal interrupted
+        # Defer until bootstrap returns so an interruption cannot bypass cleanup
+        # between successful registration and recording ownership.
+        interrupted = number
+
+    handlers = {s: signal.signal(s, on_signal) for s in (signal.SIGTERM, signal.SIGINT)}
+    state = {}
     try:
         subprocess.run(
             ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)],
@@ -104,20 +131,15 @@ def run(
         )
         loaded = True
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not interrupted:
             events = read_events(stdout)
             if (
                 terminate
                 and not signal_sent
                 and any(e["event"] == "python-start" for e in events)
             ):
-                state = subprocess.check_output(
-                    ["launchctl", "print", target], text=True
-                )
                 receipt["launchd_state"] = [
-                    s.strip()
-                    for s in state.splitlines()
-                    if s.strip().startswith(("pid =", "program =", "state ="))
+                    f"{k} = {v}" for k, v in job_state(target).items()
                 ]
                 subprocess.run(
                     ["launchctl", "kill", "SIGTERM", target],
@@ -125,44 +147,56 @@ def run(
                     capture_output=True,
                 )
                 signal_sent = True
-            finished = (
-                ("probe-complete",)
-                if bare
-                else ("child-exit", "spawn-error", "deadline")
-            )
-            if any(e["event"] in finished for e in events):
+            state = job_state(target)
+            # A child-exit log is emitted before the host exits. Wait for launchd
+            # to observe the actual exit, not merely the log line.
+            if state.get("state") == "not running" and "pid" not in state:
                 break
             time.sleep(0.2)
         else:
-            receipt["timed_out"] = True
-        receipt["events"] = read_events(stdout)
-        state = subprocess.check_output(["launchctl", "print", target], text=True)
-        receipt["final_launchd_state"] = [
-            s.strip()
-            for s in state.splitlines()
-            if s.strip().startswith((
-                "pid =",
-                "program =",
-                "state =",
-                "last exit code =",
-            ))
-        ]
-    finally:
-        if loaded:
-            subprocess.run(
-                ["launchctl", "bootout", target], check=True, capture_output=True
+            if not interrupted:
+                receipt["timed_out"] = True
+        receipt["final_launchd_state"] = [f"{k} = {v}" for k, v in state.items()]
+        events = read_events(stdout)
+        code = state.get("last exit code", "")
+        receipt["exit_code"] = int(code) if code.isdecimal() else 70
+        if receipt.get("timed_out"):
+            receipt["exit_code"] = 124
+        elif receipt["exit_code"] == 0:
+            # A stopped host alone is not proof that the intended probe ran.
+            completed = any(e["event"] == "probe-complete" for e in events)
+            normal_child = bare or any(
+                e["event"] == "child-exit" and e["status"] == 0 for e in events
             )
-        receipt["unloaded"] = (
-            subprocess.run(
-                ["launchctl", "print", target], capture_output=True
-            ).returncode
-            != 0
-        )
-        receipt["events"] = read_events(stdout)
-        (run_dir / "receipt.json").write_text(json.dumps(receipt, indent=2))
+            if not (completed and normal_child):
+                receipt["exit_code"] = 70
+                receipt["error"] = "Process exited without a complete probe"
+    finally:
+        try:
+            if loaded:
+                result = subprocess.run(
+                    ["launchctl", "bootout", target], capture_output=True
+                )
+                receipt["bootout_exit_code"] = result.returncode
+            receipt["unloaded"] = (
+                subprocess.run(
+                    ["launchctl", "print", target], capture_output=True
+                ).returncode
+                != 0
+            )
+            if interrupted:
+                receipt["interrupted_signal"] = interrupted
+                receipt["exit_code"] = 128 + interrupted
+            if not receipt["unloaded"]:
+                receipt["exit_code"] = 70
+                receipt["error"] = "Prototype job not unloaded"
+            receipt["events"] = read_events(stdout)
+            (run_dir / "receipt.json").write_text(json.dumps(receipt, indent=2))
+        finally:
+            for number, handler in handlers.items():
+                signal.signal(number, handler)
     print(json.dumps(receipt, indent=2))
     assert receipt["unloaded"], "Prototype job not unloaded"
-    assert not receipt.get("timed_out"), "No completion before deadline"
     return receipt
 
 
@@ -180,7 +214,7 @@ if __name__ == "__main__":
     p.add_argument("--without-association", action="store_true")
     p.add_argument("--bare", action="store_true")
     a = p.parse_args()
-    run(
+    receipt = run(
         a.root,
         a.slot,
         a.mode,
@@ -189,3 +223,4 @@ if __name__ == "__main__":
         not a.without_association,
         a.bare,
     )
+    sys.exit(receipt["exit_code"])

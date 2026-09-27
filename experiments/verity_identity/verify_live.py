@@ -47,6 +47,15 @@ def verify(root):
         with contextlib.redirect_stdout(io.StringIO()):
             receipt = run(root, **options)
         receipts[name] = receipt
+        expected_exit = (
+            23
+            if options.get("mode") == "fail"
+            else 143
+            if options.get("terminate")
+            else 0
+        )
+        assert receipt["exit_code"] == expected_exit
+        assert "state = not running" in receipt["final_launchd_state"]
         py = event(receipt, "python-start")
         if options.get("bare"):
             assert py["ppid"] == 1

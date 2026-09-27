@@ -34,7 +34,9 @@ which individual launchd plist property makes app attribution work.
 
 Camera verification is **authorization-status only**; no camera session was
 opened and no images/audio were captured. Finder verification used a real,
-read-only window-count Apple Event, with stdout/stderr discarded. A protected
+read-only window-count Apple Event from Python's `osascript` child, with
+stdout/stderr discarded. This establishes the descendant-chain operation, not a
+direct Python implementation of the Apple Event. A protected
 Messages file open was denied, as expected for this ungranted prototype; its
 contents were not exposed. Screen/AX/input checks were false and were not granted.
 
@@ -42,6 +44,31 @@ The production WebUI/gateway PID baseline, production launcher/manifest/plist
 hashes, and health were unchanged after the experiment. All disposable launchd
 jobs were removed after their runs. The inert prototype bundle and local receipts
 were retained for follow-up; it is not installed as a login/startup job.
+
+## Review follow-up
+
+The independent review examined an intermediate working snapshot. Its missing
+bare-Python control finding had already been resolved and exercised in the
+committed version. Two current runner issues were reproduced/addressed:
+
+- Wait for launchd to report the stopped host and its final exit status, rather
+  than treating a child-exit log line as process exit. The CLI now returns the
+  observed failure code; a failed child spawn cannot look successful.
+- Handle runner SIGTERM/SIGINT by requesting cleanup, rather than letting Python
+  terminate before `finally`. The signal is deferred across bootstrap so a
+  successfully registered job is not lost between registration and cleanup.
+
+Three additional live regression checks pass: CLI failure propagation (23),
+missing copied interpreter/spawn failure (70), and SIGTERM to the runner while
+its host/child are alive (143, job unloaded and both processes gone). The first
+regression failed on the old runner with `('fail', 0, 23)`. All seven original
+checks then passed again. The signed native app/probe were not rebuilt or changed.
+
+A runner exit of zero means the check completed, **not** that every reported
+permission is granted. The live verification harness checks the required values.
+SIGKILL cannot execute cleanup; a runner killed that way can leave the inert job
+registered. The host lifetime is bounded, but automatic cleanup after SIGKILL is
+not a tested guarantee. Do not run concurrent sessions against this fixed lab ID.
 
 ## What this does NOT prove
 
@@ -74,6 +101,8 @@ Production migration remains a separate, explicitly approved operation.
   `~/Library/LaunchAgents`; no KeepAlive/restart loop.
 - `verify_live.py`: opt-in, prompt-free integration checks after operator consent.
   Not suitable for a normal unattended CI run. Fails rather than faking approvals.
+- `verify_runner_live.py`: opt-in runner failure and interruption regressions; no
+  permission requests. Temporarily parks/restores only the lab Python A copy.
 
 ## Reproduce on a disposable macOS test identity
 
@@ -95,6 +124,7 @@ python3 experiments/verity_identity/run_probe.py --root "$LAB" \
 python3 experiments/verity_identity/run_probe.py --root "$LAB" \
   --mode request-finder --timeout 230
 python3 experiments/verity_identity/verify_live.py --root "$LAB"
+python3 experiments/verity_identity/verify_runner_live.py --root "$LAB"
 ruff check experiments/verity_identity
 ```
 
