@@ -1,15 +1,25 @@
-# Verity native identity: isolated attribution spike
+# Verity native identity: isolated experiments
 
 **Not a production launcher. Do not merge or deploy as one.** This branch preserves
-an experiment and its repeatable probes. It does not modify Hermes startup,
-release selection, credentials, or configuration.
+two experiments and their repeatable probes. Neither modifies Hermes startup,
+release selection, application credentials, or configuration. Phase 2 explicitly
+creates an operator-approved lab identity in the login Keychain.
+
+## Current outcome
+
+**Go to broader permission and controller testing; no production cutover yet.**
+The signed follow-up passed all seven continuity checks, including a changed
+native binary, Python 3.11 → 3.14, a bare-Python negative control, and rollback.
+All ten phase-1 attribution/runner checks also passed again.
+See [Phase 2: signed rebuild continuity](SIGNED-REBUILD.md) for scope, evidence,
+reproduction, and remaining gates. The sections below describe phase 1 only.
 
 ## Question
 
 Does a native app, kept alive above changing Python executables and launched by
 user launchd, provide a usable macOS permission identity for those children?
 
-## Result on macOS 27.0
+## Phase 1 result on macOS 27.0
 
 **Go to persistent-signing prototype; no-go for production deployment yet.**
 
@@ -70,7 +80,7 @@ SIGKILL cannot execute cleanup; a runner killed that way can leave the inert job
 registered. The host lifetime is bounded, but automatic cleanup after SIGKILL is
 not a tested guarantee. Do not run concurrent sessions against this fixed lab ID.
 
-## What this does NOT prove
+## Phase 1 limitations
 
 - The app is **ad-hoc signed**. Its designated requirement is tied to its code
   hash. It is not a persistent signing identity; host-rebuild continuity was not
@@ -84,9 +94,9 @@ not a tested guarantee. Do not run concurrent sessions against this fixed lab ID
 - Input metadata and external interpreter/bridge files are controlled experiment
   fixtures, not a hardened production trust boundary.
 
-The next isolated phase needs a persistent signing identity, a rebuilt-host
-permission-continuity test, minor-version swap, and expanded permission coverage.
-Production migration remains a separate, explicitly approved operation.
+Phase 2 subsequently tested persistent signing, a rebuilt host, and the Python
+minor-version swap; see [SIGNED-REBUILD.md](SIGNED-REBUILD.md). Expanded permission
+coverage and production migration remain separate, explicitly approved work.
 
 ## Files
 

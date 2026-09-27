@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 
-from build import ID, NAME
+from build import app_identity
 
 
 def read_events(path):
@@ -50,10 +50,11 @@ def run(
     bare=False,
 ):
     root = root.resolve()
-    app = root / f"{NAME}.app"
+    identity, name = app_identity(root)
+    app = root / f"{name}.app"
     binary = app / "Contents/MacOS/VerityPrototype"
     assert binary.is_file(), "Build first"
-    label = ID + ".probe"
+    label = identity + ".probe"
     target = f"gui/{os.getuid()}/{label}"
     assert (
         subprocess.run(["launchctl", "print", target], capture_output=True).returncode
@@ -85,6 +86,7 @@ def run(
             "Bare control must never request permission"
         )
         settings = json.loads((app / "Contents/Resources/settings.json").read_text())
+        settings = settings.get("runtimes", {}).get(slot, settings)
         job["ProgramArguments"] = [
             str(root / "runtimes" / slot / "python"),
             "-S",
@@ -99,7 +101,7 @@ def run(
             PYTHONHOME=settings["pythonHome"], PYTHONDONTWRITEBYTECODE="1"
         )
     elif associated:
-        job["AssociatedBundleIdentifiers"] = [ID]
+        job["AssociatedBundleIdentifiers"] = [identity]
     plist = run_dir / "job.plist"
     plist.write_bytes(plistlib.dumps(job))
     register = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"

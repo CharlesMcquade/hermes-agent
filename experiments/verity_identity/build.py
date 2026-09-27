@@ -10,6 +10,18 @@ import subprocess
 
 ID = "com.charles.verity.prototype"
 NAME = "Verity Prototype"
+SIGNED_ID = "com.charles.verity.signinglab"
+SIGNED_NAME = "Verity Signing Lab"
+
+
+def app_identity(root):
+    marker = root / "signed-lab.json"
+    if marker.exists():
+        data = json.loads(marker.read_text())
+        if data != {"id": SIGNED_ID, "name": SIGNED_NAME}:
+            raise ValueError("Not a recognized signing lab")
+        return SIGNED_ID, SIGNED_NAME
+    return ID, NAME
 
 
 def build(root, source_python, bridge):

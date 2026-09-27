@@ -3,10 +3,15 @@ import AppKit
 import AVFoundation
 import ApplicationServices
 
+struct RuntimeSettings: Decodable {
+    let pythonHome: String
+    let bridge: String
+}
 struct Settings: Decodable {
     let root: String
     let pythonHome: String
     let bridge: String
+    let runtimes: [String: RuntimeSettings]?
 }
 func emit(_ event: String, _ values: [String: Any] = [:]) {
     var record = values
@@ -22,6 +27,12 @@ let config = try JSONDecoder().decode(Settings.self, from: Data(contentsOf: reso
 let root = URL(fileURLWithPath: config.root).standardizedFileURL
 let python = root.appendingPathComponent("runtimes/\(args[0])/python")
 let mode = args[1]
+let selectedRuntime = config.runtimes?[args[0]] ?? RuntimeSettings(pythonHome: config.pythonHome, bridge: config.bridge)
+#if REVISION_TWO
+let buildGeneration = "two"
+#else
+let buildGeneration = "one"
+#endif
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let child = Process()
@@ -30,9 +41,9 @@ var terminating = false
 
 func startChild() {
     child.executableURL = python
-    child.arguments = ["-S", "-s", "-P", "-u", resources.appendingPathComponent("probe.py").path, mode, config.bridge]
+    child.arguments = ["-S", "-s", "-P", "-u", resources.appendingPathComponent("probe.py").path, mode, selectedRuntime.bridge]
     child.currentDirectoryURL = root
-    child.environment = ["HOME": NSHomeDirectory(), "PATH": "/usr/bin:/bin", "PYTHONHOME": config.pythonHome,
+    child.environment = ["HOME": NSHomeDirectory(), "PATH": "/usr/bin:/bin", "PYTHONHOME": selectedRuntime.pythonHome,
                          "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": root.appendingPathComponent("tmp").path]
     child.standardInput = FileHandle.nullDevice
     child.standardOutput = FileHandle.standardOutput
@@ -65,7 +76,7 @@ for number in [SIGTERM, SIGINT] {
     source.resume(); signals.append(source)
 }
 emit("host-start", ["pid": getpid(), "ppid": getppid(), "bundle": Bundle.main.bundleIdentifier ?? "missing",
-                    "executable": Bundle.main.executablePath ?? "missing", "mode": mode,
+                    "executable": Bundle.main.executablePath ?? "missing", "mode": mode, "build_generation": buildGeneration,
                     "camera": AVCaptureDevice.authorizationStatus(for: .video).rawValue,
                     "accessibility": AXIsProcessTrusted(), "screen": CGPreflightScreenCaptureAccess()])
 DispatchQueue.main.async {
