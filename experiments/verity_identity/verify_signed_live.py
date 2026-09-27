@@ -25,7 +25,7 @@ def no_job():
 
 
 def select(root, revision, report):
-    if revision not in ("one", "two") or not no_job():
+    if revision not in ("one", "two", "three", "four") or not no_job():
         raise ValueError("Invalid revision or lab job still loaded")
     source = root / "builds" / revision / f"{SIGNED_NAME}.app"
     expected = next(

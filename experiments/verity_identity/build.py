@@ -68,6 +68,8 @@ def build(root, source_python, bridge):
         [
             "xcrun",
             "swiftc",
+            "-target",
+            "arm64-apple-macos14.0",
             "-swift-version",
             "5",
             str(src / "Host.swift"),

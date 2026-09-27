@@ -82,7 +82,7 @@ def run(
         },
     }
     if bare:
-        assert mode == "check" and not terminate, (
+        assert mode in ("check", "permissions-check") and not terminate, (
             "Bare control must never request permission"
         )
         settings = json.loads((app / "Contents/Resources/settings.json").read_text())
@@ -93,8 +93,16 @@ def run(
             "-s",
             "-P",
             "-u",
-            str(app / "Contents/Resources/probe.py"),
-            "check",
+            str(
+                app
+                / "Contents/Resources"
+                / (
+                    "permissions_probe.py"
+                    if mode == "permissions-check"
+                    else "probe.py"
+                )
+            ),
+            mode,
             settings["bridge"],
         ]
         job["EnvironmentVariables"].update(
@@ -208,7 +216,18 @@ if __name__ == "__main__":
     p.add_argument("--slot", choices=["a", "b"], default="a")
     p.add_argument(
         "--mode",
-        choices=["check", "request-camera", "request-finder", "sleep", "fail"],
+        choices=[
+            "check",
+            "request-camera",
+            "request-finder",
+            "sleep",
+            "fail",
+            "permissions-check",
+            "permissions-request",
+            "permissions-sleep",
+            "network-check",
+            "network-request",
+        ],
         default="check",
     )
     p.add_argument("--timeout", type=int, default=35)

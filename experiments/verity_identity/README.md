@@ -1,18 +1,21 @@
 # Verity native identity: isolated experiments
 
 **Not a production launcher. Do not merge or deploy as one.** This branch preserves
-two experiments and their repeatable probes. Neither modifies Hermes startup,
+three experiments and their repeatable probes. None modifies Hermes startup,
 release selection, application credentials, or configuration. Phase 2 explicitly
 creates an operator-approved lab identity in the login Keychain.
 
 ## Current outcome
 
-**Go to broader permission and controller testing; no production cutover yet.**
-The signed follow-up passed all seven continuity checks, including a changed
-native binary, Python 3.11 → 3.14, a bare-Python negative control, and rollback.
-All ten phase-1 attribution/runner checks also passed again.
-See [Phase 2: signed rebuild continuity](SIGNED-REBUILD.md) for scope, evidence,
-reproduction, and remaining gates. The sections below describe phase 1 only.
+**Expanded TCC continuity passed; no production cutover yet.**
+Seven expanded cases now cover FDA protected opens, a real Finder AX-role read,
+and authorization/preflight for the remaining granted categories across host
+rebuild, Python 3.11 → 3.14, a bare negative control, restoration, and rollback.
+Location and Local Network enforcement remain unproven.
+See [Phase 3: expanded permissions](EXPANDED-PERMISSIONS.md) for precise scope,
+limitations, and the fixed compiler-target/Settings-registration defect.
+[Phase 2](SIGNED-REBUILD.md) preserves the prior narrower result.
+The sections below describe phase 1 only.
 
 ## Question
 

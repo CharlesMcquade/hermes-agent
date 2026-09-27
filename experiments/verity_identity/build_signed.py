@@ -83,6 +83,8 @@ def prepare(root, identity_file, python311, python314, bridge311, bridge314):
         command([
             "xcrun",
             "swiftc",
+            "-target",
+            "arm64-apple-macos14.0",
             "-swift-version",
             "5",
             *flags,
