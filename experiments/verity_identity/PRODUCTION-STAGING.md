@@ -189,8 +189,15 @@ tests excluded). Changed-file Ruff and diff checks passed.
 A fourth fresh live run, `~/.hermes/cache/scratch/verity-env-live-cleanup4/`, passed
 all 70 environment cases on the updated harness. Read-back and independent checks
 again verified all recorded processes/groups gone and all jobs absent. Production
-hashes, PIDs and health stayed unchanged. Focused cleanup re-review, parent staging
-integration review and the new synthetic migration/rollback harness remain pending.
+hashes, PIDs and health stayed unchanged. Focused cleanup re-review
+(`deleg_a968860f`) found no remaining blockers within its requested scope: cleanup
+continues after per-command failures, process-scan errors are captured, and the
+failed receipt precedes raising cleanup failure. It also confirmed the regression
+checks continuation and preservation of the original body error. The reviewer did
+not execute tests or inspect live state. Parent verified the reviewed harness and
+test files still match `ffe1280d2506e32039dc9c64a90d0a813231df0d`.
+Parent staging integration review and the new synthetic migration/rollback harness
+remain pending; this closes only the cleanup-review finding.
 
 ## Concrete remaining gates / blockers
 
