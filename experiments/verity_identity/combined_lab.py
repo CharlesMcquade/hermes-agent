@@ -165,7 +165,7 @@ class Lab:
             int(line.split()[1]) in self.groups for line in output.splitlines()
         )
 
-    def start(self, role, slot=None, bare=False, keepalive=False):
+    def start(self, role, slot=None, bare=False, keepalive=False, sandbox=False):
         assert role in ("agent", "webui") and (slot is None or slot in ("a", "b"))
         self.no_jobs()
         assert inventory(self.original) == self.meta["candidate_inventory"]
@@ -173,7 +173,7 @@ class Lab:
         if slot is not None:
             manifest["services"][role] = self.probes[slot]
         else:
-            assert role == "webui" and not bare
+            assert role == "webui" and (not bare or sandbox)
         (self.root / "production-release.json").write_text(
             json.dumps(manifest, indent=2) + "\n"
         )
@@ -212,6 +212,14 @@ class Lab:
                 ],
                 AssociatedBundleIdentifiers=[ID],
             )
+        if sandbox:
+            policy = self.root / "network.sb"
+            assert digest(policy) == self.meta["sandbox_sha256"]
+            definition["ProgramArguments"] = [
+                "/usr/bin/sandbox-exec",
+                "-f",
+                str(policy),
+            ] + definition["ProgramArguments"]
         plist = directory / "job.plist"
         plist.write_bytes(plistlib.dumps(definition))
         assert launchctl("print", target, check=False).returncode != 0

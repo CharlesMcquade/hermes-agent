@@ -24,7 +24,9 @@ def verify(root):
     }
     try:
         with lab.installed():
-            target, out, manifest = lab.start("webui", keepalive=True)
+            target, out, manifest = lab.start(
+                "webui", keepalive=True, sandbox="sandbox_sha256" in lab.meta
+            )
             base = manifest["health_url"].removesuffix("/health")
 
             def fetch(path, data=None):

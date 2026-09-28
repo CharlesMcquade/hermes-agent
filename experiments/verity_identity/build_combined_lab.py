@@ -64,6 +64,21 @@ def build(root, lab, identity_file, selected):
         SOURCE / "permissions_probe.py", root / "probe/permissions_probe.py"
     )
     shutil.copyfile(SOURCE / "probe.py", root / "probe/probe.py")
+    shutil.copyfile(
+        SOURCE / "terminal_permission_probe.py", root / "terminal_permission_probe.py"
+    )
+    protected = [
+        Path(original_webui["repo"]),
+        Path(production["services"]["agent"]["repo"]),
+        Path(runtime["site"]).resolve().parent.parent,
+    ]
+    for repo in protected[:2]:
+        assert not (repo / ".env").exists(), "Frozen source contains dotenv"
+    sandbox = "(version 1)\n(allow default)\n(deny network-outbound)\n"
+    sandbox += '(allow network-outbound (remote ip "localhost:*"))\n'
+    for path in protected:
+        sandbox += f"(deny file-write* (subpath {json.dumps(str(path))}))\n"
+    (root / "network.sb").write_text(sandbox)
     # All probe subprocesses preserve this exact ungranted copied executable.
     probes = {}
     for slot in ("a", "b"):
@@ -128,6 +143,8 @@ def build(root, lab, identity_file, selected):
         "HERMES_WEBUI_PASSWORD": "",
         "HERMES_WEBUI_TEST_NETWORK_BLOCK": "1",
         "HERMES_WEBUI_AUTO_INSTALL": "0",
+        "HERMES_SKIP_CHMOD": "1",
+        "SHELL": "/bin/sh",
         "HERMES_WEBUI_SKIP_ONBOARDING": "1",
         "HERMES_WEBUI_AGENT_DIR": production["services"]["agent"]["repo"],
         "PYTHONHOME": slots["a"]["pythonHome"],
@@ -248,6 +265,8 @@ def build(root, lab, identity_file, selected):
             ]
         },
         "labels": manifest["labels"],
+        "sandbox_sha256": digest(root / "network.sb"),
+        "terminal_probe_sha256": digest(root / "terminal_permission_probe.py"),
         "staged_only": True,
         "real_gateway_started": False,
     }
