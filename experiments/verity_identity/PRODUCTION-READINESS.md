@@ -211,6 +211,51 @@ wrapper-only and cannot undo an activated pair. Never change a verified
 transaction's phase to manufacture recovery authority.
 The old `prepare_cutover.py` rebuilds Python overrides and is not a native recipe.
 
+### One-hop installed-control upgrade design
+
+Source review `deleg_ff8f4896` recommends a bounded v1-to-v2 upgrade, not a general
+upgrade framework. The parent independently inspected the first installer,
+stager wrapper generation and signed settings. Existing `restore()` keeps the app
+and controls while rewriting the original receipt phase; `install()` still refuses
+the existing receipt and destinations. They cannot be composed into an upgrade
+that preserves the original receipt bytes.
+
+Every new control-version path changes the generated launcher wrapper hash, which
+is embedded in signed app settings and candidate identity. Updating only installed
+controller files or wrappers is therefore not a matched deployment. A fresh stage
+and matching signed app are required; neither was produced by this design review.
+
+Offline implementation `deleg_f52dd994` is isolated on the upgrade worktree at
+`114a681e7babfee835a587085ad636b9787eb8df`. Its scope is the installer, focused tests
+and installation documentation; it does not edit the concurrently repaired
+controller. Required invariants are:
+
+- Keep the original install receipt, stage and controls unchanged. Retain the
+  original signed app by rename, never rebuilding or re-signing its replacement.
+- Admit only an intact installed-v1 state with exact legacy selection/plists and
+  v1 wrappers. The new stage retains those v1 wrappers, not the legacy originals.
+- Before mutation, persist a separate upgrade journal binding the original receipt
+  and new stage. Publish a separate immutable committed receipt only after full
+  read-back. Recovery restores the v1 installed state before commitment, not the
+  pre-install legacy wrappers; committed success requires verification, not a
+  blind rollback.
+- Derive bounded destinations and revalidate observed artifacts around each copy,
+  app rename and wrapper publication. Unknown identity/dependency state refuses.
+  The existing two-job dependency check alone is not a census of independent
+  native hosts. Advisory locking cannot prevent arbitrary nonparticipating launches.
+- Keep selector/plists, services, permissions and existing candidates unchanged.
+  A later upgraded-wrapper restore uses the original legacy wrapper records only
+  after verified return to the legacy pair and affirmative dependency absence.
+
+The return controller must subsequently distinguish **original baseline
+provenance** from **current deployment provenance**, explicitly pinning both root
+and committed-upgrade receipts. No copied historical fields, recursive chain
+lookup or implicit latest receipt may substitute. That integration is deferred
+until the policy fix and installer receipt contract are delivered; current return
+unit fixtures do not prove install-chain integration. Fresh staging/signing,
+install-only replacement and live verification remain separately gated. No live
+upgrade, recovery, restore or cutover was executed for this checkpoint.
+
 ## Final-identity continuity implementation checkpoint
 
 The bounded continuity implementation from `deleg_2334554e` is delivered in
