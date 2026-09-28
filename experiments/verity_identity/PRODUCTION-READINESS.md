@@ -575,15 +575,31 @@ startup dependencies and fake HTTP, including both shutdown/claim orderings.
 Admission-winning shutdown waits for claim/launch settlement, **not** model
 completion or worker-entry receipt. Full dependency startup, actual signals,
 controller proof publication and live same-session restart remain unproved.
-Focused re-review `deleg_419f8eb7` is running; these tests do not themselves close
-the three source-review blockers. Parent evidence is retained at
-`~/.hermes/cache/scratch/verity-resume-repair-parent-2mcydzbi/parent-final-receipt.json`;
-the earlier `verity-resume-parent-38oo_s91` checkpoint remains unchanged.
+Both focused source-only reviewers in `deleg_419f8eb7` found no concrete blocker
+within the single-owner, settled-session, explicit-local legacy scope. The parent
+inspected the cited cleanup/Stop, goal-admission and owner claim/close/teardown
+paths and hash-matched executable/test inputs to the frozen reviewed snapshot,
+parent test evidence and committed repair `fb41e6625dddf9d023724f21dccd25d3720032b5`.
+The sole frozen-documentation delta was the subsequently added parent verification
+section, not a changed contract. This closes all three original findings
+**offline**, not full startup, deployment or live continuation. Parent evidence is
+retained at `verity-resume-repair-parent-2mcydzbi/parent-final-receipt.json` and
+`review-closeout.json` under configured scratch; the earlier checkpoint is unchanged.
+
+Evidence limits remain explicit: cleanup-before-Stop-registration is supported
+by source interleaving rather than a dedicated barrier, and neighboring successor
+tests are not a fully concurrent successor launch. Captured callbacks/fake HTTP do
+not prove actual signal delivery or real pre-serve shutdown. If startup raises
+before serving after a shutdown helper starts, that daemon helper can remain in
+`httpd.shutdown()`; main still closes/joins the consumer before teardown. Helper
+termination is not established on that exceptional path. An admitted worker can
+enter after consumer join/HTTP teardown; an absent entry receipt never authorizes
+replay. This closeout is documentation-only and claims no new test or live run.
 
 Gateway, runner, non-WebUI and unknown ownership refuse. Capture is permitted only
 after settlement; persisted pending/active work refuses. HTTP, server-wakeup and
-goal kickoff now participate in the intended shared admission, subject to the
-pending focused re-review. Ambiguous durable claims never authorize replay.
+goal kickoff participate in the reviewed shared admission within that scope.
+Ambiguous durable claims never authorize replay.
 Unsupported external writers remain outside the contract. No source-only audit,
 unconsumed request or standalone mocked state machine satisfies the cutover
 condition.
