@@ -1,6 +1,6 @@
 # Phase 4: isolated native-parent controller integration
 
-**Synthetic-service gate passed; independent host review pending. Not deployed.**
+**Synthetic-service gate passed; review findings fixed and retested. Not deployed.**
 
 Changing the launcher to a native parent must not make the restart controller
 reject a healthy WebUI, accept an unrelated listener, or restart the gateway
@@ -35,7 +35,7 @@ lifecycle/ownership, not permission inheritance of the new spawn/guard layout.
 
 ## Verification (2026-09-27, macOS 27.0)
 
-Final current artifacts: `~/.hermes/experiments/verity-controller-p4/run5/`.
+Final current artifacts: `~/.hermes/experiments/verity-controller-p4/run6/`.
 The reports contain locally retained PIDs/paths; raw reports are not committed.
 
 ### Seven real launchd host cases
@@ -77,7 +77,8 @@ including short-lived crash-loop records, after unload.
 
 - 63 controller unittest cases passed independently on Python 3.11.16 and 3.14.7
   (53 imported baseline cases plus 10 native-identity/adapter cases).
-- 13 existing permission-probe unit/subprocess cases passed on Python 3.11.16.
+- 21 experiment unit/subprocess cases passed on both Python versions: 13 existing
+  permission-probe cases and 8 new lab-isolation/evidence regressions.
 - New/experimental Python files pass Ruff; `git diff --check` passes.
 - Four whole-directory Ruff encoding diagnostics were compared against the
   imported baseline and are unchanged (one in `live_control_test.py`, three in
@@ -90,6 +91,35 @@ including short-lived crash-loop records, after unload.
   controller uses `deep=1`; the fixture was fixed before counting that case.
 - The production baseline reported unchanged hashes, PIDs, and healthy HTTP.
 
+## Review reconciliation and two live failed-start controls
+
+The review found no additional blocking host/guard issue within the stated
+synthetic scope. Three harness findings were addressed:
+
+1. Validate the resolved executable, exact app location, state/repo paths and
+   actual plist dictionary before any execution, not just manifest labels.
+   Unexpected labels, argv, program overrides, environment, working directory,
+   redirected outputs and symlinks are rejected. Signed bundle/source preflight
+   also precedes the host's bare-invocation negative control. These are lab input
+   checks, not a sandbox against malicious same-user concurrent modification.
+2. Keep log-based generation/group accounting independent of readiness. This
+   scan was already added after the review snapshot; it now rejects empty
+   evidence. Conservatively report all failed runs as cleanup `inconclusive`
+   (or `not_started` if no bootstrap was attempted), never a false complete
+   cleanup claim. Partially successful bootstrap attempts are also unloaded.
+3. Deep-copy the initial pair into the report so later replacements cannot
+   overwrite its PID evidence. The final initial pair was compared with the
+   first signal cases' old generations.
+
+`verify_harness_live.py` blocks the synthetic WebUI before it can listen, after
+its worker exists. Both the host and controller harness time out nonzero,
+retain a failed receipt with `cleanup_verified:false`/`inconclusive`, and unload
+their jobs. Independent post-failure scans find no recorded processes/groups
+remaining. These two expected-failure controls pass; the deliberately failed
+runs themselves are not relabeled successful. Evidence is preserved in
+`failed-start-*-live-verification.json` and `harness-live-verification.json`.
+The nine controller and seven host cases then passed again on the final build.
+
 ## Reproduce (operator-approved isolated macOS lab only)
 
 Use a fresh root; builds refuse to replace an existing artifact. Use a retained
@@ -100,6 +130,8 @@ No signing credentials are printed. Do not run two verifiers on the same root.
 env -u PYTHONPATH -u PYTHONSAFEPATH "$PYTHON" -B \
   experiments/verity_identity/build_controller_lab.py \
   --root "$NEW_LAB_ROOT" --identity "$LAB_IDENTITY_JSON"
+env -u PYTHONPATH -u PYTHONSAFEPATH "$PYTHON" -B \
+  experiments/verity_identity/verify_harness_live.py --root "$NEW_LAB_ROOT"
 env -u PYTHONPATH -u PYTHONSAFEPATH "$PYTHON" -B \
   experiments/verity_identity/verify_controller_live.py --root "$NEW_LAB_ROOT"
 env -u PYTHONPATH -u PYTHONSAFEPATH "$PYTHON" -B \
@@ -128,6 +160,6 @@ env -u PYTHONPATH -u PYTHONSAFEPATH "$PYTHON" -B \
   host/settings/launcher trust model is not yet a production deployment design.
 - Local Network enforcement and Location remain unresolved from earlier gates.
 
-**Next gate:** reconcile host review, then combine real application canary and
+**Next gate:** combine real application canary and
 permission attribution checks with this lifecycle topology before proposing a
 production cutover. Explicit cutover/restart permission is still required.

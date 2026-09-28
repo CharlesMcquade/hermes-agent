@@ -34,6 +34,8 @@ if role=='agent':
  p.write_text(json.dumps({'pid':os.getpid(),'gateway_state':'running',
     'code_sha':os.environ['TEST_SHA'],'updated_at':started}))
  while True: time.sleep(1)
+if (base/'startup-block').exists():
+ while True: time.sleep(1)
 class H(http.server.BaseHTTPRequestHandler):
  def do_GET(self):
   if self.path.startswith('/health'):

@@ -26,6 +26,7 @@ from verify_service_host_live import (
     until,
     gone,
     all_recorded_gone,
+    set_cleanup_outcome,
 )  # noqa: E402
 
 
@@ -122,8 +123,8 @@ def verify(root):
         for role in ("agent", "webui"):
             target = c.target(manifest, role)
             assert launchctl("print", target, check=False).returncode != 0
+            loaded.append(target)  # Also clean up a partially successful bootstrap.
             launchctl("bootstrap", f"gui/{os.getuid()}", str(root / (role + ".plist")))
-            loaded.append(target)
         live = pair()
         snap = c.snapshot(manifest, definitions)
         assert c.host.listener(manifest["health_url"]) == {live["webui"]["pid"]}
@@ -282,10 +283,11 @@ def verify(root):
             if launchctl("print", target, check=False).returncode == 0:
                 errors.append("Still loaded: " + target)
         try:
-            until(lambda: all(gone(r) for r in records) and all_recorded_gone(root))
+            if loaded:
+                until(lambda: all(gone(r) for r in records) and all_recorded_gone(root))
         except AssertionError:
             errors.append("Known lab processes survived unload")
-        proof["cleanup_verified"] = not errors
+        set_cleanup_outcome(proof, errors, loaded)
         proof["source_sha256"] = {
             p.name: hashlib.sha256(p.read_bytes()).hexdigest()
             for p in [
@@ -305,7 +307,8 @@ def verify(root):
             json.dumps({
                 "report": str(path),
                 "status": proof["status"],
-                "cleanup_verified": not errors,
+                "cleanup_verified": proof["cleanup_verified"],
+                "cleanup_status": proof["cleanup_status"],
             })
         )
         if errors:

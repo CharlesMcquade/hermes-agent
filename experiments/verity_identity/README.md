@@ -16,7 +16,7 @@ See [Phase 3: expanded permissions](EXPANDED-PERMISSIONS.md) for precise scope,
 limitations, and the fixed compiler-target/Settings-registration defect.
 [Phase 2](SIGNED-REBUILD.md) preserves the prior narrower result.
 [Phase 4](CONTROLLER-INTEGRATION.md) adds passing synthetic native-parent controller,
-watchdog, rollback and crash-cleanup gates; independent host review is pending.
+watchdog, rollback and crash-cleanup gates; review findings were fixed and retested.
 It does not establish real Hermes or permission behavior under that new host.
 The sections below describe phase 1 only.
 
