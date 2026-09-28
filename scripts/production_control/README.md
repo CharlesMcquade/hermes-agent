@@ -80,6 +80,11 @@ are checked using the selected release interpreter with temporary isolated state
 - `prepare_cutover.py`: stages explicit one-shot launchd cutover; never loads it.
   Candidate may replace cached launchd Python/cwd/env via explicit `--reload`.
   Preserve the old definitions until verification so rollback remains exact.
+- `experiments/verity_identity/refresh_production_controls.py`: separate controls-only
+  native repair, preserving the signed app and stable launcher. Its three-wrapper
+  publication, schema-2 transaction fence, exact return and dedicated restoration
+  are described in `experiments/verity_identity/CONTROL-REFRESH.md`. This path is
+  offline-verified, not installed or approved for activation.
 
 ## Local operating runbook
 

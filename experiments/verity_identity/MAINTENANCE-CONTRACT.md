@@ -7,6 +7,13 @@ mechanism would conceal the missing prerequisite. The existing default remains
 fail-closed, including unreadable PID identities. This artifact is not live-go
 approval, a repair to the prior readiness failure, or authorization to stop jobs.
 
+**Scope clarification:** this refusal concerns replacing the app pathname.
+The separate [controls-only refresh](CONTROL-REFRESH.md) keeps the app and stable
+launcher unchanged and uses the old transaction-schema rejection as a management
+fence. It has independent offline implementation/evidence; it does not supply or
+bypass the launch-exclusion mechanism specified below. Source review and live
+readiness for that route remain separate gates.
+
 ## Exact missing mechanism
 
 The missing mechanism is an enforceable, crash-persistent **closed launch

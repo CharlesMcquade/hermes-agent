@@ -61,8 +61,14 @@ def save_json(path, data):
 
 
 @contextmanager
-def control_lock(base):
-    with open(Path(base) / 'control.lock', 'a') as stream:
+def control_lock(base, expected_identity=None):
+    path = Path(base) / 'control.lock'
+    stream = (open(path, 'a') if expected_identity is None else
+              os.fdopen(os.open(path, os.O_RDWR | os.O_NOFOLLOW), 'r+'))
+    with stream:
+        if expected_identity is not None:
+            info = os.fstat(stream.fileno())
+            require((info.st_dev, info.st_ino) == expected_identity, 'Control lock changed')
         try:
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -159,8 +165,16 @@ class Host:
 class Controller:
     def __init__(self, base=BASE, host=None, preflight_fn=None, clock=time.time,
                  monotonic=time.monotonic, sleep=time.sleep, owner=os.getppid,
-                 timeout=90, stable_seconds=2):
+                 timeout=90, stable_seconds=2, control_refresh_sha256=None):
         self.base = Path(base)
+        self.control_refresh_sha256 = control_refresh_sha256
+        self.refresh_executor = Path(__file__).parent.parent.name == 'control-refresh-versions'
+        require(self.refresh_executor == (control_refresh_sha256 is not None),
+                'Refreshed executor requires an explicit control refresh pin; other executors exclude it')
+        if control_refresh_sha256 is not None:
+            require(isinstance(control_refresh_sha256, str)
+                    and re.fullmatch(r'[0-9a-f]{64}', control_refresh_sha256),
+                    'Explicit control refresh SHA-256 required')
         self.manifest_path = self.base / 'production-release.json'
         self.host = host or Host()
         if preflight_fn is None:
@@ -170,6 +184,26 @@ class Controller:
         self.clock, self.monotonic, self.sleep = clock, monotonic, sleep
         self.owner, self.timeout, self.stable_seconds = owner, timeout, stable_seconds
         self.domain = f'gui/{os.getuid()}'
+
+    @contextmanager
+    def locked(self):
+        identity = None
+        if self.refresh_executor:
+            identity = self.retained_file(self.base / 'control.lock')[1][0][:2]
+        with control_lock(self.base, expected_identity=identity):
+            yield
+
+    def refresh_admission(self):
+        """Caller holds control.lock; retained objects gain no authority after undo."""
+        if not self.refresh_executor:
+            return lambda: None
+        try:
+            from control_refresh import load
+            _, _, unchanged = load(self.base, self.control_refresh_sha256, Path(__file__))
+            self.read_transaction()
+            return unchanged
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise ControlError('Control refresh admission refused: ' + str(exc)) from exc
 
     def load(self, path=None):
         return self.validate_manifest(json.loads(Path(path or self.manifest_path).read_text()))
@@ -463,15 +497,25 @@ class Controller:
     def save_transaction(self, txn, phase):
         txn['phase'] = phase
         payload = json.dumps(txn, sort_keys=True, separators=(',', ':')).encode()
-        save_json(self.transaction_path, {'schema_version': 1, 'transaction': txn,
-                                         'sha256': hashlib.sha256(payload).hexdigest()})
+        envelope = {'schema_version': 2 if self.refresh_executor else 1, 'transaction': txn,
+                    'sha256': hashlib.sha256(payload).hexdigest()}
+        if self.refresh_executor:
+            envelope['control_refresh_sha256'] = self.control_refresh_sha256
+        save_json(self.transaction_path, envelope)
 
     def read_transaction(self):
         if not self.transaction_path.exists():
+            require(not self.refresh_executor, 'Missing control refresh transaction fence')
             return None
-        envelope = json.loads(self.transaction_path.read_text())
+        envelope = json.loads(self.retained_file(self.transaction_path)[0] if self.refresh_executor
+                              else self.transaction_path.read_text())
         require(isinstance(envelope, dict) and type(envelope.get('schema_version')) is int
-                and envelope['schema_version'] == 1, 'Unsupported transaction schema')
+                and envelope['schema_version'] == (2 if self.refresh_executor else 1),
+                'Unsupported transaction schema')
+        if self.refresh_executor:
+            require(set(envelope) == {'schema_version', 'transaction', 'sha256', 'control_refresh_sha256'}
+                    and envelope['control_refresh_sha256'] == self.control_refresh_sha256,
+                    'Control refresh transaction fence mismatch')
         txn = envelope['transaction']
         payload = json.dumps(txn, sort_keys=True, separators=(',', ':')).encode()
         require(hashlib.sha256(payload).hexdigest() == envelope['sha256'],
@@ -490,6 +534,7 @@ class Controller:
         The backup is transaction-scoped authorization, not an expiring canary
         receipt or a global blessing. A consumed rollback is never attempted twice.
         """
+        refresh_unchanged = self.refresh_admission()
         txn = self.read_transaction()
         if txn is None or txn['phase'] in {'verified', 'rolled_back'}:
             return None
@@ -498,6 +543,7 @@ class Controller:
         require(txn['phase'] != 'rollback_failed',
                 'rollback_failed: manual reconciliation required')
         # Consume the sole attempt durably BEFORE any restoration or launchctl.
+        refresh_unchanged()
         self.save_transaction(txn, 'rollback_started')
         try:
             old_bytes = base64.b64decode(txn['manifest'], validate=True)
@@ -515,6 +561,7 @@ class Controller:
                     before[service] = self.host.job(self.target(old, service))
                 except Exception:
                     before[service] = {'pid': None}
+            refresh_unchanged()
             since = self.clock()
             atomic_write(self.manifest_path, old_bytes)
             for service in SERVICES:
@@ -686,7 +733,7 @@ class Controller:
         unchanged()
         return report, replacements, unchanged
 
-    def return_baseline(self, expected, controller_digest=None, upgrade_digest=None):
+    def return_baseline(self, expected, controller_digest=None, upgrade_digest=None, refresh_digest=None):
         """Caller holds control.lock; resolve the independently retained install receipt.
 
         The externally approved file digest pins provenance; its internal checksum
@@ -719,7 +766,7 @@ class Controller:
         require(report['final_base'] == str(self.base)
                 and version.parent == self.base / 'control-versions'
                 and re.fullmatch(r'[A-Za-z0-9_-]+', version.name), 'Wrong installed control identity')
-        if controller_digest is None and upgrade_digest is None:
+        if controller_digest is None and upgrade_digest is None and refresh_digest is None:
             require(Path(__file__).resolve().parent == version, 'Wrong installed control identity')
         names = {'restart_production.py', 'approved_restart_job.py', 'production_launcher.py',
                  'native_identity.py', 'watchdog.py'}
@@ -771,6 +818,13 @@ class Controller:
             require(controller_digest is None, 'Upgrade and separate return executor pins are exclusive')
             deployment, replacements, upgrade_unchanged = self.upgraded_return(
                 upgrade_digest, expected, receipt, read)
+        if refresh_digest is not None:
+            require(controller_digest is None and upgrade_digest is None
+                    and refresh_digest == self.control_refresh_sha256 and self.refresh_executor,
+                    'Control refresh return requires the exclusive current refresh pin')
+            from control_refresh import load
+            refresh, replacements, upgrade_unchanged = load(self.base, refresh_digest, Path(__file__), read=read)
+            require(refresh['stage']['root_sha256'] == expected, 'Control refresh return root mismatch')
         wrappers = names - {'native_identity.py'}
         require(set(receipt['wrappers']) == set(receipt['replacements']) == wrappers,
                 'Incomplete wrapper provenance')
@@ -851,7 +905,13 @@ class Controller:
         return target, exact, unchanged, {Path(p): r['mode'] for p, r in records.items()}
 
     def restart(self, candidate=None, reload=False, yes=False, confirm=None, return_baseline=None,
-                return_controller_sha256=None, return_upgrade_sha256=None):
+                return_controller_sha256=None, return_upgrade_sha256=None, return_control_refresh_sha256=None):
+        require(return_control_refresh_sha256 is None or (return_baseline is not None and reload
+                and candidate is None and return_controller_sha256 is None and return_upgrade_sha256 is None
+                and return_control_refresh_sha256 == self.control_refresh_sha256),
+                'Control refresh return pin requires exclusive --return-baseline --reload and matching refresh pin')
+        require(not self.refresh_executor or return_baseline is None
+                or return_control_refresh_sha256 is not None, 'Refreshed return requires explicit return refresh pin')
         require(return_upgrade_sha256 is None or (return_baseline is not None and reload
                 and candidate is None and return_controller_sha256 is None),
                 'Upgrade pin requires exclusive --return-baseline and --reload')
@@ -865,19 +925,23 @@ class Controller:
         if return_baseline is not None:
             require(candidate is None and reload, 'Return requires --reload and excludes --activate')
             lock_identity = self.retained_file(self.base / 'control.lock')
-        with control_lock(self.base):
+        with self.locked():
+            self.refresh_admission()
             if return_baseline is not None:
                 require(self.retained_file(self.base / 'control.lock') == lock_identity, 'Control lock changed')
-                exact = self.return_baseline(return_baseline, return_controller_sha256, return_upgrade_sha256)
+                exact = self.return_baseline(return_baseline, return_controller_sha256, return_upgrade_sha256,
+                                             return_control_refresh_sha256)
                 return self._restart(operation_id, None, True, exact, return_baseline,
-                                     return_controller_sha256, return_upgrade_sha256)
+                                     return_controller_sha256, return_upgrade_sha256,
+                                     return_control_refresh_sha256)
             recovery = self.recover_locked()
             if recovery is not None:
                 return recovery  # Recovery never activates the supplied candidate.
             return self._restart(operation_id, candidate, reload)
 
     def _restart(self, operation_id, candidate, reload, exact=None, baseline_digest=None, controller_digest=None,
-                 upgrade_digest=None):
+                 upgrade_digest=None, refresh_digest=None):
+        refresh_unchanged = self.refresh_admission()
         touched = False
         old_bytes = self.manifest_path.read_bytes()
         saved_plists = {}
@@ -909,14 +973,19 @@ class Controller:
             if exact:
                 exact[2]()
                 txn.update(operation='return-retained-baseline', baseline_sha256=baseline_digest)
+                if refresh_digest is not None:
+                    txn['control_refresh_sha256'] = refresh_digest
                 if upgrade_digest is not None:
                     txn['upgrade_sha256'] = upgrade_digest
                 if controller_digest is not None:
                     txn['return_controller_sha256'] = controller_digest
+            refresh_unchanged()
             self.journal(operation_id, 'prepared')
+            refresh_unchanged()
             if exact:
                 exact[2]()
             self.save_transaction(txn, 'prepared')
+            refresh_unchanged()
             if exact:
                 exact[2](txn)
             since = self.clock()
@@ -954,6 +1023,15 @@ class Controller:
         return self.receipt(operation_id, 'verified', **proof)
 
 
+class UniquePin(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(str(option_string) + ' cannot be supplied more than once')
+        if not isinstance(values, str) or not re.fullmatch('[0-9a-f]{64}', values):
+            parser.error(str(option_string) + ' requires lowercase SHA-256')
+        setattr(namespace, self.dest, values)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', type=Path, default=BASE)
@@ -968,7 +1046,15 @@ def main(argv=None):
                         help='Explicit separately retained return-controller descriptor pin')
     parser.add_argument('--return-upgrade-sha256', metavar='UPGRADE_RECEIPT_SHA256',
                         help='Explicit committed one-hop upgrade deployment pin')
+    parser.add_argument('--control-refresh-sha256', action=UniquePin)
+    parser.add_argument('--return-control-refresh-sha256', action=UniquePin)
     args = parser.parse_args(argv)
+    if args.return_control_refresh_sha256 is not None:
+        if not (args.return_baseline is not None and args.restart and args.reload
+                and args.return_controller_sha256 is None and args.return_upgrade_sha256 is None
+                and args.control_refresh_sha256 in (None, args.return_control_refresh_sha256)):
+            parser.error('--return-control-refresh-sha256 requires exclusive return route and matching pin')
+        args.control_refresh_sha256 = args.return_control_refresh_sha256
     if args.return_upgrade_sha256 is not None and not (args.return_baseline is not None
             and args.restart and args.reload and args.return_controller_sha256 is None):
         parser.error('--return-upgrade-sha256 requires exclusive --return-baseline --restart --reload')
@@ -978,9 +1064,10 @@ def main(argv=None):
         parser.error('--return-baseline requires --reload')
     if (args.yes or args.activate or args.reload or args.return_baseline is not None) and not args.restart:
         parser.error('--yes/--activate/--reload require --restart')
-    controller = Controller(args.base)
+    controller = Controller(args.base, control_refresh_sha256=args.control_refresh_sha256)
     if not args.restart:
-        with control_lock(args.base):
+        with controller.locked():
+            controller.refresh_admission()
             manifest = controller.load()
             controller.preflight(manifest)
             controller.loaded(manifest, controller.definitions(manifest))
@@ -988,7 +1075,8 @@ def main(argv=None):
     return controller.restart(args.activate, args.reload, args.yes,
                               lambda: sys.stdin.isatty() and input('Type restart to interrupt both services: ') == 'restart',
                               return_baseline=args.return_baseline, return_controller_sha256=args.return_controller_sha256,
-                              return_upgrade_sha256=args.return_upgrade_sha256)
+                              return_upgrade_sha256=args.return_upgrade_sha256,
+                              return_control_refresh_sha256=args.return_control_refresh_sha256)
 
 
 if __name__ == '__main__':

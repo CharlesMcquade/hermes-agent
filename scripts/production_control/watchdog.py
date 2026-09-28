@@ -5,14 +5,14 @@ import json
 from pathlib import Path
 import sys
 
-from restart_production import BASE, Controller, ControlError, control_lock, save_json
+from restart_production import BASE, Controller, ControlError, UniquePin, save_json
 
 
 def tick(controller, grace=90, cooldown=300, max_backoff=3600):
     """Only shallow liveness failures justify a restart; deep failures are degraded."""
     path = controller.base / 'watchdog-state.json'
     try:
-        with control_lock(controller.base):
+        with controller.locked():
             return _tick(controller, path, grace, cooldown, max_backoff)
     except ControlError as exc:
         if 'owns control.lock' in str(exc):
@@ -28,6 +28,7 @@ def _tick(c, path, grace, cooldown, max_backoff):
         save_json(path, state)
         return state
     try:
+        refresh_unchanged = c.refresh_admission()
         recovery = c.recover_locked()
         if recovery is not None:
             return finish(recovery['status'], recovery=recovery, failures=0)
@@ -61,6 +62,10 @@ def _tick(c, path, grace, cooldown, max_backoff):
         return finish('suspect')
     if now < state.get('next_attempt', 0):
         return finish('cooldown')
+    try:
+        refresh_unchanged()
+    except Exception as exc:
+        return finish('blocked', error=str(exc))
     # Persist the attempt BEFORE a side effect: a killed watchdog cannot hot-loop.
     attempts = min(8, state.get('attempts', 0) + 1)
     finish('checking', attempts=attempts,
@@ -68,6 +73,7 @@ def _tick(c, path, grace, cooldown, max_backoff):
     try:
         c.preflight(manifest)
         c.loaded(manifest, definitions)
+        refresh_unchanged()
         c.host.kickstart(c.target(manifest, 'webui'))
     except Exception as exc:
         return finish('blocked', error=str(exc))
@@ -78,8 +84,9 @@ def _tick(c, path, grace, cooldown, max_backoff):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', type=Path, default=BASE)
+    parser.add_argument('--control-refresh-sha256', action=UniquePin)
     args = parser.parse_args(argv)
-    result = tick(Controller(args.base))
+    result = tick(Controller(args.base, control_refresh_sha256=args.control_refresh_sha256))
     print(json.dumps(result))
     return result
 

@@ -10,9 +10,13 @@ chain before another trial. The narrow source repair is independently tested and
 source-reviewed, but not installed. Upgrade-aware exact return and retained-host
 staging are now independently tested source implementations. Both focused reviews
 are bounded-clear and the parent matched their frozen source to current bytes.
-Live deployment remains blocked by protected-process census denial and
+The full app-upgrade route remains blocked by protected-process census denial and
 the absence of an enforceable maintenance boundary for existing v1 consumers; see
-`MAINTENANCE-CONTRACT.md` and the readiness summary. The installer was not weakened.
+`MAINTENANCE-CONTRACT.md`. A separate unchanged-app/launcher controls-only refresh
+is now implemented and parent-replayed offline (159 tests per ABI), using a durable
+transaction-schema fence. See `CONTROL-REFRESH.md`; its focused source review,
+installed readback and separately approved native rehearsal are still open. No
+installer census was weakened and no new controls have been installed.
 The operator approved offline implementation/testing, not live downtime or installed
 changes. Final live go is still required. No successful-native return or production
 permission result is claimed. The sections below are history, not a retry cue.

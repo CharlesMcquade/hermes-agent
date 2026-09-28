@@ -1,4 +1,21 @@
-# Production readiness: offline maintenance preparation; live deployment blocked
+# Production readiness: controls-only refresh under final review
+
+## Current no-app-replacement route
+
+`CONTROL-REFRESH.md` describes the separately implemented controls-only route:
+preserve the signed app, stable launcher and original v1 directory, and publish
+only three management wrappers after a durable transaction-schema fence. The
+parent frozen replay passed **159 tests / 784 subtests on each ABI** with seven
+explicit exclusions and no unexpected guard violations; the real fixture chain
+uses copied actual installed-v1 consumers and the timestamp-wrapper topology.
+A removed-lock regression fails twice per ABI against the prior implementation
+and passes after the fix. This is offline behavioral evidence, not live acceptance.
+
+Focused source review, approval for install-only changes/native rehearsal, exact
+installed provenance readback, and resolved unarmed activation/return artifacts
+remain open. Production is untouched. The full-app maintenance exclusion described
+below remains valid for that older route, but is not a prerequisite for a route
+that never replaces the app or launcher. No census bypass was added.
 
 ## Current authorization and integrated baseline
 
