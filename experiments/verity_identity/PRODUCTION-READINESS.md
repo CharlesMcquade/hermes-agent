@@ -195,6 +195,25 @@ A post-success return-to-legacy procedure remains to be designed and verified;
 do not change a verified transaction's phase to manufacture recovery authority.
 The old `prepare_cutover.py` rebuilds Python overrides and is not a native recipe.
 
+## Final-identity continuity implementation checkpoint
+
+The bounded continuity implementation from `deleg_2334554e` is delivered in
+`verify_production_continuity.py`; see `PRODUCTION-CONTINUITY.md`. It seals one
+check-only permission and the finite A/B/A, both-synthetic-role, both-ABI matrix.
+This is implemented test infrastructure, not completed final-identity evidence.
+The parent independently reran 118 offline tests per ABI (113 continuity and
+neighboring tests plus five old-controller cutover-recipe fixtures) on a frozen
+snapshot over `5ba4734d89b4bb7291474d837761ef1d9a102a2c`. A fresh 113-test run on
+both ABIs also passed after extending fault coverage to explicitly distinguish
+A signing, B compilation and B signing failures. Ruff passed; frozen host/probe
+sources remain unchanged. Concurrent rollback-controller edits were excluded.
+
+Focused cleanup/recovery and execution-contract reviews (`deleg_818692a8`) remain
+pending. No real compilation, signing, continuity run or new permission request
+was performed for this checkpoint. The Finder implementation and its parent
+98-test evidence were already committed at `b0065100b9`; receiving the same
+implementation report again does not establish a new live Finder result.
+
 ## Same-session autonomous resume audit
 
 Source-only audit `deleg_22cc267f` inspected the selected frozen WebUI and Agent
