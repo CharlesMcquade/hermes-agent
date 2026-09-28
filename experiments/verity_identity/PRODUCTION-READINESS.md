@@ -1,4 +1,4 @@
-# Production readiness: signer complete; native integration verified in part
+# Production readiness: installed, not cutover-ready
 
 The reviewed isolated gates are complete; see `COMBINED-CANARY.md`. They do
 not constitute a production cutover-ready artifact. The operator requested
@@ -43,10 +43,11 @@ failure paths) and all 37 affected/neighboring experiment tests pass on Python 3
 changed-file Ruff checks pass. This does not claim cleanup survives process kill,
 OS crash, or filesystem unlink failure. Independent focused re-review found no
 blocking findings in scope, confirming both fixes and their regression coverage.
-The signer/recovery gate is complete. Production host/control staging and final-
-identity permission validation remain unfinished; this is not cutover readiness.
+The signer/recovery gate is complete. Host/control installation is now complete;
+final-identity permission validation remains partial. See the current checkpoints
+below rather than treating this historical signer gate as cutover readiness.
 
-## Previously identified signing prerequisite
+## Historical signing prerequisite (resolved above)
 
 Read-only discovery returned exactly one valid code-signing identity:
 `Verity Lab Code Signing`, SHA-1
@@ -102,46 +103,74 @@ final paths. Both candidate definitions and source/runtime inventories validate;
 legacy selector/plists/process identities remain unchanged, with health `ok`.
 Passive registration resolves the final app path. See `PRODUCTION-INSTALL.md`
 for the exact execution/read-back scope. This closes installation, not live
-wrapper restore, permission grants or cutover readiness. The earlier unanswered
-prompts below are historical and no longer the install/test approval boundary.
+wrapper restore or cutover readiness. Earlier unanswered prompts were superseded
+by the operator’s explicit install/test approval; permission evidence follows.
 
-## Earlier unfinished implementation and verification after that dependency
+## Current permission checkpoint
 
-1. The production-signed host/control stage now exists at
-   `~/.hermes/experiments/verity-production-stage-v1`, with strict signature,
-   metadata/settings, source/control and original rollback bytes reverified.
-   It is not installed or selected. Metadata review is clear; the new install-only
-   implementation passes offline tests and its focused safety re-review is clear.
-   Real installation and final-identity permission testing await explicit approval. See
-   `PRODUCTION-STAGING.md` and `PRODUCTION-INSTALL.md`. The frozen application pair
-   and bootstrap runtime are unchanged.
-2. Adapt staging for the currently installed schema-2 controller. The inherited
-   `install_controls.py` is a schema-1 migration only and its `FILES` list omits
-   `native_identity.py`. The inherited `prepare_cutover.py` constructs Python
-   launch arguments, not native host arguments, and uses shared candidate paths.
-   Neither is a ready-made native-host production installer. Do not run either
-   against maintenance as a shortcut.
-3. Revalidate the exact final host, signed settings, control inventory, both roles,
-   independent restarts and bounded rollback in isolation. Preserve unrelated
-   pending candidates and job definitions. Extend permission-runner identity
-   reporting to distinguish responsible native host from selected child Python.
-4. Obtain the final identity's grants; test fresh paths, compatible minor-version
-   permission workers, signed rebuild and rollback without resetting old grants.
-   Resolve Local Network enforcement and Location, or obtain explicit acceptance
-   of precisely documented limitations. A successful TCP connection alone is not
-   Local Network consent/enforcement proof.
-5. Prepare the exact candidate manifest, launchd definitions, independent
-   activation job, and recovery material; verify they are unselected and unarmed.
-   A fully tested stage is the point to request cutover approval.
-6. After explicit cutover approval, verify the real application and messaging
-   contexts. Logout/login and reboot need separately agreed disruption timing.
-   Do not call process restarts a reboot test or start a second real gateway.
+See `PRODUCTION-PERMISSIONS.md` for exact reviewed source, receipts and limits.
+The initial 15 check-only runs observed the new identity without grants. Following
+operator consent, 28 fresh check-only runs covered the 14 original named workers
+on copied Python 3.11 and 3.14. Thirteen named workers per runtime reported allowed,
+including actual read-only Messages/Safari descriptor opens and fixed Finder
+AXRole. All completed runs verified the isolated live chain, clean exits, exact
+job/PID/PGID removal and original app restoration. Independent installed-artifact,
+wrapper, legacy selector/plist/process and health read-back passed.
 
-The approved new certificate, its restored Keychain key, and code-signing-only trust
-have been provisioned. No final app installation, production-control write, launchd
-definition change, final-app permission request, release selection, or production
-restart has occurred. The production baseline still returns hashes/PIDs/health
-unchanged and health `ok`. Install-only and bounded same-identity permission-test
-approval prompts received no answer; absence of a response is not authorization.
-Pre-cutover continuity tests, if approved, would not establish the actual production
-descendant chain before its separately authorized activation.
+Location's consent request timed out, and fresh checks remain `not_determined`.
+One approved Local Network connection succeeded without application data, with
+`allowed=null`: connectivity only, not permission attribution or enforcement.
+The subsequent conditional deny/allow test was approved only if a distinct Verity
+entry could be found. No such entry was exposed by the inspected Local Network
+pane, so no toggle was changed and no additional connection was attempted. This
+UI observation does not establish absence from the underlying OS permission store.
+
+Read-only Apple documentation research establishes that consent-only Location
+requests are available on macOS and documents a foreground requirement for showing
+a prompt. The macOS usage key is already correct. Neither the documentation nor
+the timeout proves that foreground eligibility or Python responsibility caused
+this failure. The retained delegate/run-loop implementation does not support an
+obvious missing-run-loop diagnosis; it discards initial not-determined callbacks,
+so callback delivery cannot yet be distinguished from a missing consent transition.
+The operator explicitly approved one instrumented consent-only diagnostic:
+own bundle/activation/run-loop/callback observations, no location sample, no
+foreground activation and no production restart. Implementation/review is pending.
+Apple references independently retrieved by the parent:
+[requestWhenInUseAuthorization](https://developer.apple.com/documentation/corelocation/cllocationmanager/requestwheninuseauthorization()),
+[authorization overview](https://developer.apple.com/documentation/corelocation/requesting-authorization-to-use-location-services),
+and [NSLocationUsageDescription](https://developer.apple.com/documentation/bundleresources/information-property-list/nslocationusagedescription).
+The method page includes cross-platform wording; it does not establish a causal
+result for this specific launchd-native-host/Python-child topology.
+
+## Remaining gates and boundaries
+
+1. Complete/review the approved Location diagnostic. Resolve the remaining Location
+   and Local Network limitations or obtain explicit acceptance; neither is silently
+   removed from the requirements. A missing Settings target stops the scoped
+   deny/allow experiment, not permission to change unrelated Python/app grants.
+2. Final-identity AppleEvents authorization-only coverage is still omitted. Preserve
+   the original no-content test boundary; lab Finder automation is separate evidence.
+3. Reconcile the original continuity matrix against final-identity evidence. Current
+   final-path checks use separately signed temporary settings, one permission and ABI
+   per root, and the `agent` role. They do not prove same-temporary-host ABI switching,
+   a changed native-code rebuild under the production signer, or both real production
+   descendant paths. Keep earlier lab rebuild/both-role evidence distinctly labelled.
+4. Revalidate the exact matched installed host/control, staged native manifest and
+   both definitions, retained rollback material, and independent activation/recovery
+   procedure. Candidate selection and activation must remain unarmed until approval.
+   Synthetic restart/rollback passes do not mean live wrapper restore was exercised.
+5. Only after the pre-cutover gates and explicit exception decisions, request separate
+   selection/reload/restart authorization. Verify both real service chains, protected
+   checks and separately approved messaging afterward. Logout/login and reboot need
+   separately agreed disruption timing; process restarts are not reboot evidence.
+
+Do not use the inherited `install_controls.py` or `prepare_cutover.py` as shortcuts:
+those older paths target schema-1/Python launch assumptions rather than this reviewed
+native migration. Use the current reviewed stage/install/controller mechanisms.
+
+The app, versioned controls and maintenance wrappers changed under install approval;
+OS grants changed under consent approval. The original app is restored after each
+bounded experiment. The running production services, legacy selection and launchd
+definitions have not been switched or restarted. A cutover-ready receipt has not
+been published, and actual production descendant verification remains conditional
+on separately authorized activation.
