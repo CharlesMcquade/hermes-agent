@@ -134,7 +134,17 @@ obvious missing-run-loop diagnosis; it discards initial not-determined callbacks
 so callback delivery cannot yet be distinguished from a missing consent transition.
 The operator explicitly approved one instrumented consent-only diagnostic:
 own bundle/activation/run-loop/callback observations, no location sample, no
-foreground activation and no production restart. Implementation/review is pending.
+foreground activation and no production restart. Implementation is committed at
+`9da4bf49469017a53995313c44ca622309030109`; the parent reran 92 offline tests on
+each supported ABI. Focused source review `deleg_ea691778` found no concrete
+blocker. The one approved live diagnostic finished `incomplete`/`ConsentTimeout`:
+initial/final status 0, one callback with status 0, 1909 main-thread run-loop pumps.
+The Python worker's main bundle did not match Verity's ID/path or expose its macOS
+usage string; it was inactive, with unknown activation policy. This does not prove
+Core Location's responsible client or the cause. Original app restoration, exact
+experiment cleanup and independent installed-artifact/legacy-service/health read-back
+all passed. The single live diagnostic approval is exhausted; see its retained
+result in `PRODUCTION-PERMISSIONS.md`.
 Apple references independently retrieved by the parent:
 [requestWhenInUseAuthorization](https://developer.apple.com/documentation/corelocation/cllocationmanager/requestwheninuseauthorization()),
 [authorization overview](https://developer.apple.com/documentation/corelocation/requesting-authorization-to-use-location-services),
@@ -142,10 +152,50 @@ and [NSLocationUsageDescription](https://developer.apple.com/documentation/bundl
 The method page includes cross-platform wording; it does not establish a causal
 result for this specific launchd-native-host/Python-child topology.
 
+## Final-identity matrix and activation audit
+
+Read-only audit `deleg_1c5d0ea9` found the matrix below still open. The parent
+inspected the relevant worker, host compiler and controller paths; this is source
+analysis, not additional live permission or activation evidence.
+
+- The existing permission harness pins one ABI and the `agent` role. Its final-path
+  observations do not establish ABI switching under unchanged signed settings.
+- `SIGNED-REBUILD.md` proves changed-code/rebuild/rollback for the lab identity;
+  `COMBINED-CANARY.md` proves both synthetic roles and real WebUI terminal descendants
+  under that lab identity. Neither transfers those passes to `com.charles.verity`.
+- A bounded final-identity extension would seal both copied runtimes, fixed roles
+  and a finite check-only sequence before execution; use unchanged signed settings
+  across ABI cases. Build A/B/A must establish actual executable-code differences,
+  not merely different signatures or UUIDs, and preserve the original installed
+  bundle separately. Do not weaken the existing copy-only `code_payload()` equality.
+- Fixed Finder authorization can reuse only `probe.py`'s descriptor creation,
+  `AEDeterminePermissionToAutomateTarget` and disposal. Calling its whole
+  `automation()` would also execute an AppleEvent and count windows, outside the
+  authorization-only boundary. Existing frozen probes remain unchanged.
+- Those additional final-path executions require explicit bounded approval and
+  focused review. No more Location or network attempts are authorized by this audit.
+
+The activation entry point is `approved_restart_job.py` with
+`--restart --yes --activate CANDIDATE --reload`, directly owned by launchd. This
+interface description is **not an activation command approval or a ready recipe**.
+The matched paths, unarmed independent job, validation and recovery procedure must
+be supplied and exercised before cutover. CLI check/preflight imports application
+modules; static inventory validation is not an equivalent test.
+
+`Controller.recover_locked()` restores an incomplete transaction's original
+manifest/plist bytes once. It returns without restoring a terminal `verified`
+transaction. Repeating restart after successful activation therefore does not
+request rollback. There is no rollback-only CLI switch. The installer restore is
+wrapper-only and rejects changed selection; it cannot undo an activated pair.
+A post-success return-to-legacy procedure remains to be designed and verified;
+do not change a verified transaction's phase to manufacture recovery authority.
+The old `prepare_cutover.py` rebuilds Python overrides and is not a native recipe.
+
 ## Remaining gates and boundaries
 
-1. Complete/review the approved Location diagnostic. Resolve the remaining Location
-   and Local Network limitations or obtain explicit acceptance; neither is silently
+1. The approved Location diagnostic is complete as an observation, not a grant.
+   Resolve the remaining Location and Local Network limitations or obtain explicit
+   acceptance; neither is silently
    removed from the requirements. A missing Settings target stops the scoped
    deny/allow experiment, not permission to change unrelated Python/app grants.
 2. Final-identity AppleEvents authorization-only coverage is still omitted. Preserve

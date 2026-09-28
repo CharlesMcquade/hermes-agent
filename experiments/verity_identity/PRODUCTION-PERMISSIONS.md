@@ -324,7 +324,7 @@ connectivity-only result remains insufficient proof of permission enforcement.
 The missing row does not establish a signer problem or any other root cause.
 Parent read-back of the original/restored bundle and service baseline passed.
 
-## Location Diagnostic — offline implementation, parent live gate pending
+## Location Diagnostic — live observation incomplete, original restored
 
 `--worker 'Location Diagnostic' --mode permissions-request` is a separate bounded
 instrumented counterpart of the frozen Location factory. Neither
@@ -407,6 +407,36 @@ directories with a clean explicit environment; both passed. Parent changed-file
 Ruff and diff checks passed, frozen ServiceHost/probe diffs were empty, and the
 independent installed-artifact/legacy-process/health read-back passed before any
 new signing or live operation.
+
+## Approved instrumented Location result
+
+Source `9da4bf49469017a53995313c44ca622309030109` passed focused read-only review
+`deleg_ea691778` without concrete blockers. The parent freshly prepared and
+preflighted `~/.hermes/experiments/verity-permission-location-diagnostic-v1`, then
+ran the **one** approved live diagnostic. Its `result.json` is retained unchanged.
+
+The CLI exited 1 with `status=incomplete`, `ConsentTimeout`, `allowed=null` and
+`not_determined` after the worker's 445-second deadline. Initial and final status
+were 0; exactly one callback was observed, also 0. The main-thread flag and location
+services-enabled flag were true; the run-loop pump count was 1909. The Python
+worker had a main bundle, but neither its ID nor path matched the expected Verity
+bundle, and it exposed no nonempty macOS Location usage string. It was not active;
+its activation policy was reported as the sanitized unknown sentinel -2.
+
+These are Python-worker observations, not proof of the native host's activation
+state or Core Location's responsible-client attribution. A callback and active
+loop were observed; authorization did not transition. This does not isolate whether
+foreground eligibility, worker bundle metadata, responsibility or another OS
+condition caused the missing consent. No location sample, content access,
+foreground change or network connection was performed.
+
+Worker, host child and host exits were all 0. Exact experiment cleanup and original
+bundle restoration were verified. A separate installed-artifact read-back then
+verified original signature/inventory/settings, controls/wrappers, rollback material,
+unchanged legacy selection/plists/process identities, and WebUI health `ok`.
+Neither production service was selected, reloaded or restarted. No additional live
+Location attempt is covered by the consumed approval. Location remains an unresolved
+requirement until separately fixed or explicitly accepted as a limitation.
 
 ## Offline evidence
 
