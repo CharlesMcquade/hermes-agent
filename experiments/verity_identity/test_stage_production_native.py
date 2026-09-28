@@ -147,6 +147,75 @@ class StageTests(unittest.TestCase):
         self.assertTrue(staging.verify_stage(stage, runner=self.runner))
         self.assertIn("native_identity.py", result["control_sha256"])
 
+    def test_planned_permissions_are_sealed_before_signing(self):
+        # Independent platform contract: macOS Location, not the iOS WhenInUse key.
+        required = {
+            "NSCameraUsageDescription", "NSMicrophoneUsageDescription",
+            "NSContactsUsageDescription", "NSCalendarsFullAccessUsageDescription",
+            "NSRemindersFullAccessUsageDescription", "NSPhotoLibraryUsageDescription",
+            "NSSpeechRecognitionUsageDescription", "NSBluetoothAlwaysUsageDescription",
+            "NSLocationUsageDescription", "NSAppleEventsUsageDescription",
+            "NSLocalNetworkUsageDescription",
+        }
+        signed = []
+
+        def inspect(argv, **kwargs):
+            if "--sign" in argv:
+                info = plistlib.loads((Path(argv[-1]) / "Contents/Info.plist").read_bytes())
+                self.assertEqual({k for k in info if k.endswith("UsageDescription")}, required)
+                for key in required:
+                    self.assertIsInstance(info[key], str)
+                    self.assertTrue(info[key].strip())
+                self.assertNotIn("NSBonjourServices", info)
+                signed.append(info)
+            self.runner(argv, **kwargs)
+
+        self.stage(runner=inspect)
+        self.assertEqual(len(signed), 1)
+        info_path = self.root / "stage/Verity.app/Contents/Info.plist"
+        self.assertEqual(plistlib.loads(info_path.read_bytes()), signed[0])
+        candidate = json.loads((self.root / "stage/candidate-release.json").read_text())
+        self.assertEqual(candidate["native_host"]["inventory"], staging.inventory(info_path.parent.parent))
+        self.assertTrue(staging.verify_stage(self.root / "stage", runner=self.runner))
+
+    def test_even_sealed_wrong_or_omitted_metadata_cannot_publish_success(self):
+        # Corrupt before inventory/signature receipt creation: integrity alone is
+        # insufficient if the builder sealed the wrong metadata in the first place.
+        self.stage()
+        original = plistlib.loads((self.root / "stage/Verity.app/Contents/Info.plist").read_bytes())
+        # Include a description even on the unfixed builder so missing metadata
+        # acceptance is reproduced independently of the coverage test above.
+        keys = set(original) | {"NSCameraUsageDescription"}
+        mutations = [(key, action) for key in sorted(keys) for action in ("omit", "wrong")]
+        mutations.extend((key, "empty") for key in keys if key.endswith("UsageDescription"))
+        mutations.extend([("NSBonjourServices", "extra"), ("LSUIElement", "integer")])
+        put = staging.put
+        for index, (key, action) in enumerate(mutations):
+            with self.subTest(key=key, action=action):
+                target = self.root / "stage" / str(index)
+
+                def corrupt(path, data):
+                    if path.name == "Info.plist":
+                        info = plistlib.loads(data)
+                        if action == "omit":
+                            info.pop(key, None)
+                        else:
+                            info[key] = {
+                                "extra": ["_unplanned._tcp"],
+                                "integer": 1,
+                                "empty": "",
+                                "wrong": "incorrect metadata",
+                            }[action]
+                        data = plistlib.dumps(info)
+                    put(path, data)
+
+                with patch.object(staging, "put", side_effect=corrupt):
+                    with self.assertRaisesRegex(ValueError, "bundle metadata mismatch"):
+                        self.stage(root=target)
+                self.assertFalse((target / "stage-report.json").exists())
+                self.assertFalse((target / "stage-report.next.json").exists())
+        self.assertEqual(staging.inventory(self.base), self.before)
+
     def test_signed_bootstrap_environment_is_explicit_and_selection_preserved(self):
         self.stage()
         stage = self.root / "stage"

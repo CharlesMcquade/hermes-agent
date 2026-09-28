@@ -34,6 +34,63 @@ FILES = (
 ROLES = ("agent", "webui")
 
 
+def production_info_plist():
+    """Canonical production metadata; permission rationale is not a consent grant.
+
+    Keep platform choices and operator limitations in PRODUCTION-PRIVACY.md.
+    Do not import lab descriptions: authorized production tasks may use the data.
+    """
+    return dict(
+        CFBundleIdentifier=BUNDLE_ID,
+        CFBundleName="Verity",
+        CFBundleExecutable="VerityServiceHost",
+        CFBundleVersion="1",
+        CFBundlePackageType="APPL",
+        LSUIElement=True,
+        LSMinimumSystemVersion="14.0",
+        NSCameraUsageDescription=(
+            "Verity uses the camera to capture photos or video for tasks you authorize."
+        ),
+        NSMicrophoneUsageDescription=(
+            "Verity uses the microphone to record audio for voice input and tasks you authorize."
+        ),
+        NSContactsUsageDescription=(
+            "Verity reads and updates contacts to find recipients and manage contact information "
+            "for tasks you authorize."
+        ),
+        NSCalendarsFullAccessUsageDescription=(
+            "Verity reads and updates calendars to check availability and manage events "
+            "for tasks you authorize."
+        ),
+        NSRemindersFullAccessUsageDescription=(
+            "Verity reads and updates reminders to organize lists and track tasks you authorize."
+        ),
+        NSPhotoLibraryUsageDescription=(
+            "Verity reads and updates your photo library to find, organize, and save photos "
+            "and videos for tasks you authorize."
+        ),
+        NSSpeechRecognitionUsageDescription=(
+            "Verity uses speech recognition to transcribe audio for tasks you authorize. "
+            "Audio may be sent to Apple for speech recognition."
+        ),
+        NSBluetoothAlwaysUsageDescription=(
+            "Verity uses Bluetooth to communicate with nearby devices for tasks you authorize."
+        ),
+        NSLocationUsageDescription=(
+            "Verity uses your location to provide local information and location-based "
+            "assistance for tasks you authorize."
+        ),
+        NSAppleEventsUsageDescription=(
+            "Verity controls other apps to read information and perform actions "
+            "for tasks you authorize."
+        ),
+        NSLocalNetworkUsageDescription=(
+            "Verity connects to devices and services on your local network "
+            "for tasks you authorize."
+        ),
+    )
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -242,17 +299,7 @@ def stage(
     put(app / "Contents/Resources/service-settings.json", encoded(settings))
     put(
         app / "Contents/Info.plist",
-        plistlib.dumps(
-            dict(
-                CFBundleIdentifier=BUNDLE_ID,
-                CFBundleName="Verity",
-                CFBundleExecutable=binary.name,
-                CFBundleVersion="1",
-                CFBundlePackageType="APPL",
-                LSUIElement=True,
-                LSMinimumSystemVersion="14.0",
-            )
-        ),
+        plistlib.dumps(production_info_plist()),
     )
     put(root / "ServiceHost.swift", swift)
     compile_host(root, root / "ServiceHost.swift", binary, runner=runner)
@@ -394,11 +441,9 @@ def verify_stage(root, runner=run, *, report=None):
         or native["bundle_id"] != BUNDLE_ID
     ):
         raise ValueError("Staged selection/final identity mismatch")
-    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-    if (
-        info.get("CFBundleIdentifier") != BUNDLE_ID
-        or info.get("CFBundleExecutable") != "VerityServiceHost"
-    ):
+    # Compare canonical bytes, not just identity or Python dictionary equality
+    # (which treats integer 1 as True). A sealed but incorrect plist must fail.
+    if (app / "Contents/Info.plist").read_bytes() != plistlib.dumps(production_info_plist()):
         raise ValueError("Staged bundle metadata mismatch")
     for role in ROLES:
         definition = plistlib.loads(

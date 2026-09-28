@@ -221,9 +221,11 @@ matched both reviewed files to pushed commit
    an explicit six-key environment in both Swift and the controller. The stager
    supplies this field. The 70-case synthetic live environment gate below passed;
    this is not final production-host execution or real application validation.
-3. **Permission metadata and final identity grants remain unresolved.** The exact
-   tested ServiceHost has no consent APIs and its minimal Info.plist has no privacy
-   usage descriptions. Production permission workflow, final-identity consent,
+3. **Metadata implemented; final identity grants remain unresolved.** The unchanged
+   ServiceHost has no consent APIs. The stager now seals and verifies the complete
+   production Info.plist, including 11 usage descriptions; see `PRODUCTION-PRIVACY.md`
+   for Apple key mapping, red/green tests and pending source review. Production
+   permission workflow, final-identity consent,
    compatible worker runtimes, rebuild/rollback continuity, and Local Network /
    Location limitations need explicit treatment and operator involvement.
 4. **Actual artifact verification remains.** No real production stage was built.
