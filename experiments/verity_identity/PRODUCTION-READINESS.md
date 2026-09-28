@@ -41,8 +41,10 @@ key file remains absent. No repro used actual private material or Keychain write
 Eight signer tests (including ordinary serialization/write/close/checkpoint/import
 failure paths) and all 37 affected/neighboring experiment tests pass on Python 3.11;
 changed-file Ruff checks pass. This does not claim cleanup survives process kill,
-OS crash, or filesystem unlink failure. Independent re-review is pending; production
-host/control staging and final-identity permission validation remain unfinished.
+OS crash, or filesystem unlink failure. Independent focused re-review found no
+blocking findings in scope, confirming both fixes and their regression coverage.
+The signer/recovery gate is complete. Production host/control staging and final-
+identity permission validation remain unfinished; this is not cutover readiness.
 
 ## Previously identified signing prerequisite
 
