@@ -467,8 +467,8 @@ controller integration and live same-session continuation were not exercised.**
 The two focused reviews (`deleg_98cbabad`) found **three supported-scope
 blockers**. The parent independently inspected the cited paths and matched the
 reviewed consumer, routes, server, streaming and test bytes to committed
-`f7fd6ed7dc7f0faf45fa1c7e66363009a19e609d`. This is source confirmation;
-the new interleavings have not yet been parent-executed.
+`f7fd6ed7dc7f0faf45fa1c7e66363009a19e609d`. The parent subsequently replayed all
+five failing regression cases, as recorded in the repair checkpoint below.
 
 - Receipt failure after Stop can strand cancellation settlement. The executing
   receipt wrapper calls launch cleanup and returns without entering the worker
@@ -487,22 +487,46 @@ the new interleavings have not yet been parent-executed.
   insufficient: fence the claim against shutdown and settle an admission that
   wins first before owner teardown. Do not block on locks/joins in signal handlers.
 
-Repair `deleg_6c664622` owns the narrow consumer/routes/server/test/doc changes in
-the isolated WebUI worktree. Require deterministic failing regressions before
-repair, passing affected and neighboring tests, parent reproduction and focused
-re-review. The existing **101-test pass does not close these blockers**. Consumer
-startup tests extracted a helper rather than exercising `server.main()` lifecycle;
-full startup/controller integration and actual restart execution remain separate
-gates. Original parent evidence remains under
-`~/.hermes/cache/scratch/verity-resume-parent-38oo_s91/`, including
-`parent-final-head-receipt.json` and baseline/lint comparisons.
+Repair `deleg_6c664622` delivered only the five authorized consumer/routes/server/
+test/documentation files; `api/streaming.py` is unchanged. Parent checkpoint
+`fb41e6625dddf9d023724f21dccd25d3720032b5` is committed and pushed to the WebUI fork,
+with exact remote SHA verified. It adds worker-participant retirement under the
+stream-detachment lock, early goal admission, and an owner claim/close boundary
+with retained consumer stop/join in `server.main()` teardown.
+
+The parent independently passed **148 tests with 5 deliberately deselected**
+native-Agent goal cases, then **9** neighboring launch-cleanup/settlement tests.
+The combined gate on committed HEAD passed **157 tests, 5 deselected**, on Python
+3.11.16 through `./scripts/test.sh`. Source hashes remained unchanged and imports
+resolved to the intended worktree; no Agent was loaded. Changed-file lint has
+24 baseline / 24 final findings with no additions; whitespace checks passed.
+
+A test-only loader compiled the exact pre-repair three-module Git blobs at their
+original paths and reproduced **five expected failures**: two leaked Stop worker
+participants, two goal admission failures, and actual-main teardown observing a
+live consumer. Product files were not temporarily replaced. This is source-code
+regression replay, not a baseline deployment/release-identity test. The offline
+guard blocks native loading, unexpected subprocesses, listening and outbound
+connections; its initial overblocking of conftest's import-time ephemeral
+loopback port reservation was corrected only in the parent harness. All test
+state was disposable and the unrelated autouse HTTP server remained suppressed.
+
+Actual imported `server.main()` now has offline wiring tests with fully stubbed
+startup dependencies and fake HTTP, including both shutdown/claim orderings.
+Admission-winning shutdown waits for claim/launch settlement, **not** model
+completion or worker-entry receipt. Full dependency startup, actual signals,
+controller proof publication and live same-session restart remain unproved.
+Focused re-review `deleg_419f8eb7` is running; these tests do not themselves close
+the three source-review blockers. Parent evidence is retained at
+`~/.hermes/cache/scratch/verity-resume-repair-parent-2mcydzbi/parent-final-receipt.json`;
+the earlier `verity-resume-parent-38oo_s91` checkpoint remains unchanged.
 
 Gateway, runner, non-WebUI and unknown ownership refuse. Capture is permitted only
-after settlement; persisted pending/active work refuses. The reviewed HTTP and
-server-wakeup paths share pre-mutation admission, but the `/goal` gap above blocks
-a general ordinary-start guarantee. Ambiguous durable claims never authorize
-replay. Unsupported external writers remain outside the contract. No source-only
-audit, unconsumed request or standalone mocked state machine satisfies the cutover
+after settlement; persisted pending/active work refuses. HTTP, server-wakeup and
+goal kickoff now participate in the intended shared admission, subject to the
+pending focused re-review. Ambiguous durable claims never authorize replay.
+Unsupported external writers remain outside the contract. No source-only audit,
+unconsumed request or standalone mocked state machine satisfies the cutover
 condition.
 
 A parent read-only metadata check found the initiating session open, sourced from
