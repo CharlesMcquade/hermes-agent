@@ -196,8 +196,12 @@ failed receipt precedes raising cleanup failure. It also confirmed the regressio
 checks continuation and preservation of the original body error. The reviewer did
 not execute tests or inspect live state. Parent verified the reviewed harness and
 test files still match `ffe1280d2506e32039dc9c64a90d0a813231df0d`.
-Parent staging integration review and the new synthetic migration/rollback harness
-remain pending; this closes only the cleanup-review finding.
+Parent integration review (`deleg_490c4598`, task 2) reported the same cleanup
+finding against its older snapshot and no other blockers. That duplicate is closed
+by the already-tested fix and re-review above. The synthetic migration harness now
+has a six-case live pass, independently verified process/group/job cleanup and
+unchanged production baseline; see `../../NATIVE-MIGRATION-CANARY.md`. Current-source
+migration harness review remains pending; final installation and grants are not done.
 
 ## Concrete remaining gates / blockers
 
@@ -207,9 +211,10 @@ remain pending; this closes only the cleanup-review finding.
    during explicit legacy-to-native migration. Offline tests prove successful
    migration and failed-start restoration of exact old manifest/binary-plist bytes.
    The existing transaction does not install or restore host/control/wrapper
-   artifacts. Their coordinated installation and live synthetic migration must
-   still be verified; preserve unrelated candidates and retain legacy artifacts.
-2. **Final environment integration remains subject to review.** Optional signed
+   artifacts. Their coordinated installation still needs verification; live synthetic
+   definition migration now passes separately. Preserve unrelated candidates and
+   retain legacy artifacts.
+2. **Environment source integration reviewed; final artifacts still separate.** Optional signed
    bootstrap settings now preserve legacy lab behavior when absent and validate
    an explicit six-key environment in both Swift and the controller. The stager
    supplies this field. The 70-case synthetic live environment gate below passed;

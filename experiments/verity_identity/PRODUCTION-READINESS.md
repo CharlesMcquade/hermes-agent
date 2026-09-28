@@ -85,7 +85,10 @@ native readiness. A lab-only live environment gate passed 70 cases across both
 roles, with independently verified process/group/job cleanup; see
 `PRODUCTION-STAGING.md` for evidence and two retained harness failures/fixes.
 These are not final production identity, installation, messaging or cutover tests.
-Focused reviews and the synthetic migration live harness remain pending.
+Environment/staging integration review reported only the already-fixed cleanup
+finding and no other blockers. The new synthetic migration harness passed six live
+cases with independent cleanup verification and unchanged production baseline;
+see `../../NATIVE-MIGRATION-CANARY.md`. Its current-source review remains pending.
 
 ## Unfinished implementation and verification after that dependency
 
