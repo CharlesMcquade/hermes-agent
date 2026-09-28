@@ -1,4 +1,4 @@
-# Production readiness: controls-only preparation and native rehearsal
+# Production readiness: supervised cutover ready, not activated
 
 ## Current no-app-replacement route
 
@@ -23,8 +23,18 @@ install, refresh, activation, exact return and restore; its root/transaction exc
 8 MB and its retained return journal exceeds 22 MB. Against prior code, the capacity
 regression fails twice per ABI with zero errors. Exact legacy/native backup argv
 and associated native bundle identity are validated before refresh mutation.
-Real staging and bounded preinstall inspection now pass. Focused source closure,
-installation/readback and resolved unarmed activation/return artifacts remain open.
+The final focused source review is bounded-clear. The approved controls-only
+installation and independent installed readback now pass: complete pinned controls,
+wrapper bytes/modes/owners, untouched signed app/launcher/v1/root/lock, exact original
+legacy selector/plists, preserved transaction payload under schema 2, matching live
+legacy identities, shallow/deep health and five served assets. A private immutable
+plan pins both disabled/unloaded launchd one-shots, exact activation/return argv,
+installer undo/optional restoration and a read-only pre-cutover verifier. Eleven
+installed CLI import/refusal probes pass across the actual plan/watchdog/routine-job
+interpreters; non-launchd calls do not bypass the ownership gate. Existing watchdog
+supervision remains registered and healthy. **Preparation is complete for the
+supervised trial; final production go is still required.** Production native success,
+post-success exact return and real tool capability acceptance are not yet proven.
 The approved isolated signed native
 rehearsal now passes: actual host-to-timestamp-wrapper-to-child identity,
 direct WebUI, independent launchd restart, and exact selector/plist rollback
@@ -94,7 +104,7 @@ consumer is running in production, or that the native host was executed. See
 mechanism. Merely approving downtime cannot add a protocol to immutable v1.
 All completed preparation remains offline; there is still no cutover-ready claim.
 
-## Latest live outcome supersedes the preparation checkpoint below
+## Historical first live outcome (before the controls-only refresh)
 
 The supervised production activation was attempted and the installed controller
 reported `Readiness timeout: Native child is not direct host child`. It completed
@@ -125,7 +135,7 @@ Generic ancestor/descendant acceptance is not used. Installed artifacts remain
 immutable; do not retry with the old activation controller, watchdog or return
 executor. These fixture results do not establish production acceptance.
 
-### Current immutable-deployment blocker
+### Historical immutable-deployment blocker (superseded by controls-only route)
 
 The deployment review traced all four maintenance wrappers to their immutable
 control version, and the launcher wrapper digest into signed host settings. A

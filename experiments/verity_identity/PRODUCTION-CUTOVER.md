@@ -1,6 +1,25 @@
-# Schema-2 native cutover: first supervised trial rolled back
+# Schema-2 native cutover: refreshed supervised trial ready
 
-**Latest live outcome:** the forward trial reached native startup but failed the
+**Current state:** the approved controls-only refresh is installed and independently
+read back, following the final focused source clearance. The original signed app,
+launcher, v1 controls and root receipt remain intact. Production is still the exact
+healthy legacy baseline; no second activation occurred. Disabled, unloaded forward
+and exact-return one-shots are pinned in a private immutable plan with recovery
+recipes and a read-only verifier. The parent frozen replay passed 163 tests / 865
+subtests per ABI plus 50 fresh-process probes; the isolated signed native rehearsal
+passed actual timestamp-wrapper readiness, restart, bounded exact rollback and
+cleanup. See `CONTROL-REFRESH.md` and the current `PRODUCTION-READINESS.md` section.
+**Ready means ready for final supervised-cutover approval, not production capability
+acceptance.** Native success, successful-native exact return and real tool passthrough
+remain live acceptance checks. No production interruption is authorized by staging.
+
+The remainder records prior checkpoints and parameterized contracts. Where old
+status paragraphs say controls are not installed or reviews are pending, the current
+state above supersedes them; never use an old one-shot or return executor for retry.
+
+## Historical first supervised trial
+
+**First live outcome:** the forward trial reached native startup but failed the
 installed controller's direct-child readiness assumption and automatically recovered
 the exact original selector/plists. Independent readback verified healthy legacy
 services and retained artifact provenance. This is `rolled_back`, not native

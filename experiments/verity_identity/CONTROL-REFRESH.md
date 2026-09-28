@@ -1,13 +1,16 @@
 # Controls-only native refresh
 
-Status: implemented and independently replayed; install-only refresh and isolated
-native rehearsal are explicitly approved, but production cutover is not. The
-receipt-capacity and malformed-backup argv fixes pass the parent frozen replay
-(**163 tests / 865 subtests per ABI**) and 50 fresh-process probes. Real staging
-and guarded preinstall inspection now succeed without installed changes. Focused
-source closure, installation/readback and resolved unarmed cutover artifacts remain
-open. The approved isolated signed native rehearsal passed restart, bounded exact
-rollback and cleanup; it is not production activation.
+Status: **ready for a supervised cutover, not yet activated**. The focused source
+review cleared the backup-argv and fixed-capacity repairs against the parent-tested
+snapshot (**163 tests / 865 subtests per ABI**, 50 fresh-process probes). The approved
+controls-only refresh is installed and independently read back. Original signed
+app, stable launcher, v1 controls, root receipt, lock identity, exact legacy selector
+and plists remain intact; live legacy identities, health/deep health and five served
+assets still match. The transaction retains the exact original payload within the
+schema-2 fence. Resolved, pinned activation and exact-return plans are disabled and
+absent from launchd. The isolated signed native rehearsal passed restart, bounded
+exact rollback and cleanup. Production activation, native-success return and tool
+capability acceptance remain separate live gates requiring final approval.
 
 ## Why this is different from an app upgrade
 
@@ -206,4 +209,36 @@ healthy legacy baseline and service PIDs, and both production one-shot jobs abse
 This closes the isolated native topology/readiness/bounded-rollback gate, not the
 refresh publication gate, production restart, successful-native production return,
 or capability inheritance by production tools. No second production activation has
-occurred. Install-only refresh is approved; final cutover is not.
+occurred. The lab does not establish refresh publication; the subsequent approved
+installation and independent readback establish that separate gate. Final cutover
+is not approved.
+
+## Installed readback and unarmed trial artifacts
+
+The parent matched the focused reviewed snapshot, durable installer dependencies,
+staged controls and final installed module hashes before publication. A bounded
+installer completed the explicitly approved write set. Independent readback used
+static inventory/signature validation and live legacy snapshot checks, with no
+application imports, permission probes or service mutations. It checked the
+original root/launcher/app/lock identities, exact baseline bytes and wrapper
+modes/owners, complete committed provenance and exact schema-2 transaction envelope.
+
+The private immutable plan records the root, stage, committed-refresh and candidate
+pins, six module hashes, exact forward/return argv, restricted environment, disabled
+one-shot plists, installer undo/optional post-return restoration recipes, and a
+read-only pre-cutover verifier. Both jobs have `RunAtLoad=false`, `KeepAlive=false`
+and `Disabled=true`; live inspection confirms neither is loaded. Static definition
+checks prove the forward native argv and bundle association without selecting it.
+Eleven additional installed-entrypoint probes cover the plan/watchdog/routine-job
+interpreters; approved-job calls correctly refuse non-launchd ownership even for
+`--help`. This is import/refusal evidence, not forwarding past the ownership gate.
+The existing scheduled watchdog remains registered and its observed state is healthy.
+
+Readiness is bounded to a supervised trial. Revalidate the pinned plan and live
+baseline immediately before any newly approved dispatch. After interruption, read
+the transaction, result, selection and actual native identities before retrying;
+`rolled_back` is not activation success and `rollback_failed` requires reconciliation.
+The exact-return plan is for a healthy native selection, not disaster recovery.
+Retain all original and refreshed artifacts. Manual continuation after reconnect is
+accepted; automatic same-session resumption, messaging, permission operations and
+reboot have not been established by this readback.
