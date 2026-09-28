@@ -446,7 +446,28 @@ A separate frozen overlay using the return/revocation controller from main
 checkpoint `25045eafd154af00a05b1b453f41413b63f9b12e` also passed **48 tests per ABI**.
 This establishes fixture compatibility, not an actual chained controller return.
 The parent's evidence is `verity-upgrade-topology-verified-n4g9pmeh/receipt.json`
-under configured scratch. Focused source re-review `deleg_e0c610b8` is pending;
-the topology finding is not closed from green tests alone. No compile, signing,
+under configured scratch. Both focused source reviewers in `deleg_e0c610b8`
+found no concrete supported-boundary blocker. The parent independently inspected
+the retained observation, exact generated topology, self invocation, neighboring
+legacy restore and journal/mutation call sites, then matched reviewed runtime/test
+inputs to the tested snapshot and committed repair
+`3b04d5486898d4d865b81145fb64ed29fea9d278`. The original required-gateway-child
+rejection is closed **within the reviewed offline scope**. No compile, signing,
 real process observation, live state mutation, upgrade, activation or restart was
-performed by these verification runs.
+performed by these verification runs or this source-review closeout.
+
+The review identified evidence gaps, not demonstrated runtime failures. The
+upgrade journal tests establish eventual refusal and successful recovery, but
+lack immediate no-copy/no-rename/no-write assertions before recovery. Recovery
+checks wrapper bytes at refusal but not app arrangement/inodes at its two rename
+boundaries. Some malformed self identity shapes and self reobservation drift also
+lack focused cases. A separate test-only follow-up `deleg_8384638f` is strengthening
+those three existing invariant methods; its result is pending. The existing
+48-test passes must not be described as proving those missing assertions.
+
+The new success fixture covers self PID, while the older broad-census fixture
+still does not. Both use synthetic kernel argv; neither launches the real
+installer CLI. Actual all-PID readability and invocation compatibility, real
+controller-return composition, matched deployment and final-identity live
+acceptance remain separate gates. Source review is not permission to relax
+unknown-process refusal or claim an atomic launch barrier.
