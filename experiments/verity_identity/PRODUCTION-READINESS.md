@@ -22,11 +22,32 @@ were evaluated from a working directory outside fixture scratch. The unchanged
 source and guard passed after running from the isolated fixture directory. This
 was a harness setup failure, not a product regression or a weakened safety check.
 
-Parallel offline work now owns three explicit gaps: upgrade-aware exact-return
-composition; retained-host staging without recompilation; and an achievable,
-fail-closed maintenance launch/consumer boundary. None is accepted merely because
-the integrated baseline passes. Maintenance publication must not be implemented as
-an unconditional dependency callback or a verbal exclusion declaration.
+Offline implementation now provides upgrade-aware exact return and retained-host
+staging without recompilation. Parent replay of their combined frozen snapshot
+passed **131 tests on each of Python 3.11.16 and 3.14.7**, with seven explicit
+subprocess/native/compiler exclusions, isolated state and no guard violations.
+The real fixture chain runs first install -> fresh stage -> upgrade -> native
+activation -> exact return -> original-wrapper restore. No synthetic completion
+receipt substitutes for that return. OS/signature/health/dependency observations
+are adapters, not live evidence. Focused reviews `deleg_66b6b131` are pending.
+
+Parent negative replay on each ABI also reproduced the old controller's
+`Wrong installed control identity` refusal, and behavioral staging mutants caused
+one forced-compilation assertion and four missing-stability assertions. Initial
+scratch mutant writes were refused by the file tool; the accidentally unchanged
+copies passed and were not counted as negative evidence. After properly applying
+the mutations, both ABIs failed as intended with zero errors. Three existing Ruff
+encoding findings matched the baseline exactly; no new diagnostics were present.
+
+Maintenance publication remains **unimplemented**, not fixture-green. The worker
+stopped rather than ship a permissive callback. The parent replayed two concrete
+counterexamples on both ABIs: a pre-imported controller remains callable after
+flock release, and the unlocked legacy launcher reaches an intercepted exec while
+that lock is held across all three app arrangements. These do not prove any such
+consumer is running in production, or that the native host was executed. See
+`MAINTENANCE-CONTRACT.md` for the missing consumer-retirement/launch-exclusion
+mechanism. Merely approving downtime cannot add a protocol to immutable v1.
+All completed preparation remains offline; there is still no cutover-ready claim.
 
 ## Latest live outcome supersedes the preparation checkpoint below
 
@@ -77,14 +98,14 @@ artifacts, but it is not presently a complete deployment-and-return route:
   target; the bounded follow-up used metadata-only `ps`, never command or environment
   output. This is an observed live admission prerequisite failure, not an executed
   installer attempt or proof that a privileged attempt would succeed.
-- The upgrade-aware exact-return controller is missing. Installed-v1 validation
-  rejects legitimate new controls/candidate/wrappers; the installer expects a
-  verified return record binding both root and upgrade receipt hashes, which the
-  current controller does not emit. Existing tests synthesize that future record.
-- New launcher settings require a newly signed bundle. No host implementation
-  change is needed, but the current stager always compiles/signs and has no explicit
-  retained-host-binary reuse path; it cannot promise identical signed executable
-  bytes.
+- The source controller now implements the explicit root+upgrade-pinned exact
+  return and emits the linkage the installer requires. Real composed fixtures
+  pass independently; focused source review remains pending and no installed
+  controller or native-success return has been exercised live.
+- The source stager now implements explicit retained-stage/report-pinned executable
+  reuse before signing, preserving unchanged host source and canonical Info.plist.
+  Fresh signing can alter signature bytes, so it still does not promise identical
+  whole signed executable bytes. This path is offline-tested, not live-signed.
 
 The follow-up source review `deleg_0388c1fa` is complete. Parent inspection agrees:
 there is no currently supported install-only admission relaxation. The advisory
@@ -95,14 +116,14 @@ wrappers. Retaining an old inode does not preserve the old pathname or launcher
 binding for an already-starting consumer. Repeated process snapshots, including a
 privileged snapshot, are not a launch barrier.
 
-The smallest next decision is separate approval for a bounded maintenance approach,
-not permission to ignore protected processes. That approach must establish exclusive
-control of the relevant launches/maintenance entrypoints, quiesce existing relevant
-consumers, and prevent new ones through publication and recovery. Unknown relevant
-ownership, retained old-code holders, or uncertain launch exclusion must refuse.
-A verbal maintenance declaration, arbitrary PID/UID exclusions, or an `EPERM` skip
-cannot satisfy that obligation. The existing install-only code does not implement
-this boundary; a maintenance window alone does not clear the exact-return gap.
+The approved offline maintenance investigation must establish exclusive control
+of relevant launches/maintenance entrypoints, quiesce existing relevant consumers,
+and prevent new ones through publication and recovery. Unknown relevant ownership,
+retained old-code holders, or uncertain launch exclusion must refuse. A verbal
+maintenance declaration, arbitrary PID/UID exclusions, or an `EPERM` skip cannot
+satisfy that obligation. The current v1 has no complete consumer set or retirement
+handshake; the permitted installer-only work could not bridge that bootstrap gap.
+The installer was left unchanged rather than claiming a safe maintenance path.
 
 Before live use, the revised boundary needs regression evidence for an old controller
 paused after import but before locking, an unlocked launcher, native startup across
