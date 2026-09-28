@@ -248,8 +248,8 @@ and matching signed app are required; neither was produced by this design review
 Offline implementation `deleg_f52dd994` delivered the installer, focused tests
 and installation documentation on the isolated upgrade branch. The parent
 checkpoint is `1038706243f0e6838459ca06345882fe3434d381`; no controller files were
-changed or installed. It implements the following required invariants, subject to
-the process-topology review blocker below and pending live acceptance:
+changed or installed. It implements the following required invariants, with the
+later topology repair/review and remaining evidence/live gates detailed below:
 
 - Keep the original install receipt, stage and controls unchanged. Retain the
   original signed app by rename, never rebuilding or re-signing its replacement.
@@ -322,10 +322,29 @@ stable and changed-file Ruff/diff checks passed. Parent evidence:
 
 The earlier reviewers found no additional supported-scope blocker in immutable
 provenance, observed-state recovery or the postreturn digest interface they
-inspected. Focused repair re-review `deleg_e0c610b8` is pending; passing tests alone
-does not close the topology finding. Real `KERN_PROCARGS2` readability for every
-system-owned PID remains unverified, and inaccessible or changing processes must
-still refuse. No live census or production operation was attempted.
+inspected. Both focused repair reviewers in `deleg_e0c610b8` found no concrete
+supported-boundary blocker. The parent inspected the cited authority, generated
+wrapper/child, self-invocation, legacy-restore and mutation-edge paths and matched
+reviewed executable/test inputs to the prior tested snapshot and repair commit
+`3b04d5486898d4d865b81145fb64ed29fea9d278`. Together with retained old-red/new-green
+evidence, this closes the original topology rejection **offline**, not live
+compatibility or full deployment acceptance.
+
+Coverage follow-up remains explicit: existing upgrade journal cases do not assert
+the immediate absence of the next mutation before recovery; recovery cases
+snapshot wrappers but not the app arrangement/inodes at both rename boundaries.
+Focused malformed-self and self-identity-drift cases are also incomplete. These
+are review-identified evidence gaps, not demonstrated product defects. Test-only
+follow-up `deleg_8384638f` owns the focused test file and will strengthen those
+assertions; no runtime edits are assigned. The existing 48-test passes do not
+prove assertions that were absent.
+
+The new lifecycle fixture includes the installer self PID, but its argv and
+identity remain synthetic. Real `KERN_PROCARGS2` readability for every
+system-owned PID and direct CLI compatibility remain unverified, and inaccessible
+or changing processes must still refuse. No live census or production operation
+was attempted. This review closeout changes only documentation; no new test
+execution is claimed.
 
 The delivered receipt contract keeps **original baseline provenance** distinct
 from **current deployment provenance**, with explicit root and committed-upgrade
@@ -334,9 +353,9 @@ transaction containing both `baseline_sha256` and `upgrade_sha256`. The installe
 tests synthesize that future record; the real chained return is **not implemented
 or tested**. Current-controller compatibility does not close this gap. No copied
 historical fields, recursive chain lookup or implicit latest receipt may substitute.
-The policy fix is reviewed, but integration waits for the upgrade repair and
-focused re-review. Fresh staging/signing, install-only replacement, census
-admission and live verification
+The policy and topology repairs are source-reviewed; the immediate-mutation
+coverage follow-up and actual chained-return integration remain open. Fresh
+staging/signing, install-only replacement, census admission and live verification
 remain separately gated. No live upgrade, recovery, restore or cutover was executed
 for this checkpoint.
 
