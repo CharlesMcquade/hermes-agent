@@ -122,7 +122,14 @@ helper succeeded: 35,064-byte binary and 103 files in its stage-local module cac
 The binary was neither executed nor signed with the production identity. Evidence:
 `~/.hermes/cache/scratch/verity-compiler-proof-zckj9dtg/compiler-verification.json`.
 No actual production stage, final identity installation or launchd operation was
-performed. Focused re-review remains pending.
+performed. Focused read-only re-review (`deleg_27605a7b`) found no remaining
+blockers in the two fixes: clean compiler environment/cache paths and success
+publication only after final verification. The reviewed staging source and tests
+match commit `9470ba2c2ede0cdad280ee5d8649427664be4bc8`; the parent verified no
+subsequent diff in those files. The reviewer did not execute tests or review the
+concurrent host/controller work. Parent execution passed all 14 staging tests on
+Python 3.11 and 3.14, plus 51 selected experiment/neighboring tests on Python 3.11.
+This closes only the two staging-review findings, not the remaining gates below.
 
 ## Concrete remaining gates / blockers
 
