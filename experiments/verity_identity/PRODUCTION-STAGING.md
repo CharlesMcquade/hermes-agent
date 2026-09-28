@@ -28,8 +28,16 @@ The new directory contains:
 - separate `launchagents/agent.plist` and `webui.plist` proposals retaining their
   labels, lifecycle policy, logs and throttling, using `[native executable, role]`,
   `AssociatedBundleIdentifiers`, and `AbandonProcessGroup:false`;
-- exact input manifest and job-definition rollback copies, Swift source,
-  requirements file and stage receipt.
+- exact input manifest, job-definition and stable-wrapper rollback copies, Swift
+  source, requirements file and stage receipt with candidate/rollback integrity.
+
+The candidate now includes explicit per-role `launchd_overrides` for its exact
+native argv, anchor, bundle association and process-group policy. Their presence
+is not activation: the matching controller support is being implemented and tested
+separately. `verify_stage()` compares entire proposed plist dictionaries with the
+saved originals plus those exact overrides (and checked removal of `Program`),
+so unrelated environment, logging, lifecycle or throttling drift is rejected.
+All other top-level selection fields are retained exactly as well as services.
 
 Signed settings point to the final maintenance base, final stable launcher and
 its staged wrapper hash. `verify_stage()` verifies the in-stage bundle inventory,
@@ -80,12 +88,20 @@ refusal, revoked selections, path/symlink/version restrictions, selection drift,
 and actual subprocess imports of the copied controller modules without application
 imports. They are **not evidence of a production signature or native execution**.
 
-Observed: 11 new tests and 63 controller regressions passed on Python 3.14;
+Initial child verification: 11 new tests and 63 controller regressions passed on Python 3.14;
 8 neighboring controller-lab tests passed. An initial default `python3` run used
 Apple Python 3.9: the new tests passed but one existing safe-path regression failed
 because that interpreter lacks the required safe-path behavior. The supported
 3.14 rerun passed all 63. No application imports, launchd calls, production signing,
-settings writes, live staging invocation, commit or push were performed.
+settings writes, or live staging invocation were performed by that verification.
+
+Parent verification on Python 3.11 repeated all 11 staging tests and fixed the
+changed-file Ruff encoding diagnostic. A new regression then reproduced three
+accepted tamper cases before the fix: rollback bytes, unrelated plist environment,
+and top-level candidate health URL. All 12 staging tests pass after the fix, as do
+changed-file Ruff checks. Stable-wrapper rollback copies and drift checks were
+added; incomplete staging remains non-activatable. Source has been committed and
+pushed; independent artifact-safety review and real staging remain pending.
 
 ## Concrete remaining gates / blockers
 

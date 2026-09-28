@@ -81,7 +81,8 @@ class StageTests(unittest.TestCase):
             )
         self.save()
         (self.base / "candidate-release.json").write_text("unrelated pending candidate")
-        (self.base / "production_launcher.py").write_text("unchanged active wrapper")
+        for name in staging.wrappers(self.base, self.base / "control-versions/old"):
+            (self.base / name).write_text("unchanged active wrapper " + name)
         self.before = staging.inventory(self.base)
         self.calls = []
 
@@ -159,6 +160,33 @@ class StageTests(unittest.TestCase):
                 with self.assertRaises((ValueError, RuntimeError)):
                     staging.verify_stage(self.root / "stage", runner=self.runner)
                 p.write_bytes(before)
+
+    def test_complete_proposal_and_rollback_drift_rejected(self):
+        self.stage()
+        stage = self.root / "stage"
+        for relative in (
+            "rollback/agent.plist",
+            "launchagents/webui.plist",
+            "candidate-release.json",
+        ):
+            with self.subTest(relative=relative):
+                path = stage / relative
+                original = path.read_bytes()
+                if relative == "rollback/agent.plist":
+                    path.write_bytes(b"corrupt rollback")
+                elif relative.endswith(".plist"):
+                    data = plistlib.loads(original)
+                    data["EnvironmentVariables"] = {"UNEXPECTED": "injected"}
+                    path.write_bytes(plistlib.dumps(data))
+                else:
+                    data = json.loads(original)
+                    data["health_url"] = "http://127.0.0.1:2/wrong"
+                    path.write_text(json.dumps(data))
+                try:
+                    with self.assertRaises((ValueError, RuntimeError)):
+                        staging.verify_stage(stage, runner=self.runner)
+                finally:
+                    path.write_bytes(original)
 
     def test_lab_identity_rejected(self):
         data = json.loads(self.identity.read_text())

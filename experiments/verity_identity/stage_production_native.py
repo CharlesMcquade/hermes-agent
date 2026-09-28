@@ -155,12 +155,16 @@ def stage(
         raise ValueError("Final control version already exists")
     # Capture control bytes once; the receipt covers the copied bytes, not a
     # later reread of mutable source. Never copy application/state/credential data.
+    wrapper_text = wrappers(base, version)
+    saved_wrappers = {name: absolute(base / name).read_bytes() for name in wrapper_text}
     controls = {name: (CONTROL / name).read_bytes() for name in FILES}
     swift = (SOURCE / "ServiceHost.swift").read_bytes()
     root.mkdir(mode=0o700, exist_ok=False)
     put(root / "selected-manifest.json", before)
     for role in ROLES:
         put(root / "rollback" / (role + ".plist"), saved[role])
+    for name, data in saved_wrappers.items():
+        put(root / "rollback/maintenance" / name, data)
     for name, data in controls.items():
         put(root / "control-versions" / control_id / name, data)
     control_receipt = {name: digest(data) for name, data in controls.items()}
@@ -168,7 +172,6 @@ def stage(
         root / "control-versions" / control_id / "control-receipt.json",
         encoded(control_receipt),
     )
-    wrapper_text = wrappers(base, version)
     for name, text in wrapper_text.items():
         put(root / "maintenance" / name, text.encode())
     launcher_hash = digest(wrapper_text["production_launcher.py"].encode())
@@ -242,21 +245,31 @@ def stage(
         launcher_sha256=launcher_hash,
     )
     contract(candidate)
+    candidate["launchd_overrides"] = {}
     for role in ROLES:
         definition = plistlib.loads(saved[role])
         definition.pop("Program", None)
-        definition.update(
+        override = dict(
             ProgramArguments=[candidate["native_host"]["executable"], role],
             WorkingDirectory=str(base),
             AssociatedBundleIdentifiers=[BUNDLE_ID],
             AbandonProcessGroup=False,
         )
+        candidate["launchd_overrides"][role] = override
+        definition.update(override)
         put(root / "launchagents" / (role + ".plist"), plistlib.dumps(definition))
     put(root / "candidate-release.json", encoded(candidate))
     # Fail closed on observed drift; retain incomplete evidence rather than
     # deleting it or publishing a successful receipt. No shared locks are written.
-    if selected.read_bytes() != before or any(
-        Path(old["services"][r]["plist_path"]).read_bytes() != saved[r] for r in ROLES
+    if (
+        selected.read_bytes() != before
+        or any(
+            Path(old["services"][r]["plist_path"]).read_bytes() != saved[r]
+            for r in ROLES
+        )
+        or any(
+            (base / name).read_bytes() != data for name, data in saved_wrappers.items()
+        )
     ):
         raise RuntimeError(
             "Selection/definitions changed during staging; discard stage"
@@ -269,6 +282,8 @@ def stage(
         final_control_version=str(version),
         bootstrap_python=str(bootstrap),
         selected_sha256=digest(before),
+        candidate_sha256=digest(encoded(candidate)),
+        rollback_sha256=inventory(root / "rollback"),
         source_sha256=digest(swift),
         control_sha256=control_receipt,
         launcher_sha256=launcher_hash,
@@ -314,6 +329,19 @@ def verify_stage(root, runner=run):
     old_bytes = (root / "selected-manifest.json").read_bytes()
     old = json.loads(old_bytes)
     if (
+        digest((root / "candidate-release.json").read_bytes())
+        != report["candidate_sha256"]
+        or inventory(root / "rollback") != report["rollback_sha256"]
+    ):
+        raise ValueError("Staged candidate or rollback bytes changed")
+    preserved = {
+        k: v
+        for k, v in manifest.items()
+        if k not in {"native_host", "launchd_overrides", "release_id"}
+    }
+    if preserved != {k: v for k, v in old.items() if k != "release_id"}:
+        raise ValueError("Staged candidate changed selected runtime contract")
+    if (
         digest(old_bytes) != report["selected_sha256"]
         or manifest["services"] != old["services"]
         or manifest["labels"] != old["labels"]
@@ -331,15 +359,20 @@ def verify_stage(root, runner=run):
         definition = plistlib.loads(
             (root / "launchagents" / (role + ".plist")).read_bytes()
         )
+        expected_definition = plistlib.loads(
+            (root / "rollback" / (role + ".plist")).read_bytes()
+        )
+        expected_definition.pop("Program", None)
+        override = dict(
+            ProgramArguments=[native["executable"], role],
+            WorkingDirectory=report["final_base"],
+            AssociatedBundleIdentifiers=[BUNDLE_ID],
+            AbandonProcessGroup=False,
+        )
+        expected_definition.update(override)
         if (
-            definition.get("ProgramArguments") != [native["executable"], role]
-            or definition.get("AssociatedBundleIdentifiers") != [BUNDLE_ID]
-            or definition.get("Label") != old["labels"][role]
-            or definition.get("WorkingDirectory") != report["final_base"]
-            or definition.get("RunAtLoad") is not True
-            or definition.get("KeepAlive") is not True
-            or definition.get("AbandonProcessGroup") is not False
-            or "Program" in definition
+            definition != expected_definition
+            or manifest.get("launchd_overrides", {}).get(role) != override
         ):
             raise ValueError("Staged role definition mismatch")
     for name, text in wrappers(
