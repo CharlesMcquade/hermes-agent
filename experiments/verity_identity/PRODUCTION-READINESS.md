@@ -198,12 +198,23 @@ tripwires; see `PRODUCTION-CUTOVER.md` for the author's disclosed earlier
 no-compile scope breach and the parent's bounded verification. Focused review
 `deleg_34b0714c` task 0 found one blocker: a dangling `revoked-releases.json`
 symlink reports false from `Path.exists()` and is treated as absent by both the
-new retained-input preparation and existing revocation check. The parent
-independently inspected those paths; this is source-established, not yet a
-reproduced execution result. Remediation `deleg_4a327158` must first reproduce
-refusal failure, then distinguish genuine absence from unsafe/unreadable entries
-and prove no selection, transaction or destructive-call mutation on refusal.
-The rest of that static review was bounded clear, not live certification.
+new retained-input preparation and existing revocation check. Remediation
+`deleg_4a327158` is delivered. The parent independently replayed the new regression
+against the old controller on both ABIs and observed the dangling-policy subcase
+fail with `ControlError not raised`. The fixed controller independently passed
+**74 permitted tests per ABI**, with the same two real-native cases excluded and
+pre-import native/network/subprocess guards. Delivered source hashes match the
+parent's frozen snapshot and remained unchanged during verification. Ruff still
+reports only the three previously reproduced baseline encoding findings.
+
+The shared reader now uses directory-entry inspection: genuine absence is distinct
+from dangling/ordinary symlinks, nonregular or unsafe files, permission failures
+and observed read-time replacement. Existing return prepublication boundaries
+revalidate the retained policy bytes and identity. Regression fixtures verify
+refusal before selection or destructive calls, preserving the original transaction
+before preparation and the exact native fallback after durable preparation.
+Focused re-review `deleg_5ac429c9` is pending. These are source/fixture results, not
+an installed-controller or live rollback claim.
 A new immutable control version with matching stage and install provenance is
 still required; the first-install-only installer is not an upgrade path.
 The installed artifacts have not changed. Installer restore is

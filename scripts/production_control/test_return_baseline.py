@@ -117,6 +117,116 @@ class ReturnBaselineTests(unittest.TestCase):
         self.c.snapshot(self.c.load(), self.c.definitions(self.c.load()))
 
 
+    def test_unsafe_revocation_entry_refuses_before_mutation(self):
+        cases = ('dangling', 'symlink', 'directory', 'unsafe-mode', 'unreadable',
+                 'inspect-denied', 'read-race', 'absent', 'plain')
+        for operation in ('return', 'restart'):
+            for case in cases:
+                with self.subTest(operation=operation, case=case):
+                    if operation != 'return' or case != cases[0]:
+                        self.setUp()
+                    policy = self.base / 'revoked-releases.json'
+                    target = self.base / 'policy-target.json'
+                    valid = dict(schema_version=1, release_ids=[], content_digests=[])
+                    if case not in ('absent', 'dangling', 'directory'):
+                        control.save_json(policy, valid)
+                    if case == 'dangling':
+                        policy.symlink_to(target)
+                    elif case == 'symlink':
+                        policy.rename(target)
+                        policy.symlink_to(target)
+                    elif case == 'directory':
+                        policy.mkdir()
+                    elif case in ('unsafe-mode', 'unreadable'):
+                        policy.chmod(0o666 if case == 'unsafe-mode' else 0)
+                    original_lstat, original_read = Path.lstat, Path.read_bytes
+                    inspected, raced = [], []
+
+                    def inspect(path, *args, **kwargs):
+                        if path == policy and case == 'inspect-denied':
+                            inspected.append(path)
+                            raise PermissionError('fixture policy lookup denied')
+                        return original_lstat(path, *args, **kwargs)
+
+                    def read(path):
+                        if path == policy and case == 'read-race' and not raced:
+                            raced.append(path)
+                            policy.rename(target)
+                            policy.symlink_to(target)
+                        return original_read(path)
+
+                    transaction = self.c.transaction_path.read_bytes()
+                    calls = list(self.host.calls)
+                    with patch.object(Path, 'lstat', inspect), patch.object(Path, 'read_bytes', read):
+                        if case in ('absent', 'plain'):
+                            result = self.run_return() if operation == 'return' else self.c.restart(yes=True)
+                            self.assertEqual(result['status'], 'verified')
+                        else:
+                            with self.assertRaises(control.ControlError) as refused:
+                                if operation == 'return':
+                                    self.run_return()
+                                else:
+                                    self.c.restart(yes=True)
+                            if case in ('inspect-denied', 'unreadable'):
+                                self.assertIsInstance(refused.exception.__cause__, PermissionError)
+                    if case == 'inspect-denied':
+                        self.assertTrue(inspected)
+                    if case == 'read-race':
+                        self.assertTrue(raced)
+                    if case not in ('absent', 'plain'):
+                        self.assertEqual(self.c.transaction_path.read_bytes(), transaction)
+                        self.assertEqual(self.host.calls, calls)
+                        self.assertEqual((self.c.manifest_path.read_bytes(), self.f.saved()), self.native)
+                    else:
+                        self.assertEqual((self.c.manifest_path.read_bytes(), self.f.saved()),
+                                         (self.original, self.legacy) if operation == 'return' else self.native)
+                    self.assert_artifacts()
+
+    def test_revocation_changes_refuse_at_prepublication(self):
+        for stage in ('preflight', 'journal', 'prepared'):
+            for change in ('appears-dangling', 'becomes-dangling', 'removed', 'content'):
+                with self.subTest(stage=stage, change=change):
+                    if stage != 'preflight' or change != 'appears-dangling':
+                        self.setUp()
+                    policy = self.base / 'revoked-releases.json'
+                    valid = dict(schema_version=1, release_ids=[], content_digests=[])
+                    if change != 'appears-dangling':
+                        control.save_json(policy, valid)
+                    transaction = self.c.transaction_path.read_bytes()
+                    calls = list(self.host.calls)
+                    fired = []
+                    method = {'preflight': 'preflight_fn', 'journal': 'journal',
+                              'prepared': 'save_transaction'}[stage]
+                    original = getattr(self.c, method)
+
+                    def race(*args, **kwargs):
+                        result = original(*args, **kwargs)
+                        if not fired:
+                            fired.append(stage)
+                            if change != 'appears-dangling':
+                                policy.unlink()
+                            if change.endswith('dangling'):
+                                policy.symlink_to(self.base / 'missing-policy.json')
+                            elif change == 'content':
+                                control.save_json(policy, dict(valid, release_ids=[self.f.old['release_id']]))
+                        return result
+
+                    with patch.object(self.c, method, side_effect=race):
+                        with self.assertRaises(control.ControlError):
+                            self.run_return()
+                    self.assertEqual(fired, [stage])
+                    self.assertEqual(self.host.calls, calls)
+                    self.assertEqual((self.c.manifest_path.read_bytes(), self.f.saved()), self.native)
+                    if stage == 'prepared':
+                        txn = self.c.read_transaction()
+                        assert txn is not None
+                        self.assertEqual(txn['phase'], 'prepared')
+                        self.assertEqual(base64.b64decode(txn['manifest']), self.native[0])
+                        self.assertEqual({r: base64.b64decode(b) for r, b in txn['plists'].items()}, self.native[1])
+                    else:
+                        self.assertEqual(self.c.transaction_path.read_bytes(), transaction)
+                    self.assert_artifacts()
+
     def test_wrapper_drift_refuses_before_publication(self):
         (self.base / 'watchdog.py').write_bytes(b'foreign wrapper')
         before = self.c.transaction_path.read_bytes()

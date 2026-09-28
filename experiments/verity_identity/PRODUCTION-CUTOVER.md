@@ -311,3 +311,50 @@ remained unchanged. Ruff reported only the same three encoding findings,
 independently reproduced on the baseline. Focused source review is pending;
 these results do not certify a new installed controller or successful cutover.
 
+### Revocation-entry review correction (offline only)
+
+The review found that `Path.exists()` classified a dangling
+`revoked-releases.json` symlink as absent, permitting a retained-baseline return.
+A new regression first failed on both Python 3.11 and 3.14 with
+`ControlError not raised`, before the controller was changed.
+
+The controller now shares one revocation-file read between ordinary
+restart/recovery checks and retained-return input validation. Only
+`FileNotFoundError` from the directory-entry lookup means absence. Links
+(including dangling links), nonregular entries, unsafe owner/mode/ancestor
+metadata, lookup/read permission errors and observed read-time replacement
+fail closed. The retained-file bytes and identity (or confirmed absence) are
+rechecked at every existing return prepublication boundary, including after
+preflight, informational journal preparation and durable transaction preparation.
+This retains the existing cooperating-writer lock contract, not containment
+against arbitrary same-UID filesystem races.
+
+Two invariant tests cover initial refusal and changed policy at those boundaries,
+including real unreadable-file permission failures, injected lookup denial, and
+replacement by a symlink during reading. Rejected initial inputs leave selection,
+plist bytes, transaction and destructive host-call history unchanged. A policy
+change after durable preparation leaves only the prepared native fallback;
+selection and host calls remain unchanged. Valid absent/plain policies still
+permit exact return and ordinary native restart; retained artifacts stay intact.
+
+Frozen source over `29e5d28926666087c89e0f99fe9221e5e0a8a519` passed **74 permitted
+cases per ABI** on Python 3.11 and 3.14: return-baseline 11, native migration 2,
+transaction recovery 12, native identity 14, restart control 30, recipe 5. Each
+module used a separate disposable HOME/HERMES_HOME/WebUI state/TMPDIR and the
+inspected fixture-only subprocess allowlist. The two native cases named above
+remained excluded; native API, other subprocess and network tripwires were
+installed before test imports. Ruff reported only the three acknowledged baseline
+encoding findings; the new tests and whitespace checks passed. Production
+artifacts and services were not accessed or changed; no compilation, signing,
+native process inspection, installation, commit or push was performed. This
+corrects the source blocker only; installation and all live acceptance gates
+remain unverified.
+
+The parent independently matched the delivered source hashes and froze them over
+the same unchanged controller dependencies. All **74 permitted tests per ABI**
+passed again. A separate replay placed the new regression over the original
+`29e5d28926` controller and reproduced `ControlError not raised` for the dangling
+entry on both ABIs. No real-native cases were enabled. Focused re-review
+`deleg_5ac429c9` remains pending; no new installed controls, signature verification
+or live service action is implied by this checkpoint.
+

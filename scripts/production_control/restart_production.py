@@ -418,13 +418,34 @@ class Controller:
         return hashlib.sha256(json.dumps(manifest['services'], sort_keys=True,
                                          separators=(',', ':')).encode()).hexdigest()
 
+    def revocation_file(self):
+        """Only a missing directory entry means no policy; reject links and drift."""
+        path = self.base / 'revoked-releases.json'
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise ControlError('Cannot inspect revocation policy') from exc
+        require(stat.S_ISREG(info.st_mode), 'Unsafe revocation policy type')
+        try:
+            value = self.retained_file(path)
+            after = path.lstat()
+            fields = ('st_dev', 'st_ino', 'st_uid', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+            require(tuple(getattr(info, key) for key in fields) == value[1][0]
+                    == tuple(getattr(after, key) for key in fields),
+                    'Revocation policy changed while reading')
+            return value
+        except OSError as exc:
+            raise ControlError('Cannot read revocation policy') from exc
+
     def check_revocation(self, manifest):
         # Absence means no revocations. A present policy must be completely valid;
         # misspelled keys must never silently disable an operator's revocation.
-        path = self.base / 'revoked-releases.json'
-        if not path.exists():
+        value = self.revocation_file()
+        if value is None:
             return
-        policy = json.loads(path.read_text())
+        policy = json.loads(value[0])
         require(isinstance(policy, dict) and set(policy) ==
                 {'schema_version', 'release_ids', 'content_digests'} and
                 type(policy['schema_version']) is int and policy['schema_version'] == 1,
@@ -633,13 +654,10 @@ class Controller:
                 sha256=hashlib.sha256(base64.b64decode(record['data'], validate=True)).hexdigest(),
                 executable=False)
         require(rollback == report['rollback_sha256'], 'Retained rollback stage mismatch')
-        policy = self.base / 'revoked-releases.json'
-        policy_exists = policy.exists()
-        if policy_exists:
-            read(policy)
+        policy = self.revocation_file()
 
         def unchanged(prepared=None):
-            require(policy.exists() == policy_exists, 'Revocation policy changed')
+            require(self.revocation_file() == policy, 'Revocation policy changed')
             for path, value in observed.items():
                 if path == self.transaction_path and prepared is not None:
                     self.retained_file(path)
