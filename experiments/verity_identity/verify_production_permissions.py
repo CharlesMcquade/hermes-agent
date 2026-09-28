@@ -28,7 +28,8 @@ BINARY = 'Contents/MacOS/VerityServiceHost'
 SETTINGS = 'Contents/Resources/service-settings.json'
 NAMES = ('Full Disk Access: Messages', 'Full Disk Access: Safari', 'Accessibility',
          'Input Monitoring', 'Screen Capture', 'Contacts', 'Calendar', 'Reminders',
-         'Camera', 'Microphone', 'Photos', 'Speech', 'Bluetooth', 'Location', 'Local Network')
+         'Camera', 'Microphone', 'Photos', 'Speech', 'Bluetooth', 'Location', 'Local Network',
+         'Location Diagnostic')
 MODES = ('permissions-check', 'permissions-request')
 
 
@@ -165,6 +166,8 @@ def validate_worker(name, mode):
     check(name in NAMES and mode in MODES, 'Unknown worker/mode')
     check(name != 'Local Network' or mode == 'permissions-request',
           'Local Network requires permissions-request; no consent-free check-only status')
+    check(name != 'Location Diagnostic' or mode == 'permissions-request',
+          'Location Diagnostic requires permissions-request')
 
 
 def local_network(probe, request):
@@ -183,6 +186,102 @@ def local_network(probe, request):
                       (TimeoutError, ConnectionRefusedError, PermissionError)
                       if isinstance(exc, kind)), 'OSError')
     probe.permission('Local Network', status, None, True, error)
+
+
+def location_diagnostics(values):
+    """Closed scalar schema, validated in both worker and parent; no raw strings."""
+    booleans = {'worker_main_bundle_present', 'worker_main_bundle_id_expected',
+                'worker_main_bundle_path_expected', 'worker_macos_usage_string_present',
+                'worker_main_thread', 'worker_is_active', 'services_enabled'}
+    enums = {'initial_status', 'final_status', 'first_callback', 'last_callback'}
+    counts = {'loop_pump_count', 'callback_count'}
+    check(type(values) is dict and set(values) == booleans | enums | counts | {'worker_activation_policy'},
+          'Bad Location diagnostic keys')
+    check(all(type(values[k]) is bool for k in booleans), 'Bad Location boolean')
+    check(all(type(values[k]) is int and 0 <= values[k] <= 1000000 for k in counts),
+          'Bad Location count')
+    check(all((values[k] is None and k in {'first_callback', 'last_callback'}) or
+              (type(values[k]) is int and values[k] in {-2, 0, 1, 2, 3, 4}) for k in enums),
+          'Bad Location enum')
+    check(type(values['worker_activation_policy']) is int and
+          values['worker_activation_policy'] in {-2, 0, 1, 2}, 'Bad activation policy')
+    check((values['callback_count'] == 0) == (values['first_callback'] is None) and
+          (values['callback_count'] == 0) == (values['last_callback'] is None), 'Bad callback summary')
+    return values
+
+
+def location_diagnostic(probe, request, config):
+    """Instrumented consent-only counterpart of frozen location(); no host mutation.
+
+    The original Location worker/factory stays frozen. This separate worker retains
+    its own manager/delegate and observes even the initial not-determined callback.
+    NSRunningApplication.currentApplication is the Python worker, NOT ServiceHost.
+    """
+    check(request is True, 'Location Diagnostic requires permissions-request')
+    import Foundation as F
+    import CoreLocation as M
+    from AppKit import NSRunningApplication
+
+    def enum(value):
+        value = int(value)
+        return value if value in (0, 1, 2, 3, 4) else -2
+
+    bundle = F.NSBundle.mainBundle()
+    app = NSRunningApplication.currentApplication()
+    policy = int(app.activationPolicy())
+    usage = bundle.objectForInfoDictionaryKey_('NSLocationUsageDescription') if bundle else None
+    d = dict(worker_main_bundle_present=bool(bundle),
+             worker_main_bundle_id_expected=bool(bundle and bundle.bundleIdentifier() == 'com.charles.verity'),
+             worker_main_bundle_path_expected=bool(bundle and bundle.bundlePath() ==
+                                                   str(Path(config['home']) / 'Applications/Verity.app')),
+             worker_macos_usage_string_present=isinstance(usage, str) and bool(usage.strip()),
+             worker_main_thread=bool(F.NSThread.isMainThread()),
+             worker_activation_policy=policy if policy in (0, 1, 2) else -2,
+             worker_is_active=bool(app.isActive()),
+             services_enabled=bool(M.CLLocationManager.locationServicesEnabled()),
+             initial_status=enum(M.CLLocationManager.authorizationStatus()), final_status=-2,
+             first_callback=None, last_callback=None, callback_count=0, loop_pump_count=0)
+    # No NSApplication creation/activation, other-app enumeration, or host query.
+    loop = F.NSRunLoop.currentRunLoop()  # Same thread as manager initialization.
+    completed, requested, changed = True, False, [False]
+
+    class LocationDiagnosticDelegate(F.NSObject):
+        def locationManagerDidChangeAuthorization_(self, manager):
+            value = enum(manager.authorizationStatus())
+            if d['callback_count'] == 0:
+                d['first_callback'] = value
+            d['callback_count'] = min(1000000, d['callback_count'] + 1)
+            d['last_callback'] = value
+            # Initial 0 (or an unknown enum) is evidence, never completion.
+            changed[0] |= value in (1, 2, 3, 4)
+
+    if d['services_enabled'] and d['initial_status'] == 0:
+        requested = True
+        deadline = time.monotonic() + 445
+        delegate = LocationDiagnosticDelegate.alloc().init()
+        manager = M.CLLocationManager.alloc().init()
+        # Strong local references survive the whole wait; delegate ownership is weak.
+        manager.setDelegate_(delegate)
+        try:
+            manager.requestWhenInUseAuthorization()
+            while enum(M.CLLocationManager.authorizationStatus()) not in (1, 2, 3, 4) and not changed[0]:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    completed = False
+                    break
+                loop.runUntilDate_(F.NSDate.dateWithTimeIntervalSinceNow_(min(0.1, remaining)))
+                d['loop_pump_count'] = min(1000000, d['loop_pump_count'] + 1)
+        finally:
+            manager.setDelegate_(None)
+    d['final_status'] = enum(M.CLLocationManager.authorizationStatus())
+    labels = {0: 'not_determined', 1: 'restricted', 2: 'denied',
+              3: 'authorized_always', 4: 'authorized_when_in_use'}
+    label = labels.get(d['final_status'], 'unknown') if d['services_enabled'] else 'services_disabled'
+    allowed = None if label in ('not_determined', 'unknown') else label in (
+        'authorized_always', 'authorized_when_in_use')
+    probe.emit('permission', name='Location Diagnostic', status=label, allowed=allowed,
+               requested=requested, error_type=None if completed else 'ConsentTimeout',
+               diagnostics=location_diagnostics(d))
 
 
 def worker(config):
@@ -221,6 +320,8 @@ def worker(config):
                 os.environ['HOME'] = previous
         elif name == 'Accessibility':
             accessibility(probe, request)
+        elif name == 'Location Diagnostic':
+            location_diagnostic(probe, request, config)
         elif name == 'Local Network':
             local_network(probe, request)
         elif name in ('Input Monitoring', 'Screen Capture'):
@@ -243,7 +344,8 @@ def sanitize(records, name):
     errors = {None, 'ConsentTimeout', 'FileNotFoundError', 'EPERM', 'EACCES'}
     final = []
     for r in records:
-        check(set(r) == {'event', 'name', 'status', 'allowed', 'requested', 'error_type'},
+        extra = {'diagnostics'} if name == 'Location Diagnostic' else set()
+        check(set(r) == {'event', 'name', 'status', 'allowed', 'requested', 'error_type'} | extra,
               'Bad permission record')
         check(r['event'] == 'permission' and r['name'] in (name, 'Accessibility Finder role'),
               'Unexpected result name')
@@ -258,6 +360,11 @@ def sanitize(records, name):
                   'Unknown network result')
             final.append(r)
             continue
+        if name == 'Location Diagnostic':
+            check(r['name'] == name and r['status'] in {'not_determined', 'restricted', 'denied',
+                  'authorized_always', 'authorized_when_in_use', 'unknown', 'services_disabled'} and
+                  r['error_type'] in {None, 'ConsentTimeout'}, 'Bad Location result')
+            location_diagnostics(r['diagnostics'])
         check(r['error_type'] in errors, 'Unknown error scalar')
         if r['status'] == 'requesting':
             continue
@@ -301,7 +408,8 @@ def launcher_source(config):
                'from pathlib import Path\n')
     return (imports + f'NAMES={NAMES!r}\nMODES={MODES!r}\n' +
             '\n'.join(inspect.getsource(f) for f in (check, sha, accessibility, validate_worker,
-                                                    local_network, sanitize, worker, supervisor)) +
+                                                    local_network, location_diagnostics, location_diagnostic,
+                                                    sanitize, worker, supervisor)) +
             f'\nraise SystemExit((worker if sys.argv[1:] == ["--worker"] else supervisor)({config!r}))\n').encode()
 
 

@@ -280,6 +280,296 @@ class PermissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             h.sanitize([dict(record, name='Camera')], 'Camera')
 
+    def test_location_diagnostic_request_admission(self):
+        self.assertIn('Location Diagnostic', h.NAMES)
+        h.validate_worker('Location Diagnostic', 'permissions-request')
+
+    def location_fixture(self, sealed=False, outcome='timeout', bundle_kind='foreign', initial=0,
+                         enabled=True):
+        import contextlib
+        import io
+        import sys
+        import weakref
+        from types import SimpleNamespace as NS
+        from unittest.mock import Mock
+        state = NS(now=0.0, status=initial, callback_status=0, pumps=0, requests=0,
+                   manager=None, detached=False, thread=object())
+        outer = self
+
+        class NSObject:
+            @classmethod
+            def alloc(cls):
+                return cls()
+
+            def init(self):
+                return self
+
+        class Manager(NSObject):
+            @staticmethod
+            def locationServicesEnabled():
+                return enabled
+
+            def authorizationStatus(self=None):
+                return state.status if self is None else state.callback_status
+
+            def init(self):
+                outer.assertIs(loop.thread, state.thread)
+                state.manager = self
+                return self
+
+            def setDelegate_(self, delegate):
+                self.delegate = weakref.ref(delegate) if delegate else None
+                state.detached = delegate is None
+
+            def requestWhenInUseAuthorization(self):
+                state.requests += 1
+                outer.assertEqual(state.requests, 1)
+                self.delegate().locationManagerDidChangeAuthorization_(self)
+
+        class Loop:
+            thread = state.thread
+
+            def runUntilDate_(self, interval):
+                outer.assertGreater(interval, 0)
+                outer.assertLessEqual(interval, 0.1)
+                outer.assertIs(self.thread, state.thread)
+                outer.assertIsNotNone(state.manager.delegate())
+                state.pumps += 1
+                state.now += 100  # Fake time: bounded timeout, never sleep.
+                if outcome == 'change':
+                    state.status = 2
+                elif outcome == 'callback':
+                    state.callback_status = 4  # Class status intentionally still 0.
+                    state.manager.delegate().locationManagerDidChangeAuthorization_(state.manager)
+                elif outcome == 'unknown':
+                    state.callback_status = 999999
+                    state.manager.delegate().locationManagerDidChangeAuthorization_(state.manager)
+
+        loop = Loop()
+        def usage(key):
+            self.assertEqual(key, 'NSLocationUsageDescription')
+            return 'private usage text' if bundle_kind != 'empty' else ''
+        bundle = None if bundle_kind == 'missing' else NS(
+            bundleIdentifier=lambda: 'com.charles.verity' if bundle_kind == 'expected' else 'private.bundle',
+            bundlePath=lambda: str(self.home / 'Applications/Verity.app') if bundle_kind == 'expected'
+            else '/private/unrelated/path', objectForInfoDictionaryKey_=usage)
+        modules = dict(Foundation=NS(NSObject=NSObject, NSBundle=NS(mainBundle=lambda: bundle),
+                                    NSThread=NS(isMainThread=lambda: True),
+                                    NSRunLoop=NS(currentRunLoop=lambda: loop),
+                                    NSDate=NS(dateWithTimeIntervalSinceNow_=lambda value: value)),
+                       CoreLocation=NS(CLLocationManager=Manager),
+                       AppKit=NS(NSRunningApplication=NS(currentApplication=lambda: NS(
+                           activationPolicy=lambda: 2, isActive=lambda: False))))
+        config = dict(root=str(self.root), home=str(self.home), name='Location Diagnostic',
+                      mode='permissions-request', abi=list(sys.version_info[:2]), bridge=str(self.bridge))
+        self.root.mkdir(exist_ok=True)
+        (self.root / 'permissions_probe.py').write_bytes(b'never imported fixture')
+        config['probe_sha256'] = h.sha((self.root / 'permissions_probe.py').read_bytes())
+        nonce = b'x' * 24
+        ready = dict(event='worker-ready', pid=os.getpid(), ppid=os.getppid(),
+                     pgid=os.getpgrp(), nonce=nonce.hex())
+        (self.root / 'GO').write_text(json.dumps(ready))
+        probe = NS(FILE_PATHS={})  # No native(), permission(), networking or other APIs.
+        spec = NS(loader=NS(exec_module=Mock()))
+        output = io.StringIO()
+        with patch.dict(sys.modules, modules), \
+                patch.object(h.importlib.util, 'spec_from_file_location', return_value=spec), \
+                patch.object(h.importlib.util, 'module_from_spec', return_value=probe), \
+                patch.object(h.time, 'monotonic', side_effect=lambda: state.now), \
+                patch.object(h.time, 'sleep', side_effect=AssertionError('real sleep')), \
+                patch.object(h.subprocess, 'Popen', side_effect=AssertionError('spawn')), \
+                patch.object(h.C, 'CDLL', side_effect=AssertionError('native library')), \
+                patch.object(os, 'urandom', return_value=nonce), \
+                patch.object(sys, 'argv', ['fixture', '--worker']), \
+                patch.object(sys, 'path', list(sys.path)), \
+                patch.dict(os.environ, HOME=str(self.root / 'home'), HERMES_HOME=str(self.root / 'state')), \
+                contextlib.redirect_stdout(output):
+            if sealed:
+                with self.assertRaises(SystemExit) as exited:
+                    exec(compile(h.launcher_source(config), 'sealed-location', 'exec'), {})
+                self.assertEqual(exited.exception.code, 0)
+            else:
+                self.assertEqual(h.worker(config), 0)
+        self.assertNotIn('private', output.getvalue())
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[-1]['exit_code'], 0)
+        result = events[-1]['results'][0]
+        self.assertEqual(h.sanitize([result], 'Location Diagnostic'), [result])
+        if state.requests:
+            self.assertTrue(state.detached)
+        return result, state
+
+    def test_location_source_and_generated_initial_callback_is_not_completion(self):
+        for sealed in (False, True):
+            for outcome in ('timeout', 'unknown'):
+                with self.subTest(sealed=sealed, outcome=outcome):
+                    result, state = self.location_fixture(sealed, outcome)
+                    d = result['diagnostics']
+                    self.assertEqual(result['error_type'], 'ConsentTimeout')
+                    self.assertEqual(result['status'], 'not_determined')
+                    self.assertIsNone(result['allowed'])
+                    self.assertEqual(d['first_callback'], 0)
+                    self.assertEqual(d['last_callback'], 0 if outcome == 'timeout' else -2)
+                    self.assertEqual(d['callback_count'], 1 if outcome == 'timeout' else 6)
+                    self.assertEqual(d['loop_pump_count'], 5)
+                    self.assertEqual(state.requests, 1)
+                    self.assertGreaterEqual(state.now, 445)
+
+    def test_location_source_and_generated_callback_or_status_change_completes(self):
+        for sealed in (False, True):
+            for outcome in ('change', 'callback'):
+                with self.subTest(sealed=sealed, outcome=outcome):
+                    result, state = self.location_fixture(sealed, outcome)
+                    d = result['diagnostics']
+                    self.assertIsNone(result['error_type'])
+                    self.assertEqual(d['loop_pump_count'], 1)
+                    self.assertEqual(d['callback_count'], 2 if outcome == 'callback' else 1)
+                    self.assertEqual(d['last_callback'], 4 if outcome == 'callback' else 0)
+                    self.assertEqual(d['final_status'], 0 if outcome == 'callback' else 2)
+                    self.assertEqual(result['status'], 'not_determined' if outcome == 'callback' else 'denied')
+                    self.assertEqual(state.requests, 1)
+
+    def test_location_metadata_always_boolean_even_without_main_bundle(self):
+        for sealed in (False, True):
+            for kind in ('expected', 'foreign', 'empty', 'missing'):
+                with self.subTest(sealed=sealed, bundle=kind):
+                    result, _ = self.location_fixture(sealed, 'change', kind)
+                    d = result['diagnostics']
+                    for key in ('worker_main_bundle_present', 'worker_main_bundle_id_expected',
+                                'worker_main_bundle_path_expected', 'worker_macos_usage_string_present',
+                                'worker_main_thread', 'worker_is_active', 'services_enabled'):
+                        self.assertIs(type(d[key]), bool)
+                    self.assertEqual(d['worker_main_bundle_present'], kind != 'missing')
+                    self.assertEqual(d['worker_main_bundle_id_expected'], kind == 'expected')
+                    self.assertEqual(d['worker_main_bundle_path_expected'], kind == 'expected')
+                    self.assertEqual(d['worker_macos_usage_string_present'], kind in ('expected', 'foreign'))
+                    self.assertEqual(d['worker_activation_policy'], 2)
+                    self.assertFalse(d['worker_is_active'])
+
+    def test_location_no_redundant_request_and_services_disabled(self):
+        for sealed in (False, True):
+            for initial, enabled, label in ((4, True, 'authorized_when_in_use'),
+                                            (0, False, 'services_disabled'), (9999, True, 'unknown')):
+                with self.subTest(sealed=sealed, initial=initial, enabled=enabled):
+                    result, state = self.location_fixture(sealed, initial=initial, enabled=enabled)
+                    self.assertEqual(result['status'], label)
+                    self.assertFalse(result['requested'])
+                    self.assertEqual(state.requests, 0)
+                    self.assertEqual(result['diagnostics']['callback_count'], 0)
+                    self.assertIsNone(result['diagnostics']['first_callback'])
+
+    def test_location_metadata_closed_allowlist_source_and_generated(self):
+        import ast
+        result, _ = self.location_fixture()
+        module = ast.parse(h.launcher_source(dict(name='Location Diagnostic', mode='permissions-request')))
+        module.body.pop()  # Definitions only; never enter supervisor/worker here.
+        namespace = {}
+        exec(compile(module, 'sealed-definitions', 'exec'), namespace)
+        for sanitize in (h.sanitize, namespace['sanitize']):
+            for key, value in result['diagnostics'].items():
+                for invalid in ('private text', {'private': 'content'}, [], 1000001, 1.5):
+                    with self.subTest(key=key, invalid=invalid), self.assertRaises((ValueError, TypeError)):
+                        sanitize([dict(result, diagnostics=dict(result['diagnostics'], **{key: invalid}))],
+                                 'Location Diagnostic')
+                if type(value) is bool:
+                    with self.assertRaises(ValueError):
+                        sanitize([dict(result, diagnostics=dict(result['diagnostics'], **{key: 1}))],
+                                 'Location Diagnostic')
+            for delta in ({'arbitrary': 'private'}, {'worker_main_bundle_path': '/private/path'}):
+                with self.assertRaises(ValueError):
+                    sanitize([dict(result, diagnostics=dict(result['diagnostics'], **delta))], 'Location Diagnostic')
+            for key in result['diagnostics']:
+                d = dict(result['diagnostics'])
+                del d[key]
+                with self.assertRaises(ValueError):
+                    sanitize([dict(result, diagnostics=d)], 'Location Diagnostic')
+            with self.assertRaises(ValueError):
+                sanitize([dict(result, name='Location')], 'Location')  # Original contract unchanged.
+
+    def test_location_invalid_modes_before_mutations_or_activity(self):
+        import ast
+        import contextlib
+        import io
+        import sys
+        module = ast.parse(h.launcher_source(dict(name='Location Diagnostic', mode='permissions-request')))
+        module.body.pop()
+        namespace = {}
+        exec(compile(module, 'sealed-definitions', 'exec'), namespace)
+        for mode in ('permissions-check', 'invalid', ''):
+            with self.subTest(mode=mode), patch.object(h, 'helpers') as helpers:
+                with self.assertRaises(ValueError):
+                    h.prepare(self.root, self.base, self.home, self.python, self.bridge,
+                              'Location Diagnostic', mode, approve_sign=True)
+                config = dict(root=str(self.root), name='Location Diagnostic', mode=mode)
+                for worker in (h.worker, namespace['worker']):
+                    output = io.StringIO()
+                    with patch.object(sys, 'argv', ['fixture', '--worker']), contextlib.redirect_stdout(output):
+                        with self.assertRaises(ValueError):
+                            worker(config)
+                    self.assertEqual(output.getvalue(), '')
+                with self.assertRaises(ValueError):
+                    h.launcher_source(config)
+                helpers.assert_not_called()
+                self.assertFalse(self.root.exists())
+        with self.assertRaises(ValueError):
+            h.location_diagnostic(None, False, {})  # Before native imports.
+        self.assertEqual(self.calls, [])
+
+    def test_location_timeout_report_exact_restore_offline(self):
+        # Produce the diagnostic using bridge mocks, then feed it through real run/report logic.
+        result, _ = self.location_fixture()
+        for item in self.root.iterdir():
+            item.unlink()
+        self.root.rmdir()
+        h.prepare(self.root, self.base, self.home, self.python, self.bridge,
+                  'Location Diagnostic', 'permissions-request', python_home=self.python_home,
+                  approve_sign=True, runner=self.runner)
+        h.preflight(self.root, self.runner)
+        adapter = FakeLive()
+        bootstrap = adapter.bootstrap
+        def diagnostic_bootstrap(target, root):
+            bootstrap(target, root)
+            events = h.records(root)
+            events[1]['results'] = [result]
+            (root / 'agent.out').write_text('\n'.join(json.dumps(event) for event in events))
+        with patch.object(adapter, 'bootstrap', side_effect=diagnostic_bootstrap):
+            report = self.run_harness(adapter)
+        self.assertEqual(report['status'], 'incomplete')
+        self.assertTrue(report['restored'] and report['cleanup_verified'])
+        self.assertEqual(report['results'], [result])
+        self.assertEqual(h.tree(self.app), self.before)
+        self.assertEqual(json.loads((self.root / 'result.json').read_text()), report)
+        self.assertEqual(self.recover()['status'], 'restored')
+
+    def test_location_preflight_rejects_check_mode_before_swap(self):
+        plan = self.prepare()
+        plan['config'].update(name='Location Diagnostic', mode='permissions-check')
+        (self.root / 'prepared.json').write_text(json.dumps(plan))
+        with self.assertRaisesRegex(ValueError, 'requires permissions-request'):
+            h.preflight(self.root, self.runner)
+        self.assertEqual(h.tree(self.app), self.before)
+        self.assertFalse((self.root / 'swap-receipt.json').exists())
+
+    def test_location_diagnostic_static_api_surface(self):
+        import ast
+        import inspect
+        source = inspect.getsource(h.location_diagnostic)
+        generated = h.launcher_source(dict(name='Location Diagnostic', mode='permissions-request')).decode()
+        for text in (source, generated):
+            for forbidden in ('requestLocation', 'startUpdatingLocation', 'requestAlwaysAuthorization',
+                              'activateWithOptions', 'setActivationPolicy', 'sharedApplication', 'activeApplication'):
+                self.assertNotIn(forbidden, text)
+        tree = ast.parse(source)
+        attributes = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        self.assertNotIn('location', attributes)
+        self.assertNotIn('Popen', attributes)
+        self.assertNotIn('run', attributes)
+        self.assertNotIn('socket', attributes)
+        self.assertNotIn('connect', attributes)
+        self.assertNotIn('runningApplicationsWithBundleIdentifier_', attributes)
+        self.assertEqual(source.count('requestWhenInUseAuthorization()'), 1)
+
     def test_live_opt_in_precedes_reads(self):
         with self.assertRaisesRegex(ValueError, '--live'):
             h.run(self.root)

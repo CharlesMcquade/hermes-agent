@@ -45,7 +45,7 @@ Do not run the production-configured app directly to test this.
 `--worker` is an exact allowlist: the two `Full Disk Access: Messages` / `Full Disk
 Access: Safari` file tests, Accessibility, Input Monitoring, Screen Capture,
 Contacts, Calendar, Reminders, Camera, Microphone, Photos, Speech, Bluetooth,
-Location, and Local Network. Names with spaces must be quoted.
+Location, Local Network, and Location Diagnostic. Names with spaces must be quoted.
 
 - FDA: one `os.open(O_RDONLY)` and `close` for the named fixed file; no file bytes
   are read. Only the FDA call temporarily sets HOME to the real operator HOME.
@@ -65,6 +65,8 @@ Location, and Local Network. Names with spaces must be quoted.
   Failures expose only `TimeoutError`, `ConnectionRefusedError`, `PermissionError`,
   or `OSError`, never exception text. Connectivity success or failure does **not**
   prove TCC enforcement, grant or denial.
+- Location Diagnostic: separate **request-only** instrumented consent worker,
+  described below; it does not change the original Location worker.
 - Other names reuse only the frozen probe's consent/status functions: no camera
   or audio recording, screen capture, contact/calendar/photo enumeration,
   Bluetooth scanning/connections, location samples, or network connection.
@@ -312,6 +314,99 @@ This establishes connectivity in the tested temporary-host configuration only.
 There was no scoped deny/allow control, so grant attribution and Local Network
 privacy enforcement remain unverified. Do not turn `allowed=null` into a permission
 pass or repeat the single-connection test without further authorization.
+
+### Conditional Local Network enforcement check stopped
+
+The parent refreshed the actual Settings Local Network accessibility tree and
+found no distinct Verity entry. The conditional deny/allow control therefore did
+not proceed: **zero additional connections and no setting changes**. The prior
+connectivity-only result remains insufficient proof of permission enforcement.
+The missing row does not establish a signer problem or any other root cause.
+Parent read-back of the original/restored bundle and service baseline passed.
+
+## Location Diagnostic — offline implementation, parent live gate pending
+
+`--worker 'Location Diagnostic' --mode permissions-request` is a separate bounded
+instrumented counterpart of the frozen Location factory. Neither
+`permissions_probe.py` nor ServiceHost is edited; the original workers and their
+six-key permission records retain their existing behavior. Only this new worker's
+permission record adds a closed `diagnostics` object, revalidated by the parent.
+
+The user approved **one** consent-only live diagnostic after parent review. The
+implementing child performed offline tests only: no signing, actual permission
+APIs, launchd, foreground changes, service operations, or live preparation/run.
+The parent must freshly prepare/sign a new temporary root and use the existing
+exact final-path swap, chain/GO verification, cleanup and exact-original restore.
+Adding this worker changes generated launchers for all names. **Do not rewrite or
+discard any earlier prepared root**: fresh preparation is needed for forward use;
+receipt-based recovery of old roots remains available without launcher regeneration.
+
+The only request is `requestWhenInUseAuthorization`, once when services are enabled
+and initial authorization is `not_determined`. There is no `requestLocation`,
+`startUpdatingLocation`, location property/sample access, network activity, or
+application-content access. A strongly held manager/delegate lives through the
+wait, then the delegate is detached. The initialization-thread `NSRunLoop` is
+pumped in slices no longer than 0.1 seconds, against a 445-second monotonic deadline.
+Existing 450-second parent permission and 480-second supervisor bounds are unchanged;
+these are not guarantees that a blocked native API returns synchronously.
+
+Callbacks summarize their first/last authorization enum and a count. Initial
+`not_determined` (0), and unknown enum values, are observed but do not finish the
+wait. A known terminal callback or queried terminal status ends the wait. Initial
+and final class authorization are separately queried; a callback does not replace
+the final status with an inferred grant. If class status still reads 0 after a
+terminal callback, the completed observation remains `not_determined`, `allowed=null`.
+Timeout produces `ConsentTimeout` and the existing `incomplete` report, with the
+same cleanup/restoration requirements. Disabled services or an already-decided
+initial status cause no request. Unknown initial status is not authorization.
+
+Diagnostics contain only these fixed keys/types (no arbitrary paths, identifiers,
+usage text, error descriptions, callback objects, or other app information):
+
+- Always booleans, even with no main bundle: `worker_main_bundle_present`,
+  `worker_main_bundle_id_expected`, `worker_main_bundle_path_expected`,
+  `worker_macos_usage_string_present`, `worker_main_thread`, `worker_is_active`,
+  `services_enabled`. Expected ID/path mean exactly `com.charles.verity` and
+  the configured `HOME/Applications/Verity.app`; the actual strings never leave
+  the worker. Usage checks only nonempty `NSLocationUsageDescription`.
+- `worker_activation_policy`: 0 regular, 1 accessory, 2 prohibited, -2 unknown;
+  read from `NSRunningApplication.currentApplication()` without constructing an
+  NSApplication or activating anything.
+- `initial_status`, `final_status`, `first_callback`, `last_callback`: 0 not
+  determined, 1 restricted, 2 denied, 3 always, 4 when-in-use, -2 unknown. Callback
+  values are null until a callback is observed.
+- `loop_pump_count`, `callback_count`: integer counters saturating at 1,000,000;
+  there is no per-pump/per-callback log growth.
+
+All `worker_*` metadata describes the **Python worker**, not the native ServiceHost.
+No native-host activation metadata is collected or inferred; the existing exact
+kernel chain gate remains the host identity evidence. The frozen host's lack of
+AppKit activation is a hypothesis, not a proven cause of the earlier Location
+timeout. This diagnostic neither activates the app nor moves consent into the host.
+
+Offline verification: the following command and its Python 3.14 equivalent each
+passed **92 tests**, including **44 permission-harness tests**:
+
+```text
+python3.11 -B -m unittest test_production_permissions test_install_production_native test_stage_production_native -q
+```
+
+HOME/HERMES_HOME/TMPDIR were disposable scratch directories. Foundation/CoreLocation/
+AppKit are fixture modules; generated launcher worker entry points are exercised
+with mocked probe imports and native objects, never a real bridge import. Tests
+cover initial-zero/unknown callbacks versus completion, callback/status-change
+completion, bounded timeout and incomplete report/restoration, missing/foreign/
+expected bundle metadata, strict scalar allowlists, mode refusal before activity,
+and neighboring install/stage behavior. Admission was observed failing before the
+implementation and passing afterward. Changed-file Ruff and `git diff --check`
+passed. These results are not macOS attribution, consent-dialog, signing, grant,
+or production-descendant proof; the one approved live diagnostic remains for the
+parent after review. The parent independently reran the same 92-test aggregate
+on both runtimes in new scratch-isolated HOME/HERMES_HOME/WebUI-state/TMPDIR
+directories with a clean explicit environment; both passed. Parent changed-file
+Ruff and diff checks passed, frozen ServiceHost/probe diffs were empty, and the
+independent installed-artifact/legacy-process/health read-back passed before any
+new signing or live operation.
 
 ## Offline evidence
 
