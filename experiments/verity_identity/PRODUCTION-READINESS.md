@@ -195,10 +195,18 @@ operation. The source extension delivered by `deleg_940d4efe` task 1 now adds
 and recording the current native bytes as a new one-attempt fallback. The parent
 independently passed 72 permitted fixture tests per Python ABI with native/network
 tripwires; see `PRODUCTION-CUTOVER.md` for the author's disclosed earlier
-no-compile scope breach and the parent's bounded verification. Focused source
-review remains pending. A new immutable control version with matching stage and
-install provenance is still required; the first-install-only installer is not an
-upgrade path. The installed artifacts have not changed. Installer restore is
+no-compile scope breach and the parent's bounded verification. Focused review
+`deleg_34b0714c` task 0 found one blocker: a dangling `revoked-releases.json`
+symlink reports false from `Path.exists()` and is treated as absent by both the
+new retained-input preparation and existing revocation check. The parent
+independently inspected those paths; this is source-established, not yet a
+reproduced execution result. Remediation `deleg_4a327158` must first reproduce
+refusal failure, then distinguish genuine absence from unsafe/unreadable entries
+and prove no selection, transaction or destructive-call mutation on refusal.
+The rest of that static review was bounded clear, not live certification.
+A new immutable control version with matching stage and install provenance is
+still required; the first-install-only installer is not an upgrade path.
+The installed artifacts have not changed. Installer restore is
 wrapper-only and cannot undo an activated pair. Never change a verified
 transaction's phase to manufacture recovery authority.
 The old `prepare_cutover.py` rebuilds Python overrides and is not a native recipe.
@@ -281,22 +289,39 @@ workspace and lineage comparison at admission. A logged-in browser fetch avoids
 credential extraction, but does not repair those contracts and adds a browser
 dependency. No such POST or browser authentication action has been attempted.
 
-An isolated implementation is now assigned on a separate WebUI worktree based on
-the selected source commit, not the development checkout: one private local
-continuation request consumed inside the owning WebUI with real startup/admission
-wiring and offline fake-worker tests. It must preserve existing admission and
-cross-service ownership, block unknown/changed/closed bindings, and persist a
-nonsecret execution receipt without blind retry. It is not implemented or
-verified in the selected production release.
+The initial implementation assignment (`deleg_34b0714c` task 1) returned only
+source findings: **no implementation and no executed tests**. The parent confirmed
+the worktree remains unchanged at the selected WebUI source commit. Inspection
+shows workspace/model mutations before shared admission, stale-state cleanup
+before the session lock, and a best-effort journal append after pending-state
+publication. PID-sharded append locks are not an atomic operation claim. A local
+claim alone cannot fence Gateway/runner admission or canonical-session rotation.
+
+A narrower follow-up (`deleg_e839d257`) is limited to explicitly supported local
+WebUI execution; Gateway, runner, non-WebUI and unknown ownership must refuse.
+It must implement a real shared local admission boundary before mutation, private
+durable operation deduplication and an actual worker-entry receipt, with isolated
+owning-process integration tests. Normal delivery plus safe refusal after an
+ambiguous durable claim is the target, not guaranteed eventual execution across
+arbitrary crashes. Unsupported external writers remain outside that bounded
+claim; they must not be silently routed locally. No source-only audit, unconsumed
+request or standalone mocked state machine satisfies the cutover condition.
+
+A parent read-only metadata check found the initiating session open, sourced from
+WebUI, in the requested profile/workspace, with an active stream and pending turn.
+That is not idle/admission evidence and does not establish the effective backend;
+missing explicit backend settings are not proof of local ownership. No live
+request was written, no API called, and no turn injected.
 
 The proposed direction, not yet implemented or verified, is one durable cutover
 job plus a narrowly scoped record consumed inside WebUI. Bind operation, initiating
 session, profile, workspace and expected release; persist admission identity before
 worker execution and reconcile it against a nonsecret execution receipt. Duplicate
 triggers must resolve to the same disposition, busy work must remain pending, and
-uncertain dispatch must stop for reconciliation rather than repost. Resolve only
-authorized compression descendants before mutation and revalidate at admission.
-Do not weaken authentication or copy browser credentials to make this work.
+uncertain dispatch must stop for reconciliation rather than repost. This first
+local-only path must reject a rotated/sealed session rather than following an
+unverified descendant or reopening a parent. Do not weaken authentication or copy
+browser credentials to make this work.
 
 The consumer must be present in the release that boots after cutover; an unconsumed
 record is not a recovery mechanism. Before arming, use isolated state to verify
@@ -328,8 +353,8 @@ authority.
    procedure. Selection and activation remain unarmed until the conditional resume
    requirement and readiness gates pass. The installed controller lacks a byte-exact
    post-success return to legacy. Its source extension has parent offline evidence
-   but awaits focused review and a verified immutable deployment path;
-   `PRODUCTION-CUTOVER.md` records the distinction. Synthetic failed-activation
+   but its focused review found a revocation-policy failure and its immutable
+   deployment path remains unverified; `PRODUCTION-CUTOVER.md` records the distinction. Synthetic failed-activation
    rollback does not prove live successful-cutover return or wrapper restore.
 5. The operator has authorized autonomous selection/reload/restart once a reliable
    same-session resume method is verified. Verify that method independently before
