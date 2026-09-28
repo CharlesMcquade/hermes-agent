@@ -1,13 +1,45 @@
 # Production readiness: installed, not cutover-ready
 
 The reviewed isolated gates are complete; see `COMBINED-CANARY.md`. They do
-not constitute a production cutover-ready artifact. The operator requested
-completion through readiness, with notification only at readiness or a genuine
-blocker. The operator subsequently authorized autonomous production selection,
-reload and service restart **conditional on a verified method to resume the same
-initiating WebUI session after restart**. That condition is not yet satisfied;
-no cutover job is armed. This does not waive the permission, continuity or recovery
-gates below. Logout/login and reboot remain separately unapproved.
+not establish universal macOS permission inheritance or production acceptance.
+The operator has now accepted a **supervised production trial**, including a brief
+WebUI interruption and manually sending “continue” after reconnecting. This replaces
+the earlier autonomous same-session-resume condition for this trial only.
+No cutover job is armed. Logout/login and reboot remain separately unapproved.
+
+## Current scope: supervised trial, not the entire upgrade roadmap
+
+The immediate acceptance path is: verify a clean return route, activate the already
+installed signed host against the unchanged frozen Agent/WebUI pair, then check
+real production descendants and the scoped tool operations. Preserve the original
+selector/plist bytes and installed app/wrapper provenance. No TCC resets, recordings,
+location samples, new Local Network diagnostic connections or content collection
+are added to the existing consent scope.
+
+Automatic continuation, future host/ABI upgrades and full upgrade-controller
+composition remain useful separate work, **not prerequisites for this supervised
+trial**. Location and Local Network limitations remain disclosed rather than being
+silently relabeled as passing. Historical gate descriptions below retain their
+original scope; they must not reimpose the superseded autonomous-resume condition.
+
+Installed v1 ordinary reverse activation restores Python argv but leaves native
+`AssociatedBundleIdentifiers` and `AbandonProcessGroup` settings behind. Source
+review and the parent's installed in-memory definition check agree. That is not
+the clean permission/launchd fallback required for this trial. A narrowly scoped,
+separately pinned immutable return-controller extension is in preparation; it must
+retain all original installation checks and restore exact baseline bytes without
+replacing the installed app, controls or wrappers. It is not yet deployed or verified.
+
+Parent live read-only checks passed the installed signature/inventory/settings,
+control/wrapper provenance, exact retained baseline, loaded legacy identities,
+shallow/deep health and served assets. Source/runtime inventory validation passed.
+The unchanged installed `probe()` calls also passed using the retained bootstrap
+interpreter inside a macOS sandbox denying network access, real-state writes and
+home-data reads outside the approved runtime/control/fixture paths. This is
+component evidence, not a full native startup: combined `preflight()` inside that
+sandbox correctly refused the real environment file's accessibility check, so
+validation and isolated imports were exercised separately rather than granting
+imports access to credentials. Production selection and services remain unchanged.
 
 ## Production signer and recovery gate
 

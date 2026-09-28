@@ -1,6 +1,16 @@
-# Schema-2 native cutover: BLOCKED, unarmed offline recipe
+# Schema-2 native cutover: exact return still required, unarmed
 
-**Not cutover-ready. Do not submit a job.** The old activation interface cannot
+**Current scope update:** the operator accepted a supervised production trial with
+manual “continue” after reconnecting. Automatic same-session continuation and the
+future upgrade roadmap are no longer prerequisites for that trial. See the current
+scope at the top of `PRODUCTION-READINESS.md`; the older recipe and authority
+paragraphs below describe the prior autonomous-cutover plan. No job is armed.
+The installed v1 app/wrappers will stay unchanged; a separately pinned immutable
+return-controller extension is being prepared and must be verified/deployed before
+submitting the supervised trial. This is an explicit executor-provenance extension,
+not permission to bypass or rewrite the original installed receipt.
+
+**Historical blocked recipe (not an activation cue):** The old activation interface cannot
 perform a byte-exact post-success return; `test_production_cutover_recipe.py`
 continues to prove that unsupported inverse. The source controller now adds the
 explicit retained-baseline operation below, verified only with offline fixtures.
