@@ -72,7 +72,7 @@ verification returns does the builder write `stage-report.next.json` and atomica
 rename it to `stage-report.json`. Interruption during verification cannot leave a
 success-named receipt; an incomplete `.next` file is never a success signal.
 
-## Operator-approved future invocation — not executed against production
+## Stage-only invocation — never an installation or activation
 
 ```sh
 env -u PYTHONPATH -u PYTHONSAFEPATH "$PYTHON_311_OR_NEWER" -B \
@@ -205,6 +205,38 @@ migration harness review (`deleg_4d2e07e8`) found no blockers in scope. The pare
 matched both reviewed files to pushed commit
 `12917ba0f24b86f9ff306b20a019fefe95338e66`. Final installation and grants are not done.
 
+## First production-signed stage (not installed)
+
+The parent compiled and signed a real stage at
+`~/.hermes/experiments/verity-production-stage-v1` from committed source
+`bf1d45dd0ef4e3f087358018ffa3b6967abc043f`, using the already-approved dedicated
+production signer. It returned `staged_not_activated`, `activation_ready:false`.
+Candidate SHA-256:
+`18901c50d08002a54204bfbcd788ccfbbb059d859e8ecf721ac9c960f85202cc`.
+
+A separate readback reran full stage verification and strict codesign against
+production leaf `B72A53676319B035EF637A6DEF27F026009D989C`. It verified all 11
+usage descriptions, exact signed settings, unchanged ServiceHost source and five
+control modules, candidate/rollback inventories, and exact saved manifest/plist/
+wrapper bytes against the live originals. The final app and final control version
+were still absent; baseline hashes/PIDs/health remained unchanged (`health:ok`).
+Neither service role was executed. Metadata source review remains pending.
+
+The final signed settings point to real maintenance and cannot be redirected by
+an isolated label/environment. Executing either production role is not a safe
+pre-cutover permission test. Source audit identified a bounded alternative:
+explicitly approved passive installation, followed by a temporary same-identity,
+same-path candidate with signed isolated settings and fixed permission workers,
+then exact final-bundle restoration. This is continuity evidence, not execution
+of the real production descendant chain; those checks remain post-cutover.
+The alternative is an additional restricted probe-only entry before final signing.
+No such entry has been added.
+
+Install-only and bounded permission-test approval questions were presented; no
+response was received. That is not authorization. Continue isolated implementation
+and review, but do not install, register, replace maintenance wrappers, request
+final-identity consent, select, load/reload, or restart on the basis of staging.
+
 ## Concrete remaining gates / blockers
 
 1. **Coordinated artifact installation remains.** The source controller now
@@ -228,12 +260,12 @@ matched both reviewed files to pushed commit
    permission workflow, final-identity consent,
    compatible worker runtimes, rebuild/rollback continuity, and Local Network /
    Location limitations need explicit treatment and operator involvement.
-4. **Actual artifact verification remains.** No real production stage was built.
-   Verify strict signature, launcher/settings, immutable control receipt and final
-   paths; revalidate unchanged application/runtime inventories and revocation
-   policy without importing applications until separately authorized. This stage
-   preserves existing inventory receipts but deliberately does not read or probe
-   service source, runtime contents, credential files or live state.
+4. **Final-path artifact verification remains.** A real production-signed stage
+   now passes in-stage strict signature/settings/control/rollback verification as
+   recorded above. This is not final-path installation or execution. Parent also
+   performed separate read-only selected-source/runtime inventory validation with
+   no application imports or credential-content reads. The stager itself preserves
+   those inventory receipts without probing services.
 5. Exercise the exact candidate control/host artifacts in an isolated synthetic
    layout, both roles and independent restarts, controller/watchdog ownership,
    failed-start bounded rollback and worker cleanup. Existing combined-canary

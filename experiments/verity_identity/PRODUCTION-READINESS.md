@@ -95,9 +95,12 @@ installation and permissions are not covered by that clearance.
 
 ## Unfinished implementation and verification after that dependency
 
-1. Stage the final fixed-path host and native-aware control bundle without
-   selecting it. Preserve the existing frozen application pair and bootstrap
-   runtime; do not slip in an unrelated application or dependency upgrade.
+1. The production-signed host/control stage now exists at
+   `~/.hermes/experiments/verity-production-stage-v1`, with strict signature,
+   metadata/settings, source/control and original rollback bytes reverified.
+   It is not installed or selected. Metadata review and install-only implementation/
+   review remain pending; see `PRODUCTION-STAGING.md`. The frozen application pair
+   and bootstrap runtime are unchanged.
 2. Adapt staging for the currently installed schema-2 controller. The inherited
    `install_controls.py` is a schema-1 migration only and its `FILES` list omits
    `native_identity.py`. The inherited `prepare_cutover.py` constructs Python
@@ -124,4 +127,7 @@ The approved new certificate, its restored Keychain key, and code-signing-only t
 have been provisioned. No final app installation, production-control write, launchd
 definition change, final-app permission request, release selection, or production
 restart has occurred. The production baseline still returns hashes/PIDs/health
-unchanged and health `ok`.
+unchanged and health `ok`. Install-only and bounded same-identity permission-test
+approval prompts received no answer; absence of a response is not authorization.
+Pre-cutover continuity tests, if approved, would not establish the actual production
+descendant chain before its separately authorized activation.
