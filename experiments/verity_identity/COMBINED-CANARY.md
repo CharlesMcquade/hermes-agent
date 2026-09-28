@@ -1,6 +1,14 @@
 # Phase 5: real WebUI and service-topology permissions
 
-**Live checks pass; final focused harness review pending. Not deployed.**
+**Isolated phase complete; live checks pass and focused review found no blocking
+findings in the reviewed scope. Not deployed.**
+
+Final read-only review covered `terminal_permission_probe.py`,
+`verify_terminal_chain.py`, and the changes to `build_combined_lab.py` and
+`combined_lab.py` at implementation commit
+`1152abde0e109f99b1808baa71da10c533ce6bc4`. It examined correctness, isolation,
+false-pass risks and cleanup within the limits below; it is not certification
+of production readiness or untested descendant-cleanup paths.
 
 The preceding phase used synthetic services. This phase reuses the selected
 frozen WebUI source read-only, with the already-tested `ServiceHost.swift`, the
