@@ -1,17 +1,20 @@
-# Schema-2 native cutover: refreshed supervised trial ready
+# Schema-2 native cutover: production activation verified
 
-**Current state:** the approved controls-only refresh is installed and independently
-read back, following the final focused source clearance. The original signed app,
-launcher, v1 controls and root receipt remain intact. Production is still the exact
-healthy legacy baseline; no second activation occurred. Disabled, unloaded forward
-and exact-return one-shots are pinned in a private immutable plan with recovery
-recipes and a read-only verifier. The parent frozen replay passed 163 tests / 865
-subtests per ABI plus 50 fresh-process probes; the isolated signed native rehearsal
-passed actual timestamp-wrapper readiness, restart, bounded exact rollback and
-cleanup. See `CONTROL-REFRESH.md` and the current `PRODUCTION-READINESS.md` section.
-**Ready means ready for final supervised-cutover approval, not production capability
-acceptance.** Native success, successful-native exact return and real tool passthrough
-remain live acceptance checks. No production interruption is authorized by staging.
+**Current state:** after explicit approval, the refreshed launchd-owned activation
+completed once with a correlated `verified` transaction/result and exit zero.
+Independent readback confirmed the exact native candidate, running signed hosts,
+direct WebUI child, exact timestamp-wrapper gateway chain, fresh identities,
+shallow/deep health and all five served assets. The completed activation job has
+been disabled/unloaded; the prepared exact-return job remains unarmed. Original
+signed app, launcher, v1 controls and root receipt are unchanged; the transaction
+retains byte-exact original legacy selector/plist backups under the schema-2 fence.
+See `CONTROL-REFRESH.md` and the current `PRODUCTION-READINESS.md` section.
+
+**Activation success is not blanket capability acceptance.** No permission/content
+probes or explicit return were authorized or run as part of this cutover. Real tool
+passthrough and successful-native production exact return remain separate live
+checks. Do not rerun the consumed one-shot or use the legacy-only pre-cutover
+verifier as a post-native verifier.
 
 The remainder records prior checkpoints and parameterized contracts. Where old
 status paragraphs say controls are not installed or reviews are pending, the current

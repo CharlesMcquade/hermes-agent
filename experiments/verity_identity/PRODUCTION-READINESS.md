@@ -1,6 +1,23 @@
-# Production readiness: supervised cutover ready, not activated
+# Production readiness: native activation verified
 
-## Current no-app-replacement route
+## Current production outcome
+
+Following explicit cutover approval, the launchd-owned refreshed controller exited
+zero with a correlated `verified` transaction/result. The parent independently
+verified the exact candidate selector, schema-2 refresh admission, retained exact
+legacy backups, on-disk and running native signatures, direct WebUI child and exact
+timestamp-wrapper gateway topology. All identities still matched the controller's
+result; shallow/deep health and five served assets passed. The original app,
+launcher, v1 controls and root provenance were preserved. The finished activation
+job is disabled and absent; the exact-return job remains unarmed. No second restart,
+permission probe or explicit baseline-return dispatch was performed during readback.
+
+Production activation is now proven. Real tool capability passthrough, successful-
+native production exact return, messaging delivery and reboot remain separate
+acceptance checks, not inferred from health or source tests. The following sections
+record preparation and superseded historical gates, not the current selection.
+
+## Prepared no-app-replacement route (historical checkpoint)
 
 `CONTROL-REFRESH.md` describes the separately implemented controls-only route:
 preserve the signed app, stable launcher and original v1 directory, and publish

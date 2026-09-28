@@ -1,16 +1,23 @@
 # Controls-only native refresh
 
-Status: **ready for a supervised cutover, not yet activated**. The focused source
-review cleared the backup-argv and fixed-capacity repairs against the parent-tested
-snapshot (**163 tests / 865 subtests per ABI**, 50 fresh-process probes). The approved
-controls-only refresh is installed and independently read back. Original signed
-app, stable launcher, v1 controls, root receipt, lock identity, exact legacy selector
-and plists remain intact; live legacy identities, health/deep health and five served
-assets still match. The transaction retains the exact original payload within the
-schema-2 fence. Resolved, pinned activation and exact-return plans are disabled and
-absent from launchd. The isolated signed native rehearsal passed restart, bounded
-exact rollback and cleanup. Production activation, native-success return and tool
-capability acceptance remain separate live gates requiring final approval.
+Status: **production native activation verified** after explicit cutover approval.
+The installed refreshed controller completed one launchd-owned activation with a
+matching `verified` transaction/result. Independent readback through the pinned
+installed controls confirmed the exact candidate selection, both running native
+signatures, host-to-WebUI and host-to-timestamp-wrapper-to-gateway identities,
+fresh service starts, shallow/deep health and all five served-asset hashes. Original
+signed app, stable launcher, v1 controls, root receipt and lock remain intact;
+byte-exact legacy selector/plists are retained in validated transaction backups.
+The completed one-shot exited zero and was disabled/unloaded without another
+restart. The exact-return job remains unarmed. This closes production activation,
+not real tool permission passthrough or a successful-native production exact return.
+No permission/content probes or explicit return dispatch were part of this approval.
+
+The prior preparation evidence remains below: focused source clearance,
+**163 tests / 865 subtests per ABI**, 50 fresh-process probes, approved installation
+readback and isolated signed native restart/rollback rehearsal. Preparation-status
+paragraphs below are historical; do not rerun the pre-cutover legacy-only verifier
+against the now-native selection or resubmit the consumed activation job.
 
 ## Why this is different from an app upgrade
 
