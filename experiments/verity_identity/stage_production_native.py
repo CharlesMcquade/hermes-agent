@@ -1,7 +1,8 @@
 """Stage (never install or activate) a schema-2 Verity native production candidate.
 
-Only the new stage root is writable. The CLI signs that disposable candidate;
-its invocation requires separate operator approval. No application imports/probes.
+The stager writes only inside the new root and directs compiler scratch/cache
+there. This is not an OS sandbox or a promise about macOS daemon writes. The CLI
+signs only that candidate under operator approval. No application imports/probes.
 """
 
 import argparse
@@ -37,10 +38,43 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def run(argv):
-    result = subprocess.run(argv, capture_output=True, timeout=120)
+def run(argv, *, env=None):
+    result = subprocess.run(argv, env=env, capture_output=True, timeout=120)
     if result.returncode:
         raise RuntimeError(f"{Path(argv[0]).name} failed (output withheld)")
+
+
+def compile_host(root, source, binary, runner=run):
+    """Explicit compiler outputs/caches; never inherit caller compiler settings."""
+    work = root / "compiler"
+    for name in ("home", "tmp", "module-cache", "cache"):
+        (work / name).mkdir(mode=0o700, parents=True, exist_ok=False)
+    environment = {
+        "HOME": str(work / "home"),
+        "CFFIXED_USER_HOME": str(work / "home"),
+        "TMPDIR": str(work / "tmp"),
+        "XDG_CACHE_HOME": str(work / "cache"),
+        "CLANG_MODULE_CACHE_PATH": str(work / "module-cache"),
+        "SWIFT_MODULECACHE_PATH": str(work / "module-cache"),
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    }
+    runner(
+        [
+            "/usr/bin/xcrun",
+            "--no-cache",
+            "swiftc",
+            "-target",
+            "arm64-apple-macos14.0",
+            "-swift-version",
+            "5",
+            "-module-cache-path",
+            str(work / "module-cache"),
+            str(source),
+            "-o",
+            str(binary),
+        ],
+        env=environment,
+    )
 
 
 def absolute(path):
@@ -201,17 +235,7 @@ def stage(
         ),
     )
     put(root / "ServiceHost.swift", swift)
-    runner([
-        "xcrun",
-        "swiftc",
-        "-target",
-        "arm64-apple-macos14.0",
-        "-swift-version",
-        "5",
-        str(root / "ServiceHost.swift"),
-        "-o",
-        str(binary),
-    ])
+    compile_host(root, root / "ServiceHost.swift", binary, runner=runner)
     requirement = f'identifier "{BUNDLE_ID}" and certificate leaf = H"{pin.lower()}"'
     put(root / "requirements.txt", ("designated => " + requirement + "\n").encode())
     runner([
@@ -297,16 +321,15 @@ def stage(
             "explicit activation approval",
         ],
     )
-    put(root / "stage-report.json", encoded(report))
-    try:
-        verify_stage(root, runner=runner)
-    except Exception:
-        (root / "stage-report.json").unlink()
-        raise
+    # No success-named file exists during verification, including interruption.
+    verify_stage(root, runner=runner, report=report)
+    provisional = root / "stage-report.next.json"
+    put(provisional, encoded(report))
+    provisional.replace(root / "stage-report.json")
     return report
 
 
-def verify_stage(root, runner=run):
+def verify_stage(root, runner=run, *, report=None):
     """Recheck sealed artifacts in place without resolving final installation paths."""
     root = absolute(root)
     manifest = json.loads((root / "candidate-release.json").read_text())
@@ -325,7 +348,8 @@ def verify_stage(root, runner=run):
     settings = json.loads(
         (app / "Contents/Resources/service-settings.json").read_text()
     )
-    report = json.loads((root / "stage-report.json").read_text())
+    if report is None:
+        report = json.loads((root / "stage-report.json").read_text())
     old_bytes = (root / "selected-manifest.json").read_bytes()
     old = json.loads(old_bytes)
     if (

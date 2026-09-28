@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import stage_production_native as staging
 
@@ -89,9 +90,9 @@ class StageTests(unittest.TestCase):
     def save(self):
         self.selected.write_text(json.dumps(self.manifest))
 
-    def runner(self, argv):
+    def runner(self, argv, *, env=None):
         self.calls.append(argv)
-        if argv[0] == "xcrun":
+        if Path(argv[0]).name == "xcrun":
             binary = Path(argv[-1])
             binary.write_bytes(b"fixture compiler output, not native code")
             binary.chmod(0o700)
@@ -197,14 +198,77 @@ class StageTests(unittest.TestCase):
         self.assertFalse((self.root / "stage").exists())
 
     def test_signature_failure_has_no_success_receipt(self):
-        def reject(argv):
+        def reject(argv, **kwargs):
             if "--verify" in argv:
                 raise RuntimeError("signature rejected")
-            self.runner(argv)
+            self.runner(argv, **kwargs)
 
         with self.assertRaisesRegex(RuntimeError, "signature rejected"):
             self.stage(runner=reject)
         self.assertFalse((self.root / "stage/stage-report.json").exists())
+        self.assertEqual(staging.inventory(self.base), self.before)
+
+    def test_compiler_uses_only_stage_local_scratch_and_clean_environment(self):
+        observed = []
+
+        def compiler(argv, *, env=None):
+            if Path(argv[0]).name == "xcrun":
+                assert env is not None, "compiler must not inherit caller environment"
+                self.assertNotIn("UNRELATED_SECRET_SENTINEL", env)
+                self.assertEqual(env["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin")
+                for key in (
+                    "HOME",
+                    "TMPDIR",
+                    "CLANG_MODULE_CACHE_PATH",
+                    "SWIFT_MODULECACHE_PATH",
+                ):
+                    path = Path(env[key])
+                    self.assertTrue(path.is_relative_to(self.root / "stage"))
+                    self.assertTrue(path.is_dir())
+                self.assertEqual(
+                    argv[argv.index("-module-cache-path") + 1],
+                    env["CLANG_MODULE_CACHE_PATH"],
+                )
+                # Exercise the actual runner -> subprocess boundary without a compiler.
+                probe = [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-c",
+                    "import os,sys;assert os.environ['TMPDIR']==sys.argv[1];"
+                    "assert 'UNRELATED_SECRET_SENTINEL' not in os.environ",
+                    env["TMPDIR"],
+                ]
+                staging.run(probe, env=env)
+                observed.append(True)
+            self.runner(argv, env=env)
+
+        with patch.dict(
+            os.environ, {"UNRELATED_SECRET_SENTINEL": "not-a-secret-test-value"}
+        ):
+            self.stage(runner=compiler)
+        self.assertEqual(observed, [True])
+
+    def test_final_verification_interrupt_cannot_leave_success_receipt(self):
+        checks = []
+        visible_during_final_check = []
+        report = self.root / "stage/stage-report.json"
+
+        def interrupt(argv, **kwargs):
+            self.runner(argv, **kwargs)
+            if "--verify" in argv:
+                checks.append(True)
+                if len(checks) == 2:
+                    visible_during_final_check.append(report.exists())
+                    raise KeyboardInterrupt("injected final-verification interruption")
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.stage(runner=interrupt)
+        self.assertEqual(
+            len(checks), 2, "exercise final verification, not initial signing"
+        )
+        self.assertEqual(visible_during_final_check, [False])
+        self.assertFalse(report.exists())
         self.assertEqual(staging.inventory(self.base), self.before)
 
     def test_new_private_outside_maintenance_required(self):
@@ -264,8 +328,8 @@ class StageTests(unittest.TestCase):
         self.assertFalse((self.root / "stage").exists())
 
     def test_drift_retains_failed_stage_without_success(self):
-        def drift(argv):
-            self.runner(argv)
+        def drift(argv, **kwargs):
+            self.runner(argv, **kwargs)
             if "--verify" in argv:
                 self.selected.write_bytes(b"changed selection")
 

@@ -54,6 +54,18 @@ This is an operator-owned staging workflow, not protection against a malicious
 same-user process replacing files concurrently. Receipts are local evidence,
 not an externally trusted signature over the whole deployment.
 
+Compiler invocation uses absolute `/usr/bin/xcrun --no-cache`, a clean environment,
+and an explicit `-module-cache-path`. HOME, CFFIXED_USER_HOME, TMPDIR, XDG cache,
+Swift and Clang module caches all point under `stage/compiler/`. No caller compiler
+flags, library paths or credentials are inherited. This contains the explicit
+compiler scratch/cache outputs; it is **not an OS sandbox** or a guarantee about
+macOS daemon-managed writes. Code signing also uses macOS's existing services.
+
+The successful report remains in memory throughout final verification. Only after
+verification returns does the builder write `stage-report.next.json` and atomically
+rename it to `stage-report.json`. Interruption during verification cannot leave a
+success-named receipt; an incomplete `.next` file is never a success signal.
+
 ## Operator-approved future invocation — not executed against production
 
 ```sh
@@ -101,7 +113,16 @@ accepted tamper cases before the fix: rollback bytes, unrelated plist environmen
 and top-level candidate health URL. All 12 staging tests pass after the fix, as do
 changed-file Ruff checks. Stable-wrapper rollback copies and drift checks were
 added; incomplete staging remains non-activatable. Source has been committed and
-pushed; independent artifact-safety review and real staging remain pending.
+pushed. The first independent review found inherited compiler scratch paths and
+premature success-receipt publication. Two regressions reproduced those failures;
+both pass after explicit compiler containment and post-verification publication.
+All 14 staging tests pass on Python 3.11, including a real subprocess environment
+boundary check. A separate real Foundation-importing Swift compile through the same
+helper succeeded: 35,064-byte binary and 103 files in its stage-local module cache.
+The binary was neither executed nor signed with the production identity. Evidence:
+`~/.hermes/cache/scratch/verity-compiler-proof-zckj9dtg/compiler-verification.json`.
+No actual production stage, final identity installation or launchd operation was
+performed. Focused re-review remains pending.
 
 ## Concrete remaining gates / blockers
 
