@@ -330,21 +330,30 @@ reviewed executable/test inputs to the prior tested snapshot and repair commit
 evidence, this closes the original topology rejection **offline**, not live
 compatibility or full deployment acceptance.
 
-Coverage follow-up remains explicit: existing upgrade journal cases do not assert
-the immediate absence of the next mutation before recovery; recovery cases
-snapshot wrappers but not the app arrangement/inodes at both rename boundaries.
-Focused malformed-self and self-identity-drift cases are also incomplete. These
-are review-identified evidence gaps, not demonstrated product defects. Test-only
-follow-up `deleg_8384638f` owns the focused test file and will strengthen those
-assertions; no runtime edits are assigned. The existing 48-test passes do not
-prove assertions that were absent.
+The assigned test-only evidence gaps from `deleg_8384638f` are now closed offline.
+Only the focused upgrade test file changed: three existing invariant methods now
+check the entire disposable artifact arrangement, bytes/modes/owners/inodes,
+receipts and mutation-call history immediately after refusal, before fixture
+repair/recovery. They also cover malformed self observations and reobservation
+drift, retaining the actual default checker. The parent inspected these paths,
+matched runtime/test bytes, and independently passed **48 tests per ABI** on
+Python 3.11.16 and 3.14.7 with the unchanged offline guard and two stage exclusions.
+Against the same disposable delayed-refusal mutant, the original two methods
+passed but the strengthened two failed at immediate-state assertions on each ABI
+(two failures, zero errors). This validates the assertions, not a product defect;
+no production implementation changed. Evidence is retained under configured
+scratch at `verity-upgrade-evidence-parent-sdpxsr4y/receipt.json` with frozen hashes,
+exact commands/logs and `parent-inspection.json`. The initial parent result parser
+miscounted repeated traceback text; it was corrected and all six runs repeated.
+Earlier 48-test passes remain historical and do not retroactively prove these
+new assertions.
 
 The new lifecycle fixture includes the installer self PID, but its argv and
 identity remain synthetic. Real `KERN_PROCARGS2` readability for every
 system-owned PID and direct CLI compatibility remain unverified, and inaccessible
 or changing processes must still refuse. No live census or production operation
-was attempted. This review closeout changes only documentation; no new test
-execution is claimed.
+was attempted. The earlier source-review closeout was documentation-only; the
+subsequent test-only verification above is separate evidence, not live acceptance.
 
 The delivered receipt contract keeps **original baseline provenance** distinct
 from **current deployment provenance**, with explicit root and committed-upgrade
@@ -353,8 +362,8 @@ transaction containing both `baseline_sha256` and `upgrade_sha256`. The installe
 tests synthesize that future record; the real chained return is **not implemented
 or tested**. Current-controller compatibility does not close this gap. No copied
 historical fields, recursive chain lookup or implicit latest receipt may substitute.
-The policy and topology repairs are source-reviewed; the immediate-mutation
-coverage follow-up and actual chained-return integration remain open. Fresh
+The policy and topology repairs are source-reviewed and the assigned immediate-
+mutation test coverage is verified; actual chained-return integration remains open. Fresh
 staging/signing, install-only replacement, census admission and live verification
 remain separately gated. No live upgrade, recovery, restore or cutover was executed
 for this checkpoint.
