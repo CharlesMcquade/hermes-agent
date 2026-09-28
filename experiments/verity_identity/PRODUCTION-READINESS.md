@@ -249,7 +249,7 @@ Offline implementation `deleg_f52dd994` delivered the installer, focused tests
 and installation documentation on the isolated upgrade branch. The parent
 checkpoint is `1038706243f0e6838459ca06345882fe3434d381`; no controller files were
 changed or installed. It implements the following required invariants, subject to
-pending focused source review and live acceptance:
+the process-topology review blocker below and pending live acceptance:
 
 - Keep the original install receipt, stage and controls unchanged. Retain the
   original signed app by rename, never rebuilding or re-signing its replacement.
@@ -276,8 +276,35 @@ same 43 cases per ABI. A parent-owned real first-install/fresh-stage entry test
 failed on the baseline installer with `bounded upgrade API missing` on both ABIs
 and passed on the delivery. The parent did not independently replay every
 intermediate child repair. Changed-file Ruff and whitespace checks passed.
-Two focused source-only reviews are running as `deleg_aa04d048`; green fixtures
-are not source-review clearance or real process-census usability evidence.
+Focused source reviews `deleg_aa04d048` found **one supported-scope blocker**:
+the default dependency checker rejects the required legacy gateway child. The
+selected agent command runs `hermes_cli.stderr_timestamp`, whose direct Python
+child runs `hermes_cli.main gateway run --external-supervisor`. The child's argv
+is neither selected service's full argv and its PID is not the installer, so
+`install_production_native.py:337–345` refuses it as an opaque interpreter before
+the first upgrade journal. The parent inspected the release builder and stderr
+wrapper source and hash-matched the reviewed installer/tests/builder to the
+checkpoint. A separate parent-owned default-checker probe on **both Python ABIs**
+passed with the earlier parent-only census fixture and failed when only the exact
+generated gateway-child record was added. Failure occurred before journal creation;
+root receipt, app inode and legacy selector/plists remained unchanged. These are
+real disposable filesystem operations with synthetic OS observations, not live
+process evidence. The earlier 43-case green suite missed this topology.
+
+Regression-first repair `deleg_daa86bb8` is restricted to the isolated installer,
+focused tests and installation documentation. Child admission must bind the exact
+command and executable to the actually loaded selected job's stable parent
+PID/start/UID identity, with repeated validation; matching arbitrary argv or
+allowing every descendant is not an acceptable repair. The tests must also include
+the installer's own PID and exercise its narrow direct-invocation exemption,
+which the previous successful census fixture omitted.
+
+The reviewers found no additional supported-scope blocker in the immutable
+provenance, observed-state recovery or postreturn digest interface they inspected.
+That bounded source result does **not** clear process-census liveness: reading
+`KERN_PROCARGS2` for every system-owned PID remains unverified, and inaccessible or
+changing processes must still refuse. Repair red/green verification and focused
+re-review are pending; no live census or production operation was attempted.
 
 The delivered receipt contract keeps **original baseline provenance** distinct
 from **current deployment provenance**, with explicit root and committed-upgrade
@@ -286,8 +313,9 @@ transaction containing both `baseline_sha256` and `upgrade_sha256`. The installe
 tests synthesize that future record; the real chained return is **not implemented
 or tested**. Current-controller compatibility does not close this gap. No copied
 historical fields, recursive chain lookup or implicit latest receipt may substitute.
-The policy fix is reviewed, but integration waits for the upgrade review. Fresh
-staging/signing, install-only replacement, census admission and live verification
+The policy fix is reviewed, but integration waits for the upgrade repair and
+focused re-review. Fresh staging/signing, install-only replacement, census
+admission and live verification
 remain separately gated. No live upgrade, recovery, restore or cutover was executed
 for this checkpoint.
 
