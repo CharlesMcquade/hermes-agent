@@ -405,15 +405,33 @@ before the session lock, and a best-effort journal append after pending-state
 publication. PID-sharded append locks are not an atomic operation claim. A local
 claim alone cannot fence Gateway/runner admission or canonical-session rotation.
 
-A narrower follow-up (`deleg_e839d257`) is limited to explicitly supported local
-WebUI execution; Gateway, runner, non-WebUI and unknown ownership must refuse.
-It must implement a real shared local admission boundary before mutation, private
-durable operation deduplication and an actual worker-entry receipt, with isolated
-owning-process integration tests. Normal delivery plus safe refusal after an
-ambiguous durable claim is the target, not guaranteed eventual execution across
-arbitrary crashes. Unsupported external writers remain outside that bounded
-claim; they must not be silently routed locally. No source-only audit, unconsumed
-request or standalone mocked state machine satisfies the cutover condition.
+The narrower follow-up (`deleg_e839d257`) delivered a private, explicitly local,
+settled-session-only consumer. It is committed in the WebUI fork as
+`f7fd6ed7dc7f0faf45fa1c7e66363009a19e609d` on
+`feat/verity-restart-continuation`. The parent independently passed **101** focused
+and neighboring tests on Python 3.11.16 through the repo runner, then repeated
+that result on the committed HEAD with unchanged source hashes and verified
+imports from the intended worktree. The original baseline fails the missing
+consumer assertion. Change-scoped Ruff passes; whole-file Ruff has 24 unchanged
+baseline findings, not an unconditional clean report.
+
+The gate exercised real `_start_run`/legacy adapter/stream-start paths with fake
+workers, durable file claims and worker-entry receipts, uncached Session loading,
+ordinary admission orderings, process-reinstantiated claims and the extracted
+server startup helper. Disposable state and an explicit offline guard were used;
+the unrelated autouse HTTP-server fixture was disabled. **Full server startup,
+controller integration and live same-session continuation were not exercised.**
+Two focused reviews inspect the frozen delivered source; their clearance remains
+open. Parent evidence is retained under
+`~/.hermes/cache/scratch/verity-resume-parent-38oo_s91/`, including
+`parent-final-head-receipt.json` and baseline/lint comparisons.
+
+Gateway, runner, non-WebUI and unknown ownership refuse. Capture is permitted only
+after settlement; persisted pending/active work refuses. The new shared local
+admission edge precedes mutation, and ambiguous durable claims never authorize
+replay. Unsupported external writers remain outside the contract. No source-only
+audit, unconsumed request or standalone mocked state machine satisfies the cutover
+condition.
 
 A parent read-only metadata check found the initiating session open, sourced from
 WebUI, in the requested profile/workspace, with an active stream and pending turn.
@@ -421,15 +439,17 @@ That is not idle/admission evidence and does not establish the effective backend
 missing explicit backend settings are not proof of local ownership. No live
 request was written, no API called, and no turn injected.
 
-The proposed direction, not yet implemented or verified, is one durable cutover
-job plus a narrowly scoped record consumed inside WebUI. Bind operation, initiating
-session, profile, workspace and expected release; persist admission identity before
-worker execution and reconcile it against a nonsecret execution receipt. Duplicate
-triggers must resolve to the same disposition, busy work must remain pending, and
-uncertain dispatch must stop for reconciliation rather than repost. This first
-local-only path must reject a rotated/sealed session rather than following an
-unverified descendant or reopening a parent. Do not weaken authentication or copy
-browser credentials to make this work.
+The remaining integration is a durable controller job that publishes the private
+consumer protocol (`deployment.json`, immutable `request.json`, and terminal
+operation proof pinned to the new owning PID/start time). The existing controller
+does not yet implement it. Bind operation, initiating session, profile, workspace
+and expected release; preserve the consumer's pre-worker admission identity and
+reconcile it against the worker-entry receipt. Duplicate triggers must resolve to
+the same disposition, busy work must remain pending, and uncertain dispatch must
+stop for reconciliation rather than repost. The local-only path rejects a
+rotated/sealed session rather than following an unverified descendant or reopening
+a parent. Do not weaken authentication or copy browser credentials to make this
+work.
 
 The consumer must be present in the release that boots after cutover; an unconsumed
 record is not a recovery mechanism. Before arming, use isolated state to verify
