@@ -56,6 +56,41 @@ separate permission workflows; this change invents no Info.plist usage keys for
 those grants. Do not reset TCC, sample private content, record media, scan devices,
 or run permission probes just to validate bundle metadata.
 
+## Evidence-driven limits after the instrumented check
+
+The final-identity Location diagnostic in `PRODUCTION-PERMISSIONS.md` observed an
+initial authorization callback and a pumped main-thread run loop, but no grant.
+Its worker's own bundle did not expose Verity's metadata. Neither observation
+identifies Core Location's responsible client. The frozen native host imports
+Foundation, CryptoKit and Darwin and runs `dispatchMain()`; it does not instantiate
+or activate NSApplication. This differs from a foreground AppKit consent flow,
+but is not by itself proof of the timeout's cause.
+
+Apple's current [authorization overview](https://developer.apple.com/documentation/corelocation/requesting-authorization-to-use-location-services)
+recommends checking the manager instance and processing its initial delegate
+callback. The [request method](https://developer.apple.com/documentation/corelocation/cllocationmanager/requestwheninuseauthorization())
+is available on macOS and documents a foreground requirement. Cross-platform
+wording and third-party anecdotes about starting location updates do not establish
+that sampling is required here. Do not call `startUpdatingLocation` or
+`requestLocation` merely to make this consent test pass.
+
+Current [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)
+explicitly distinguishes launchd **agents** from the daemon exemption, documents
+possible Settings ambiguity with multiple app copies (FB15568200), and documents
+missing alerts for short-lived failing processes (FB16131937). Neither reported
+issue has been isolated in this setup; the observed connection succeeded. It also
+requires a unique main-executable UUID for reliable behavior and recommends an
+Apple-issued signing identity. Retained signed test bundles and a self-issued
+identity must not be silently treated as proof of correct Local Network tracking.
+
+For a future separately scoped connection diagnostic, TN3179 identifies
+`NWConnection` waiting state plus `NWPath.UnsatisfiedReason.localNetworkDenied` as
+specific denial evidence. It does not offer a general permission-query API, and
+a successful connection still does not prove denial enforcement. No network
+operation, global preference change, state reset, new user or VM is performed by
+this documentary follow-up. The stopped distinct-Verity-row deny/allow boundary
+remains in effect.
+
 ## Sealing and verification
 
 The builder serializes the canonical dictionary with `plistlib.dumps()` before
