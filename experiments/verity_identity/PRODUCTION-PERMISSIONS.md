@@ -188,8 +188,18 @@ red-to-green subcase covers a positively identified unrelated zombie. Eight adde
 methods cover these paths plus artifact-user refusal, unknown census, and bootout
 exception reconciliation. **76 combined tests pass per Python 3.11/3.14**, including
 28 permission-harness tests; Ruff/diff checks pass. The actual read-only census
-now passes with no artifact users. Focused re-review remains pending. No production
-service was restarted.
+now passes with no artifact users. Fix commit:
+`55155520cc1450d237c1847aa6e75eab9f9cacdf` (pushed and remote verified).
+Focused re-review `deleg_d89c1c04` remains pending. No production service was restarted.
+
+A separate production-signed 3.14 check-only preparation at
+`~/.hermes/experiments/verity-permission-camera-check-314-v1` also passed static
+preflight. Its copied executable loaded the standard library and all nine native
+framework bridges with ABI `[3,14]`, exit zero and no stderr; no permission APIs
+were called. The original 3.11 stage still passes preflight after these parent-only
+recovery edits. Independent installed-artifact/selector/plist/PID read-back remains
+unchanged with health `ok`. These preparation smoke tests do not prove live host
+attribution, consent or cross-minor continuity.
 
 ## Offline evidence
 
