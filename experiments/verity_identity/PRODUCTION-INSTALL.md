@@ -315,7 +315,8 @@ executes the full staged/installed-module return sequence and supplies the real
 verified transaction to this operation. Parent replay passed this composition
 within a frozen 131-test aggregate on both Python 3.11.16 and 3.14.7. Signature,
 process/health and dependency-absence observations are explicit fake adapters;
-source review remains pending. This closes neither the live maintenance admission
+focused source-only review `deleg_66b6b131` is bounded-clear, with reviewed source
+matched to current bytes by the parent. This closes neither the live maintenance admission
 problem (`MAINTENANCE-CONTRACT.md`) nor native activation, same-session resume,
 permission, real signature or live upgrade gates. The installer is unchanged.
 

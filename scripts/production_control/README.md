@@ -247,7 +247,10 @@ with seven subprocess/native/compiler cases explicitly excluded. The same return
 success test fails meaningfully against the old controller's
 `Wrong installed control identity` refusal on both ABIs. This is a demonstrated
 old capability boundary; the new explicit upgrade pin is an additional input,
-not an identical-input security-policy bypass. Focused source review is pending.
+not an identical-input security-policy bypass. Focused source-only review
+`deleg_66b6b131` is bounded-clear, and the parent matched the reviewed frozen
+source to the committed runtime/tests. This closes the offline return-integration
+gate only; it does not establish live exact return or maintenance launch exclusion.
 
 ## Native gateway timestamp-wrapper identity
 

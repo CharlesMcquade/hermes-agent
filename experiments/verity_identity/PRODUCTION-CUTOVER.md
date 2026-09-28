@@ -8,8 +8,9 @@ acceptance. The selected Agent uses a stderr-timestamp wrapper between the nativ
 host and actual gateway; the validator must recognize and strictly bind that exact
 chain before another trial. The narrow source repair is independently tested and
 source-reviewed, but not installed. Upgrade-aware exact return and retained-host
-staging are now independently tested source implementations with focused review
-pending. Live deployment remains blocked by protected-process census denial and
+staging are now independently tested source implementations. Both focused reviews
+are bounded-clear and the parent matched their frozen source to current bytes.
+Live deployment remains blocked by protected-process census denial and
 the absence of an enforceable maintenance boundary for existing v1 consumers; see
 `MAINTENANCE-CONTRACT.md` and the readiness summary. The installer was not weakened.
 The operator approved offline implementation/testing, not live downtime or installed

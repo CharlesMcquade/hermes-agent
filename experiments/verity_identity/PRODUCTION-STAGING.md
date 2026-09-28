@@ -124,7 +124,11 @@ mutants forcing compilation and omitting retained-input stability checks failed
 with one and four assertions respectively, zero errors. These mutations establish
 test sensitivity; the original implementation only rejected the new keyword API.
 All signatures/compiler results in this checkpoint are fixture adapters, not
-Apple signing evidence. Focused source review remains pending.
+Apple signing evidence. Focused source-only review `deleg_66b6b131` is bounded-clear
+under the cooperative scope; the parent matched reviewed source to current bytes.
+The default still compiles; no-compile reuse requires the explicit retained options,
+and rejected retained inputs never fall back to compilation. This review does not
+clear live staging/signing or installer maintenance admission.
 
 ## Offline verification
 

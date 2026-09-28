@@ -29,7 +29,12 @@ subprocess/native/compiler exclusions, isolated state and no guard violations.
 The real fixture chain runs first install -> fresh stage -> upgrade -> native
 activation -> exact return -> original-wrapper restore. No synthetic completion
 receipt substitutes for that return. OS/signature/health/dependency observations
-are adapters, not live evidence. Focused reviews `deleg_66b6b131` are pending.
+are adapters, not live evidence. Both focused source-only reviews `deleg_66b6b131`
+are bounded-clear. The parent recomputed the frozen and current hashes for all
+64 source files in the manifest, including the five changed runtime/test files,
+and verified the retained parent test receipts. The return-integration and
+retained-host staging source gates are closed; neither review establishes live
+acceptance or resolves the separate maintenance-admission gap.
 
 Parent negative replay on each ABI also reproduced the old controller's
 `Wrong installed control identity` refusal, and behavioral staging mutants caused
@@ -100,8 +105,8 @@ artifacts, but it is not presently a complete deployment-and-return route:
   installer attempt or proof that a privileged attempt would succeed.
 - The source controller now implements the explicit root+upgrade-pinned exact
   return and emits the linkage the installer requires. Real composed fixtures
-  pass independently; focused source review remains pending and no installed
-  controller or native-success return has been exercised live.
+  pass independently; focused source review is bounded-clear and matches current
+  bytes. The upgraded controller and native-success return remain live-untested.
 - The source stager now implements explicit retained-stage/report-pinned executable
   reuse before signing, preserving unchanged host source and canonical Info.plist.
   Fresh signing can alter signature bytes, so it still does not promise identical
@@ -539,16 +544,15 @@ or changing processes must still refuse. No live census or production operation
 was attempted. The earlier source-review closeout was documentation-only; the
 subsequent test-only verification above is separate evidence, not live acceptance.
 
-The delivered receipt contract keeps **original baseline provenance** distinct
+This historical receipt checkpoint kept **original baseline provenance** distinct
 from **current deployment provenance**, with explicit root and committed-upgrade
-pins. The future controller must produce a verified `return-retained-baseline`
-transaction containing both `baseline_sha256` and `upgrade_sha256`. The installer
-tests synthesize that future record; the real chained return is **not implemented
-or tested**. Current-controller compatibility does not close this gap. No copied
-historical fields, recursive chain lookup or implicit latest receipt may substitute.
-The policy and topology repairs are source-reviewed and the assigned immediate-
-mutation test coverage is verified; actual chained-return integration remains open. Fresh
-staging/signing, install-only replacement, census admission and live verification
+pins. At that point, installer tests synthesized the future verified
+`return-retained-baseline` transaction containing both `baseline_sha256` and
+`upgrade_sha256`; the real chained return was not implemented or tested. The
+current offline implementation and composed-fixture evidence at the top of this
+document supersede that gap, with both focused source reviews now bounded-clear.
+No copied historical fields, recursive chain lookup or implicit latest receipt
+may substitute. Fresh staging/signing, maintenance admission and live verification
 remain separately gated. No live upgrade, recovery, restore or cutover was executed
 for this checkpoint.
 
