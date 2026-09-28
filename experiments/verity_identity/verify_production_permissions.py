@@ -428,15 +428,45 @@ class Live:
         return {'exit_code': int(match[1])}
 
     def cleanup(self, target, root):
-        self.command('bootout', '--wait', target)
-        check(self.absent(target), 'Target still loaded or absence unknown')
-        # Missing output cannot prove a partially bootstrapped process tree is gone.
+        # A timeout/spawn error does not prove bootout failed. Still perform both
+        # independent absence checks; neither a return code nor missing logs is proof.
+        try:
+            self.command('bootout', '--wait', target)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        wait(lambda: self.absent(target), 20)
         wait(lambda: process_tree_gone(root), 20)
         return True
 
+    def restorable(self, root, p):
+        return self.absent(f'gui/{os.getuid()}/' + p['label']) and process_tree_gone(root)
+
+
+def process_census():
+    output = subprocess.run(['/bin/ps', '-axo', 'pid=,uid=,pgid='], check=True,
+                            capture_output=True, text=True, timeout=5).stdout
+    rows = {}
+    for line in output.splitlines():
+        pid, uid, group = map(int, line.split())
+        check(pid > 0 and uid >= 0 and group >= 0 and pid not in rows, 'Malformed process census')
+        rows[pid] = (uid, group)
+    check(os.getpid() in rows, 'Incomplete process census')
+    return rows
+
+
+def kernel_identity(pid):
+    from native_identity import process_identity
+    return process_identity(pid)
+
 
 def process_tree_gone(root):
-    from verify_service_host_live import alive
+    # Independent kernel census handles failure before the first event. No
+    # private content or process environments are returned or persisted.
+    install, _ = helpers()
+    plan = json.loads(install.safe(root / 'prepared.json').read_text())
+    check(plan['root'] == str(root) and root.parent == Path(plan['home']) / '.hermes/experiments',
+          'Foreign absence plan')
+    app = Path(plan['home']) / 'Applications/Verity.app'
     events = records(root)
     ids, groups = set(), set()
     for r in events:
@@ -449,11 +479,33 @@ def process_tree_gone(root):
         if r.get('event') == 'supervisor-ready':
             ids.update((r['pid'], r['worker']))
             groups.add(r['pgid'])
-    if not ids or not groups or any(alive(pid) for pid in ids):
+    census = process_census()
+    if ids.intersection(census) or any(group in groups for _, group in census.values()):
         return False
-    output = subprocess.run(['/bin/ps', '-axo', 'pid=,pgid='], check=True,
-                            capture_output=True, text=True, timeout=5).stdout
-    return not any(int(line.split()[1]) in groups for line in output.splitlines())
+    for pid, (uid, _) in census.items():
+        if uid != os.getuid():
+            continue
+        try:
+            r = kernel_identity(pid)
+        except Exception:
+            # An exited process is not an unreadable live process. PID reuse or
+            # any still-present unreadable identity stays unknown and refuses.
+            if pid not in process_census():
+                continue
+            state = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat='], check=True,
+                                   capture_output=True, text=True, timeout=5).stdout.split()
+            if len(state) == 1 and state[0].startswith('Z'):
+                # Positive kernel zombie status: no executable/address space.
+                # Recorded experiment PIDs/groups above still require disappearance.
+                continue
+            return False
+        check(r['pid'] == pid and r['uid'] == uid, 'Process identity/census mismatch')
+        executable = Path(r['executable'])
+        if executable.is_relative_to(app) or executable.is_relative_to(root):
+            return False
+        if str(root / 'production_launcher.py') in r['argv']:
+            return False
+    return True
 
 
 def wait(predicate, seconds):
@@ -473,11 +525,12 @@ def baseline(base):
     return old, {str(p): install.snapshot(p) for p in install.baseline_paths(base, old)}
 
 
-def unchanged(base, old, saved, dependency):
+def unchanged(base, old, saved, dependency=None):
     install, _ = helpers()
     install.terminal_activation(base)
     check(all(install.snapshot(Path(p)) == value for p, value in saved.items()), 'Legacy baseline changed')
-    check(dependency(base, old) is True, 'Native dependency cannot be ruled out')
+    if dependency is not None:
+        check(dependency(base, old) is True, 'Native dependency cannot be ruled out')
 
 
 def restore_bundle(root, p, runner=None):
@@ -525,8 +578,8 @@ def run(root, *, live=False, runner=None, adapter=None, dependency=None):
             check(tree(app) == p['temporary'], 'Temporary final-path inventory mismatch')
             verify_signature(app, runner)
             unchanged(base, old, saved, dependency)
+            attempted = True  # Before durable intent too: interruption may follow its write.
             durable(root, 'bootstrap-intent.json', {'target': target})
-            attempted = True  # Before the call: bootstrap can partially succeed.
             adapter.bootstrap(target, root)
             wait(lambda: adapter.identity(root, p), 20)
             ready = next(r for r in records(root) if r.get('event') == 'worker-ready')
@@ -551,10 +604,13 @@ def run(root, *, live=False, runner=None, adapter=None, dependency=None):
                 else:
                     cleaned = True
                 report['cleanup_verified'] = cleaned
-                unchanged(base, old, saved, dependency)
+                # Restoration needs unchanged legacy selection and absence of
+                # artifact users, not healthy unrelated legacy service PIDs.
+                unchanged(base, old, saved)
+                check(adapter.restorable(root, p) is True, 'Artifact users remain or unknown')
                 restore_bundle(root, p, runner)
                 report['restored'] = True
-                unchanged(base, old, saved, dependency)
+                unchanged(base, old, saved)
             except BaseException as exc:
                 report.update(status='failed', recovery_error_type=type(exc).__name__)
             # Failure here cannot undo a verified restoration; receipt remains.
@@ -576,16 +632,18 @@ def recover(root, *, live=False, runner=None, adapter=None, dependency=None):
     base = install.safe(Path(p['base']))
     install.safe(base / 'control.lock')
     adapter = adapter or Live()
-    dependency = dependency or install.no_live_native_dependency
+    # dependency is retained for API compatibility, but live legacy availability
+    # is admission-only. Stop the exactly-owned experiment before checking drift.
     with install.control_lock(base):
-        check(baseline(base) == (receipt['old'], receipt['baseline']), 'Incomplete or changed recovery baseline')
-        unchanged(base, receipt['old'], receipt['baseline'], dependency)
         if (root / 'bootstrap-intent.json').exists():
             check(adapter.cleanup(receipt['target'], root) is True, 'Cleanup unknown; retaining original')
         else:
             check(adapter.absent(receipt['target']), 'Unexpected target')
+        check(baseline(base) == (receipt['old'], receipt['baseline']), 'Incomplete or changed recovery baseline')
+        unchanged(base, receipt['old'], receipt['baseline'])
+        check(adapter.restorable(root, p) is True, 'Artifact users remain or unknown')
         restore_bundle(root, p, runner)
-        unchanged(base, receipt['old'], receipt['baseline'], dependency)
+        unchanged(base, receipt['old'], receipt['baseline'])
         report = dict(status='restored', cleanup_verified=True, restored=True)
         durable(root, 'recovery-' + uuid.uuid4().hex + '.json', report)
         return report

@@ -45,6 +45,9 @@ class FakeLive:
     def exited(self, p):
         return {'exit_code': 0}
 
+    def restorable(self, root, p):
+        return True
+
     def cleanup(self, target, root):
         self.events.append('cleanup')
         if self.error == 'cleanup':
@@ -281,19 +284,20 @@ class PermissionTests(unittest.TestCase):
         with self.assertRaises((ValueError, TypeError)):
             h.sanitize([r], 'Camera')
 
-    def test_default_dependency_checker_is_used_before_and_after(self):
+    def test_default_dependency_checker_is_used_for_admission_and_prebootstrap(self):
         self.prepare()
         install, _ = h.helpers()
         with patch.object(install, 'no_live_native_dependency', return_value=True) as dependency:
             result = h.run(self.root, live=True, runner=self.runner, adapter=FakeLive())
         self.assertTrue(result['restored'])
-        self.assertGreaterEqual(dependency.call_count, 3)
+        self.assertEqual(dependency.call_count, 2)
         for call in dependency.call_args_list:
             self.assertEqual(call.args, (self.base, {}))
 
     def test_missing_process_receipts_cannot_claim_cleanup(self):
         self.prepare()
-        self.assertFalse(h.process_tree_gone(self.root))
+        with self.assertRaises(AssertionError):
+            h.process_tree_gone(self.root)
 
     def test_unknown_worker_and_existing_prepare_root_refused(self):
         with self.assertRaises(ValueError):
@@ -326,6 +330,105 @@ class PermissionTests(unittest.TestCase):
         self.assertEqual(result['error_type'], 'KeyboardInterrupt')
         self.assertTrue(result['restored'])
         self.assertEqual(h.tree(self.app), self.before)
+
+    def test_empty_process_receipts_use_independent_census(self):
+        self.prepare()
+        # Current process proves the census is not an empty/error response.
+        census = {os.getpid(): (os.getuid(), os.getpgrp())}
+        record = dict(pid=os.getpid(), uid=os.getuid(), executable='/fixture/observer',
+                      argv=['/fixture/observer'])
+        with patch.object(h, 'process_census', return_value=census, create=True), \
+                patch.object(h, 'kernel_identity', return_value=record, create=True):
+            self.assertTrue(h.process_tree_gone(self.root))
+
+    def test_real_cleanup_adapter_bootstrap_failure_restores_without_records(self):
+        self.prepare()
+        adapter = h.Live()
+        from types import SimpleNamespace
+        def command(*args):
+            if args[0] == 'print':
+                return SimpleNamespace(returncode=113, stdout='', stderr='Could not find service')
+            return SimpleNamespace(returncode=5, stdout='', stderr='fixture bootstrap error')
+        census = {os.getpid(): (os.getuid(), os.getpgrp())}
+        record = dict(pid=os.getpid(), uid=os.getuid(), executable='/fixture/observer',
+                      argv=['/fixture/observer'])
+        def once(predicate, seconds):
+            self.assertTrue(predicate(), 'Cleanup must independently prove absence')
+            return True
+        with patch.object(adapter, 'command', side_effect=command), \
+                patch.object(h, 'process_census', return_value=census, create=True), \
+                patch.object(h, 'kernel_identity', return_value=record, create=True), \
+                patch.object(h, 'wait', side_effect=once):
+            result = self.run_harness(adapter)
+        self.assertEqual(result['status'], 'failed')
+        self.assertTrue(result['cleanup_verified'] and result['restored'])
+        self.assertEqual(h.tree(self.app), self.before)
+
+    def test_legacy_service_loss_after_cleanup_does_not_block_restore(self):
+        self.prepare()
+        install, _ = h.helpers()
+        adapter = FakeLive()
+        def dependency(*args):
+            if 'cleanup' in adapter.events:
+                raise ValueError('legacy service stopped independently')
+            return True
+        with patch.object(install, 'no_live_native_dependency', side_effect=dependency):
+            result = h.run(self.root, live=True, runner=self.runner, adapter=adapter)
+        self.assertTrue(result['restored'])
+        self.assertEqual(h.tree(self.app), self.before)
+
+    def test_recovery_cleans_experiment_before_baseline_drift_refusal(self):
+        self.prepare()
+        self.run_harness(FakeLive('cleanup'))
+        adapter = FakeLive()
+        with patch.object(h, 'baseline', side_effect=ValueError('legacy drift')):
+            with self.assertRaisesRegex(ValueError, 'legacy drift'):
+                h.recover(self.root, live=True, runner=self.runner, adapter=adapter,
+                          dependency=lambda *_: True)
+        self.assertIn('cleanup', adapter.events)
+        self.assertTrue((self.root / 'original.app').exists())
+
+    def test_census_distinguishes_exited_zombie_and_unreadable_live_process(self):
+        self.prepare()
+        from types import SimpleNamespace
+        census = {os.getpid(): (os.getuid(), os.getpgrp())}
+        for state, expected in [('Z', True), ('S', False), ('', False)]:
+            with self.subTest(state=state), \
+                    patch.object(h, 'process_census', return_value=census), \
+                    patch.object(h, 'kernel_identity', side_effect=ValueError('unreadable')), \
+                    patch.object(h.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=state)):
+                self.assertEqual(h.process_tree_gone(self.root), expected)
+
+    def test_census_refuses_live_artifact_users_and_unknown_scans(self):
+        self.prepare()
+        census = {os.getpid(): (os.getuid(), os.getpgrp())}
+        paths = [str(self.app / h.BINARY), str(self.root / 'permission-python'), '/fixture/python']
+        for exe in paths:
+            record = dict(pid=os.getpid(), uid=os.getuid(), executable=exe,
+                          argv=[exe, str(self.root / 'production_launcher.py')])
+            with self.subTest(exe=exe), patch.object(h, 'process_census', return_value=census), \
+                    patch.object(h, 'kernel_identity', return_value=record):
+                self.assertFalse(h.process_tree_gone(self.root))
+        with patch.object(h, 'process_census', side_effect=OSError('census unavailable')):
+            with self.assertRaises(OSError):
+                h.process_tree_gone(self.root)
+
+    def test_restoration_refuses_remaining_artifact_users(self):
+        self.prepare()
+        adapter = FakeLive()
+        with patch.object(adapter, 'restorable', return_value=False):
+            result = self.run_harness(adapter)
+        self.assertFalse(result['restored'])
+        self.assertTrue((self.root / 'original.app').exists())
+
+    def test_bootout_timeout_still_verifies_absence(self):
+        self.prepare()
+        adapter = h.Live()
+        with patch.object(adapter, 'command', side_effect=OSError('bootout spawn')), \
+                patch.object(adapter, 'absent', return_value=True), \
+                patch.object(h, 'process_tree_gone', return_value=True) as scan:
+            self.assertTrue(adapter.cleanup('fixture', self.root))
+        scan.assert_called_once_with(self.root)
 
     def test_code_payload_only_signature_may_change(self):
         a = macho()

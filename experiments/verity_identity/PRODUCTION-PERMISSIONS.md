@@ -2,10 +2,9 @@
 
 `verify_production_permissions.py` adds **prepare**, **preflight**, **run**, and
 **recover** interfaces. This is not a production cutover, restart, upgrade, or
-permission grant tool. Only offline fixture tests have been executed for this
-implementation. The live adapters, Apple signing, Mach-O re-signing compatibility,
-OS dialogs and final-path attribution still need parent review and explicit live
-execution. Do not run the production app directly to test this.
+permission grant tool. Offline tests, actual stage-only signing, copied-runtime
+imports and read-only absence checks have passed. Live swap/cleanup, OS dialogs
+and final-path attribution still need parent review and explicit live execution. Do not run the production app directly to test this.
 
 ## Boundaries
 
@@ -108,8 +107,10 @@ one of the preflight checks.
 The parent holds the existing nonblocking production `control.lock` through the
 swap, test, cleanup, restoration and final baseline checks. It snapshots exact
 legacy selector/plist bytes, owner and mode, requires a terminal/absent activation
-transaction, and calls the installer's default `no_live_native_dependency` before
-and after. Unknown is refusal, not permission to proceed. Coordinated controllers
+transaction, and calls the installer's default `no_live_native_dependency` for
+admission and again before bootstrap. Restoration separately requires unchanged
+selector/plists and independent absence of all artifact users; it does not require
+unrelated legacy services to be running. Unknown is refusal, not permission to proceed. Coordinated controllers
 cannot select native jobs while this lock is held. Advisory locks do not stop
 manual launchctl actions, arbitrary same-account writers or an OS crash.
 
@@ -141,9 +142,16 @@ under an unaccounted process.
 Ordinary exceptions and a first SIGINT/SIGTERM enter cleanup. **No cleanup claim
 is made for SIGKILL, OS crash, power loss or repeated interrupts.** `recover --live`
 rechecks the exact receipt/baseline and cleanup before deterministic restoration.
-If bootstrap started without enough process receipts, cleanup stays inconclusive
-and automatic recovery refuses. Preserve the root and seek manual, independently
-verified reconciliation; do not delete the original or force a rename. Result
+Missing process receipts trigger an independent process census, not permanent
+refusal. After exact launchd absence, cleanup checks recorded PID/PGID disappearance
+and all current-user kernel executable/argv identities for the final bundle,
+experiment executables and fixed isolated launcher. Census failure, malformed or
+unreadable live identities refuse. A positively observed unrelated zombie has no
+executable/address space and does not block this scan; recorded experiment PIDs
+still require disappearance. No process arguments/environments are persisted.
+Recovery cleans its exactly-owned temporary job before checking legacy baseline
+drift. Drift still blocks renaming, but cannot skip experiment cleanup. Preserve
+the root on unknown state; never delete the original or force a rename. Result
 write failure can occur after successful restoration: earlier receipts remain,
 and recovery verifies rather than trusting an absent report.
 
@@ -172,7 +180,16 @@ expected `113` / `Could not find service` absence result for a new random label.
 The parent independently rechecked installed production artifacts and the legacy
 selector/plists/process identities; all matched, health `ok`, native candidate
 unselected. Live swap/recovery and final-path permissions are still unverified;
-independent source review is pending. No production service was restarted.
+Initial privacy/runtime review (`deleg_0aeb47ca.task-1`) found no blockers.
+The lifecycle review found two recovery blockers, now covered by parent regressions:
+missing pre-bootstrap receipts and reliance on live legacy-service availability.
+All four exact-boundary tests failed before the fix and passed afterward; a fifth
+red-to-green subcase covers a positively identified unrelated zombie. Eight added
+methods cover these paths plus artifact-user refusal, unknown census, and bootout
+exception reconciliation. **76 combined tests pass per Python 3.11/3.14**, including
+28 permission-harness tests; Ruff/diff checks pass. The actual read-only census
+now passes with no artifact users. Focused re-review remains pending. No production
+service was restarted.
 
 ## Offline evidence
 
@@ -200,8 +217,8 @@ recovery; opt-ins; missing lock; default-dependency wiring; root/worker reuse;
 sealed settings; completed scalar filtering and stale-GO rejection.
 
 Limitations: these tests are not macOS signing/permission/launchd/attribution
-proof. Cleanup requires process evidence and the expected launchctl absence/exit
-syntax; unknown output fails closed. One worker per root, no autonomous UI,
+proof. Cleanup requires independent process-census evidence and the expected
+launchctl absence/exit syntax; unknown output fails closed. One worker per root, no autonomous UI,
 no AppleEvents, no in-place same-host ABI switching, no grant revocation or
 restoration of OS consent decisions, no broad runtime inventory seal, and no
 hostile same-account filesystem defense. Original filesystem metadata is
