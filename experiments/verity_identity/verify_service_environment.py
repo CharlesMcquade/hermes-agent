@@ -329,13 +329,21 @@ def verify(root, identity_path):
     finally:
         errors = []
         for target in reversed(attempted):
-            launchctl("bootout", "--wait", target, check=False)
-            if launchctl("print", target, check=False).returncode == 0:
-                errors.append("Still loaded: " + target)
+            # check=False only covers nonzero exits, not spawn/timeout errors.
+            # Isolate each command so one failure cannot strand later targets.
+            try:
+                launchctl("bootout", "--wait", target, check=False)
+            except (OSError, subprocess.SubprocessError) as exc:
+                errors.append("Bootout failed: " + target + ": " + type(exc).__name__)
+            try:
+                if launchctl("print", target, check=False).returncode == 0:
+                    errors.append("Still loaded: " + target)
+            except (OSError, subprocess.SubprocessError) as exc:
+                errors.append("Job absence unverified: " + target + ": " + type(exc).__name__)
         try:
             if attempted:
                 until(lambda: all_gone(jobs))
-        except (AssertionError, OSError, ValueError) as exc:
+        except (AssertionError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
             errors.append(
                 "Fixture cleanup could not be verified: " + type(exc).__name__
             )

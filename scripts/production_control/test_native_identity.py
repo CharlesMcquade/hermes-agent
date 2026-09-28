@@ -307,6 +307,81 @@ while let line = readLine() {
             ):
                 self.assertIs(harness.ready(job, None), expected)
 
+    def test_environment_cleanup_faults_continue_and_retain_failed_receipt(self):
+        import subprocess
+        import sys
+        from types import SimpleNamespace
+        source = Path(__file__).resolve().parents[2] / "experiments/verity_identity"
+        with patch.object(sys, "path", [str(source), *sys.path]):
+            import verify_service_environment as harness
+        identity = self.base / "fixture-identity.json"
+        identity.write_text(json.dumps(dict(sha1="a" * 40, keychain="/unused.keychain")))
+        variants = harness.variants
+        cases = [
+            ("bootout", subprocess.TimeoutExpired("fixture-launchctl", 30)),
+            ("bootout", OSError("fixture spawn failure")),
+            ("print", subprocess.TimeoutExpired("fixture-launchctl", 30)),
+            ("ps", subprocess.TimeoutExpired("fixture-ps", 10)),
+            ("ps", subprocess.CalledProcessError(1, "fixture-ps")),
+            ("body-and-bootout", OSError("fixture spawn failure")),
+        ]
+        for index, (point, fault) in enumerate(cases):
+            with self.subTest(point=point, fault=type(fault).__name__):
+                root = self.base / ("cleanup-case-" + str(index))
+                events, loaded = [], set()
+
+                def launch(*args, **kwargs):
+                    operation = args[0]
+                    if operation == "bootstrap":
+                        target = "gui/" + str(os.getuid()) + "/" + plistlib.loads(
+                            Path(args[2]).read_bytes())["Label"]
+                        loaded.add(target)
+                    else:
+                        target = args[-1]
+                    events.append((operation, target))
+                    if target.endswith(".webui") and (
+                        target in loaded or ("bootout", target) in events
+                    ):
+                        if operation == point or (
+                            point == "body-and-bootout" and operation == "bootout"
+                        ):
+                            raise fault
+                    if operation == "bootout":
+                        loaded.discard(target)
+                    return SimpleNamespace(returncode=0 if target in loaded else 1)
+
+                def compiler(_root, _source, binary):
+                    binary.write_bytes(b"not executable; compilation fixture")
+
+                readiness = (lambda *a: True) if point != "body-and-bootout" else None
+                with (
+                    patch.object(harness, "compile_host", side_effect=compiler),
+                    patch.object(harness, "run"),
+                    patch.object(harness, "variants", side_effect=lambda b: iter([next(variants(b))])),
+                    patch.object(harness, "runtime_environment", return_value={}),
+                    patch.object(harness, "launchctl", side_effect=launch),
+                    patch.object(harness, "ready", side_effect=readiness or [True, RuntimeError("body failure")]),
+                    patch.object(harness, "all_gone", side_effect=fault if point == "ps" else None,
+                                 return_value=True) as gone,
+                    patch("builtins.print"),
+                ):
+                    # The original broken implementation raises the injected fault;
+                    # assertions below isolate lost cleanup/report behavior.
+                    with self.assertRaises((AssertionError, OSError, subprocess.SubprocessError)):
+                        harness.verify(root, identity)
+                bootouts = [target for op, target in events if op == "bootout"]
+                self.assertEqual(len(bootouts), 2)
+                self.assertTrue(bootouts[0].endswith(".webui"))
+                self.assertTrue(bootouts[1].endswith(".agent"))
+                self.assertTrue(gone.called)
+                receipt = json.loads((root / "environment-verification.json").read_text())
+                self.assertEqual(receipt["status"], "failed")
+                self.assertEqual(receipt["cleanup_status"], "failed")
+                self.assertIs(receipt["cleanup_verified"], False)
+                self.assertTrue(receipt["cleanup_errors"])
+                if point == "body-and-bootout":
+                    self.assertEqual(receipt["error_type"], "RuntimeError")
+
     def proof(self, **kw):
         return self.c.snapshot(self.manifest, self.c.definitions(self.manifest), **kw)
 

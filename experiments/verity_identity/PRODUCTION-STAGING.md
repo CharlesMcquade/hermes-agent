@@ -165,8 +165,32 @@ Only the existing lab signer and `com.charles.verity.environmentlab` were used;
 no privacy APIs, production services or real application content were exercised.
 The harness uses stage-local compiler scratch and converts CLI SIGTERM into a
 cleanup path; uncatchable termination remains outside that guarantee. The named
-exit-status regression brings the controller suite to 70 tests. Focused reviews
-and a new synthetic migration/rollback harness are pending.
+exit-status regression brought the controller suite to 70 tests.
+
+Review `deleg_4dc255cb` found one cleanup blocker: a launchctl timeout/spawn error
+could abort remaining bootouts, and a ps subprocess error could skip the failure
+report. It found no additional blockers in the signed-environment, legacy defaults,
+Program migration, explicit reload or exact-byte rollback changes reviewed.
+The cleanup now catches errors separately for each bootout and absence check,
+continues every remaining target, attempts the process/group check, and publishes
+a failed cleanup receipt without logging subprocess output. Process-check timeout,
+nonzero exit and malformed evidence are also recorded rather than aborting report
+publication. This does not guarantee cleanup after repeated asynchronous interrupts,
+uncatchable process death, or a filesystem failure preventing the report write.
+
+One new regression reproduces six red-to-green cases: bootout timeout, spawn error,
+print timeout, ps timeout, ps nonzero exit, and body failure plus cleanup failure.
+Each requires both role cleanup attempts, the process check and a failed receipt;
+the combined failure also retains the original body error type. Parent verification
+passed all **71 controller tests on both Python 3.11 and 3.14**, plus 53 selected
+experiment tests on 3.11 and 45 on 3.14 (the same eight cryptography-dependent signer
+tests excluded). Changed-file Ruff and diff checks passed.
+
+A fourth fresh live run, `~/.hermes/cache/scratch/verity-env-live-cleanup4/`, passed
+all 70 environment cases on the updated harness. Read-back and independent checks
+again verified all recorded processes/groups gone and all jobs absent. Production
+hashes, PIDs and health stayed unchanged. Focused cleanup re-review, parent staging
+integration review and the new synthetic migration/rollback harness remain pending.
 
 ## Concrete remaining gates / blockers
 
