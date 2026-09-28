@@ -162,15 +162,70 @@ approved ordinary recovery. Informational receipts are not recovery authority.
 
 `--yes` still requires a directly launchd-owned independent controller; otherwise
 interactive confirmation is required. Neither flag grants operator approval.
-This source change requires a **new retained, verified control version and matched
-stage/install provenance**. Existing installations do not acquire the operation
-from a checkout edit. The first-install-only installer is not an upgrade path;
-reconciling an already installed version requires a separately reviewed deployment
-step, preserving original baseline provenance rather than forging receipts.
+Without an additional pin, this operation still requires the executing controller
+in the installed receipt's exact control version. **Explicit contract change:**
+`--return-controller-sha256 DESCRIPTOR_SHA256` separates executor provenance from
+installed artifact provenance for an already-installed v1 deployment. It is valid
+only together with `--return-baseline INSTALL_RECEIPT_SHA256 --restart --reload`.
+Neither digest is inferred from disk: both are independently reviewed operator
+inputs. The descriptor is deployment provenance, not self-trusted authority.
+
+The executing file must be the canonical
+`BASE/return-control-versions/NAME/restart_production.py`, where NAME contains only
+ASCII letters, digits, underscores and hyphens. Retain exactly these five files:
+`restart_production.py`, `approved_restart_job.py`, `production_launcher.py`,
+`native_identity.py`, `watchdog.py`, plus `return-controller.json`. The directory
+must be 0555; every file, including the descriptor, must be 0444, owned by the
+operator, with safe canonical nonsymlink ancestors. Run with `-B` to avoid creating
+bytecode or extra directory members. The descriptor has exactly these fields:
+
+```json
+{
+  "schema_version": 1,
+  "base": "<canonical BASE>",
+  "executor": "<canonical BASE>/return-control-versions/<NAME>/restart_production.py",
+  "installed_version": "<original receipt report.final_control_version>",
+  "install_receipt_sha256": "<SHA-256 of exact original install receipt bytes>",
+  "control_sha256": {
+    "restart_production.py": "<SHA-256 of separately retained file>",
+    "approved_restart_job.py": "<SHA-256 of separately retained file>",
+    "production_launcher.py": "<SHA-256 of separately retained file>",
+    "native_identity.py": "<SHA-256 of separately retained file>",
+    "watchdog.py": "<SHA-256 of separately retained file>"
+  }
+}
+```
+
+The optional CLI pin is the SHA-256 of the descriptor's **exact bytes**. The
+transaction records it as `return_controller_sha256`, alongside the unchanged
+`baseline_sha256`. Descriptor, all five executor files, identities/modes and exact
+membership are rechecked across preflight, journal and durable-prepared boundaries
+before target publication. Original receipt, installed controls, wrappers,
+candidate, shared lock, revocation, health and recovery validation remain required.
+
+A separately reviewed deployment can stage only this six-file return bundle; it
+must never modify installed v1 controls, receipt, app, wrappers or plists to make
+the new executor match. Existing installations do not acquire this operation from
+a checkout edit. The first-install-only installer is not an upgrade path. This is
+not an app upgrade, automatic continuation mechanism, or general installer.
 No installation, cutover, service interruption, permission grant, wrapper restore,
 artifact removal, or same-session autonomous resume is proved by offline tests.
 
 ## Verification and limits
+
+The separately pinned executor checkpoint passed 56 hermetic return, migration,
+restart and transaction-recovery tests on both Python 3.11.16 and 3.14.7, including
+an independent parent replay from a hash-frozen copy with isolated HOME/state and
+pre-import subprocess/native/network/application tripwires. One real-interpreter
+preflight test was deliberately excluded; native/compiler/live suites were not
+collected. Two new invariant methods cover copied-controller execution, exact
+return, bounded failure/recovery and provenance changes before publication. The
+original controller's `Wrong installed control identity` refusal demonstrates the
+old capability boundary, not an identical-input red/green regression: the new
+explicit descriptor pin is an additional authorization input. Three existing Ruff
+encoding findings were unchanged; no new lint findings were introduced. These
+checks do not prove real launchd execution or installation. Focused source review
+and deployment readback remain separate from this test checkpoint.
 
 Focused lifecycle suites and hermetic fault tests are required before install.
 Fault coverage includes cutover writes/kickstarts interrupted with BaseException,

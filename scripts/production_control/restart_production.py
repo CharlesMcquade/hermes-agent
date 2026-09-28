@@ -554,7 +554,7 @@ class Controller:
         require(identity(before) == identity(after), 'Retained file changed while reading')
         return data, (identity(after), tuple(ancestors))
 
-    def return_baseline(self, expected):
+    def return_baseline(self, expected, controller_digest=None):
         """Caller holds control.lock; resolve the independently retained install receipt.
 
         The externally approved file digest pins provenance; its internal checksum
@@ -586,8 +586,9 @@ class Controller:
         version = Path(report['final_control_version'])
         require(report['final_base'] == str(self.base)
                 and version.parent == self.base / 'control-versions'
-                and re.fullmatch(r'[A-Za-z0-9_-]+', version.name)
-                and Path(__file__).resolve().parent == version, 'Wrong installed control identity')
+                and re.fullmatch(r'[A-Za-z0-9_-]+', version.name), 'Wrong installed control identity')
+        if controller_digest is None:
+            require(Path(__file__).resolve().parent == version, 'Wrong installed control identity')
         names = {'restart_production.py', 'approved_restart_job.py', 'production_launcher.py',
                  'native_identity.py', 'watchdog.py'}
         require(set(report['control_sha256']) == names, 'Incomplete control provenance')
@@ -599,6 +600,40 @@ class Controller:
             require(hashlib.sha256(read(version / name)).hexdigest() == report['control_sha256'][name]
                     and stat.S_IMODE((version / name).stat().st_mode) == 0o444,
                     'Installed control drift')
+        executor_directory = None
+        if controller_digest is not None:
+            require(isinstance(controller_digest, str)
+                    and re.fullmatch(r'[0-9a-f]{64}', controller_digest),
+                    'Expected return controller SHA-256 required')
+            executor = Path(__file__)
+            executor_directory = executor.parent
+            require(executor.is_absolute() and executor == executor.resolve()
+                    and executor.name == 'restart_production.py'
+                    and executor_directory.parent == self.base / 'return-control-versions'
+                    and re.fullmatch(r'[A-Za-z0-9_-]+', executor_directory.name),
+                    'Wrong return controller identity')
+            descriptor_path = executor_directory / 'return-controller.json'
+            descriptor_raw = read(descriptor_path)
+            require(hashlib.sha256(descriptor_raw).hexdigest() == controller_digest,
+                    'Return controller descriptor digest mismatch')
+            descriptor = json.loads(descriptor_raw)
+            require(set(descriptor) == {'schema_version', 'base', 'executor', 'installed_version',
+                                        'install_receipt_sha256', 'control_sha256'}
+                    and type(descriptor['schema_version']) is int and descriptor['schema_version'] == 1
+                    and descriptor['base'] == str(self.base)
+                    and descriptor['executor'] == str(executor)
+                    and descriptor['installed_version'] == str(version)
+                    and descriptor['install_receipt_sha256'] == expected
+                    and set(descriptor['control_sha256']) == names,
+                    'Foreign or incomplete return controller descriptor')
+            require(stat.S_IMODE(executor_directory.stat().st_mode) == 0o555
+                    and stat.S_IMODE(descriptor_path.stat().st_mode) == 0o444,
+                    'Unsafe return controller mode')
+            for name in names:
+                path = executor_directory / name
+                require(hashlib.sha256(read(path)).hexdigest() == descriptor['control_sha256'][name]
+                        and stat.S_IMODE(path.stat().st_mode) == 0o444,
+                        'Return controller drift')
         wrappers = names - {'native_identity.py'}
         require(set(receipt['wrappers']) == set(receipt['replacements']) == wrappers,
                 'Incomplete wrapper provenance')
@@ -657,6 +692,9 @@ class Controller:
         policy = self.revocation_file()
 
         def unchanged(prepared=None):
+            if executor_directory is not None:
+                require({p.name for p in executor_directory.iterdir()} == names | {'return-controller.json'},
+                        'Unexpected return controller members')
             require(self.revocation_file() == policy, 'Revocation policy changed')
             for path, value in observed.items():
                 if path == self.transaction_path and prepared is not None:
@@ -673,7 +711,10 @@ class Controller:
         unchanged()
         return target, exact, unchanged, {Path(p): r['mode'] for p, r in records.items()}
 
-    def restart(self, candidate=None, reload=False, yes=False, confirm=None, return_baseline=None):
+    def restart(self, candidate=None, reload=False, yes=False, confirm=None, return_baseline=None,
+                return_controller_sha256=None):
+        require(return_controller_sha256 is None or (return_baseline is not None and reload and candidate is None),
+                'Return controller pin requires --return-baseline and --reload')
         if yes:
             require(self.owner() == 1, '--yes requires a launchd-owned independent controller (ppid 1)')
         else:
@@ -685,14 +726,14 @@ class Controller:
         with control_lock(self.base):
             if return_baseline is not None:
                 require(self.retained_file(self.base / 'control.lock') == lock_identity, 'Control lock changed')
-                exact = self.return_baseline(return_baseline)
-                return self._restart(operation_id, None, True, exact, return_baseline)
+                exact = self.return_baseline(return_baseline, return_controller_sha256)
+                return self._restart(operation_id, None, True, exact, return_baseline, return_controller_sha256)
             recovery = self.recover_locked()
             if recovery is not None:
                 return recovery  # Recovery never activates the supplied candidate.
             return self._restart(operation_id, candidate, reload)
 
-    def _restart(self, operation_id, candidate, reload, exact=None, baseline_digest=None):
+    def _restart(self, operation_id, candidate, reload, exact=None, baseline_digest=None, controller_digest=None):
         touched = False
         old_bytes = self.manifest_path.read_bytes()
         saved_plists = {}
@@ -724,6 +765,8 @@ class Controller:
             if exact:
                 exact[2]()
                 txn.update(operation='return-retained-baseline', baseline_sha256=baseline_digest)
+                if controller_digest is not None:
+                    txn['return_controller_sha256'] = controller_digest
             self.journal(operation_id, 'prepared')
             if exact:
                 exact[2]()
@@ -775,7 +818,11 @@ def main(argv=None):
     target.add_argument('--return-baseline', metavar='INSTALL_RECEIPT_SHA256',
                         help='Explicit exact legacy return using the retained installed receipt')
     parser.add_argument('--reload', action='store_true', help='Explicit launchd-definition migration')
+    parser.add_argument('--return-controller-sha256', metavar='DESCRIPTOR_SHA256',
+                        help='Explicit separately retained return-controller descriptor pin')
     args = parser.parse_args(argv)
+    if args.return_controller_sha256 is not None and not (args.return_baseline is not None and args.restart and args.reload):
+        parser.error('--return-controller-sha256 requires --return-baseline --restart --reload')
     if args.return_baseline is not None and not args.reload:
         parser.error('--return-baseline requires --reload')
     if (args.yes or args.activate or args.reload or args.return_baseline is not None) and not args.restart:
@@ -789,7 +836,7 @@ def main(argv=None):
         return {'status': 'checked', 'changed': False}
     return controller.restart(args.activate, args.reload, args.yes,
                               lambda: sys.stdin.isatty() and input('Type restart to interrupt both services: ') == 'restart',
-                              return_baseline=args.return_baseline)
+                              return_baseline=args.return_baseline, return_controller_sha256=args.return_controller_sha256)
 
 
 if __name__ == '__main__':

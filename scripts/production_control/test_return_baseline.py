@@ -89,6 +89,37 @@ class ReturnBaselineTests(unittest.TestCase):
         guard.start()
         self.addCleanup(guard.stop)
 
+    def separate_controller(self):
+        # Execute a real separately retained copy, never a forged __file__.
+        import importlib.util
+        directory = self.base / 'return-control-versions/return-v2'
+        directory.mkdir(parents=True)
+        hashes = {}
+        for name in self.receipt['report']['control_sha256']:
+            data = (Path(__file__).parent / name).read_bytes()
+            path = directory / name
+            path.write_bytes(data)
+            path.chmod(0o444)
+            hashes[name] = digest(data)
+        descriptor = dict(schema_version=1, base=str(self.base),
+                          executor=str(directory / 'restart_production.py'),
+                          installed_version=str(self.version),
+                          install_receipt_sha256=self.expected, control_sha256=hashes)
+        path = directory / 'return-controller.json'
+        control.save_json(path, descriptor)
+        path.chmod(0o444)
+        directory.chmod(0o555)
+        spec = importlib.util.spec_from_file_location('retained_return_controller', directory / 'restart_production.py')
+        module = importlib.util.module_from_spec(spec)
+        # Bytecode would violate the exact retained directory inventory.
+        with patch('sys.dont_write_bytecode', True):
+            spec.loader.exec_module(module)
+        self.c.__class__ = module.Controller
+        self.assertEqual(Path(module.__file__), directory / 'restart_production.py')
+        self.assertNotEqual((directory / 'restart_production.py').read_bytes(),
+                            (self.version / 'restart_production.py').read_bytes())
+        return module, path, descriptor, digest(path.read_bytes())
+
     def seal(self):
         payload = (json.dumps(self.receipt, indent=2, sort_keys=True) + '\n').encode()
         control.save_json(self.receipt_path, dict(schema_version=1, receipt=self.receipt,
@@ -101,6 +132,175 @@ class ReturnBaselineTests(unittest.TestCase):
 
     def run_return(self, **kwargs):
         return self.c.restart(reload=True, yes=True, return_baseline=self.expected, **kwargs)
+
+    def test_separately_pinned_executor_preserves_installed_artifacts_and_recovery(self):
+        class PowerLoss(BaseException):
+            pass
+
+        for outcome in ('verified', 'rolled_back', 'rollback_failed', 'interrupted'):
+            with self.subTest(outcome=outcome):
+                if outcome != 'verified':
+                    self.setUp()
+                module, path, descriptor, pin = self.separate_controller()
+                receipt = self.receipt_path.read_bytes()
+                transaction = self.c.transaction_path.read_bytes()
+                calls = list(self.host.calls)
+                # No implicit trust of an on-disk descriptor, even if valid.
+                with self.assertRaisesRegex(module.ControlError, 'Wrong installed control identity'):
+                    self.run_return()
+                self.assertEqual(self.c.transaction_path.read_bytes(), transaction)
+                self.assertEqual(self.host.calls, calls)
+                self.assertEqual((self.c.manifest_path.read_bytes(), self.f.saved()), self.native)
+                if outcome in ('rolled_back', 'rollback_failed'):
+                    first = self.host.kicks + 1
+                    self.host.fail_kicks = {first, first + 1} if outcome == 'rollback_failed' else {first}
+                if outcome == 'interrupted':
+                    write = module.atomic_write
+
+                    def interrupt(target, data):
+                        write(target, data)
+                        if target == self.c.manifest_path:
+                            raise PowerLoss()
+
+                    with patch.object(module, 'atomic_write', side_effect=interrupt):
+                        with self.assertRaises(PowerLoss):
+                            self.run_return(return_controller_sha256=pin)
+                    with module.control_lock(self.base):
+                        self.assertEqual(self.c.recover_locked()['status'], 'rolled_back')
+                else:
+                    if outcome == 'verified':
+                        with patch.object(module, 'Controller', return_value=self.c):
+                            result = module.main(['--base', str(self.base), '--restart', '--reload', '--yes',
+                                                  '--return-baseline', self.expected,
+                                                  '--return-controller-sha256', pin])
+                    else:
+                        result = self.run_return(return_controller_sha256=pin)
+                    self.assertEqual(result['status'], outcome)
+                self.assertEqual((self.c.manifest_path.read_bytes(), self.f.saved()),
+                                 (self.original, self.legacy) if outcome == 'verified' else self.native)
+                txn = self.c.read_transaction()
+                self.assertEqual(txn['return_controller_sha256'], pin)
+                self.assertEqual(txn['baseline_sha256'], self.expected)
+                self.assertEqual(base64.b64decode(txn['manifest']), self.native[0])
+                calls = list(self.host.calls)
+                with module.control_lock(self.base):
+                    if outcome == 'rollback_failed':
+                        with self.assertRaises(module.ControlError):
+                            self.c.recover_locked()
+                    else:
+                        self.assertIsNone(self.c.recover_locked())
+                self.assertEqual(self.host.calls, calls)
+                self.assertEqual(self.receipt_path.read_bytes(), receipt)
+                self.assertEqual(digest(path.read_bytes()), pin)
+                self.assert_artifacts()
+
+    def test_separate_executor_authority_and_stability_fail_closed(self):
+        cases = ['bad-pin', 'foreign-pin', 'missing-descriptor', 'base', 'executor',
+                 'installed_version', 'install_receipt_sha256', 'schema_version',
+                 'missing-control', 'foreign-control', 'descriptor-mode', 'control-mode',
+                 'directory-mode', 'ancestor-mode', 'descriptor-symlink', 'control-symlink',
+                 'directory-symlink', 'extra-file', 'owner', 'unpaired', 'cli-unpaired']
+        cases += [stage + ':' + kind for stage in ('preflight', 'journal', 'prepared')
+                  for kind in ('descriptor', 'control', 'extra-file')]
+        for index, case in enumerate(cases):
+            with self.subTest(case=case):
+                if index:
+                    self.setUp()
+                module, path, descriptor, pin = self.separate_controller()
+                directory = path.parent
+                control_path = directory / 'watchdog.py'
+                calls = list(self.host.calls)
+                transaction = self.c.transaction_path.read_bytes()
+                if case == 'bad-pin':
+                    pin = 'NOT-A-DIGEST'
+                elif case == 'foreign-pin':
+                    pin = '0' * 64
+                elif case in descriptor:
+                    descriptor[case] = True if case == 'schema_version' else 'foreign'
+                    path.chmod(0o644)
+                    path.write_text(json.dumps(descriptor) + '\n')
+                    path.chmod(0o444)
+                    pin = digest(path.read_bytes())
+                elif case in ('missing-descriptor', 'missing-control', 'extra-file') or case.endswith('symlink'):
+                    directory.chmod(0o755)
+                    if case == 'extra-file':
+                        (directory / 'unexpected').write_bytes(b'extra')
+                    elif case == 'directory-symlink':
+                        directory.rename(directory.with_name('real'))
+                        directory.symlink_to(directory.with_name('real'))
+                    else:
+                        target = path if 'descriptor' in case else control_path
+                        target.unlink()
+                        if case.endswith('symlink'):
+                            target.symlink_to(self.receipt_path)
+                    directory.chmod(0o555)
+                elif case == 'foreign-control':
+                    control_path.chmod(0o644)
+                    control_path.write_bytes(b'foreign')
+                    control_path.chmod(0o444)
+                elif case.endswith('-mode'):
+                    target = {'descriptor-mode': path, 'control-mode': control_path,
+                              'directory-mode': directory, 'ancestor-mode': directory.parent}[case]
+                    target.chmod(0o777 if case == 'ancestor-mode' else 0o644 if target.is_file() else 0o755)
+                fired = []
+                method = {'preflight': 'preflight_fn', 'journal': 'journal', 'prepared': 'save_transaction'}.get(case.split(':')[0])
+                original = getattr(self.c, method) if method else None
+
+                def race(*args, **kwargs):
+                    result = original(*args, **kwargs)
+                    if not fired:
+                        fired.append(case)
+                        kind = case.split(':')[1]
+                        if kind == 'extra-file':
+                            directory.chmod(0o755)
+                            (directory / 'unexpected').write_bytes(b'extra')
+                            directory.chmod(0o555)
+                        else:
+                            target = path if kind == 'descriptor' else control_path
+                            target.chmod(0o644)
+                            target.write_bytes(target.read_bytes() + b'\n')
+                            target.chmod(0o444)
+                    return result
+
+                from contextlib import ExitStack
+                with ExitStack() as stack:
+                    if method:
+                        stack.enter_context(patch.object(self.c, method, side_effect=race))
+                    if case == 'owner':
+                        original_lstat = Path.lstat
+
+                        def foreign_owner(target):
+                            info = original_lstat(target)
+                            if target == path:
+                                values = list(info)
+                                values[4] = os.getuid() + 1
+                                return os.stat_result(values)
+                            return info
+
+                        stack.enter_context(patch.object(Path, 'lstat', foreign_owner))
+                    if case == 'cli-unpaired':
+                        with patch.object(module, 'Controller') as factory:
+                            for args in ([], ['--restart'], ['--restart', '--reload'],
+                                         ['--restart', '--return-baseline', self.expected]):
+                                with self.assertRaises(SystemExit):
+                                    module.main(args + ['--return-controller-sha256', pin])
+                            factory.assert_not_called()
+                    else:
+                        with self.assertRaises((module.ControlError, OSError, ValueError)):
+                            if case == 'unpaired':
+                                self.c.restart(yes=True, return_controller_sha256=pin)
+                            else:
+                                self.run_return(return_controller_sha256=pin)
+                if method:
+                    self.assertEqual(fired, [case])
+                self.assertEqual(self.host.calls, calls)
+                self.assertEqual((self.c.manifest_path.read_bytes(), self.f.saved()), self.native)
+                if case.startswith('prepared:'):
+                    self.assertEqual(self.c.read_transaction()['phase'], 'prepared')
+                    self.assertEqual(base64.b64decode(self.c.read_transaction()['manifest']), self.native[0])
+                else:
+                    self.assertEqual(self.c.transaction_path.read_bytes(), transaction)
+                self.assert_artifacts()
 
     def test_exact_return_uses_new_native_fallback_and_keeps_receipt(self):
         receipt = self.receipt_path.read_bytes()
