@@ -1,4 +1,46 @@
-# Bounded final-path permission experiment
+# Production permission checks and historical final-path experiment
+
+## Current live WebUI tool checks
+
+After native production activation and separate permission-testing approval, the
+parent ran 30 check-only workers: 15 named checks on each fresh, non-symlink Python
+3.11 and 3.14 executable path. Before releasing each worker's nonce handshake, it
+verified the actual terminal-tool chain to the live WebUI child and signed native
+host, the worker's exact executable/argv/PPID/UID/birth identity, and the unchanged
+ancestor identities. Workers used isolated HOME/state/TMPDIR and explicit ABI-
+matching bridges. Only each FDA open temporarily used the real HOME. Original
+probe source stayed unchanged; Accessibility reused the reviewed fixed Finder
+AXRole helper, not the broader frozen focused-application probe.
+
+The two ABIs produced identical results (16 observations each, including the
+separate Finder AX operation):
+
+| Check | Result on both ABIs | Evidence boundary |
+| --- | --- | --- |
+| Messages and Safari FDA | read-only open/close succeeded | no protected bytes read |
+| Accessibility | authorized; Finder AXRole returned success | no focused-app/title/content lookup |
+| Input Monitoring, Screen Capture | authorized | preflight only; no input or screen capture |
+| Contacts, Camera, Microphone, Photos, Speech, Bluetooth | authorized | status only; no enumeration/recording/scanning |
+| Calendar, Reminders | full access | status only; no records fetched |
+| Location | not determined | status only; no new request/sample |
+| Automation: Finder | not determined (`-1744`) | authorization only; no AppleEvent delivered |
+
+All workers exited zero with no guard violations and were reaped; independent
+post-check inspection found every worker PID absent and the native services,
+transaction, result, signatures, shallow/deep health and five assets unchanged.
+There were no consent requests, app swaps, signing, service restarts or network
+connections. The durable private evidence retains scripts, source hashes, per-
+worker results, ancestry and pre/post service readbacks.
+
+This establishes bounded operations/status from the real WebUI tool path, not
+blanket TCC acceptance. Fresh executable paths do not exclude all cached signing-
+identity grants; no production host-removal negative control was run. Gateway-
+origin tools, Local Network, reboot, host rebuild and successful-native exact
+return were not tested. In particular, Finder AX access does not imply Finder
+Apple Events permission. The following temporary-host experiment is historical;
+do not swap the app or run it against the now-active production host.
+
+## Historical final-path temporary-host experiment
 
 `verify_production_permissions.py` adds **prepare**, **preflight**, **run**, and
 **recover** interfaces. This is not a production cutover, restart, upgrade, or

@@ -13,8 +13,11 @@ See `CONTROL-REFRESH.md` and the current `PRODUCTION-READINESS.md` section.
 **Activation success is not blanket capability acceptance.** No permission/content
 probes or explicit return were authorized or run as part of this cutover. Real tool
 passthrough and successful-native production exact return remain separate live
-checks. Do not rerun the consumed one-shot or use the legacy-only pre-cutover
-verifier as a post-native verifier.
+checks. Subsequent separately approved WebUI-tool permission checks are recorded
+in `PRODUCTION-PERMISSIONS.md`: bounded FDA/Finder AX operations and matching
+3.11/3.14 authorization statuses, with Location/Finder Apple Events unresolved.
+Do not rerun the consumed one-shot or use the legacy-only pre-cutover verifier as
+a post-native verifier.
 
 The remainder records prior checkpoints and parameterized contracts. Where old
 status paragraphs say controls are not installed or reviews are pending, the current

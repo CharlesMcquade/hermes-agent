@@ -12,9 +12,13 @@ launcher, v1 controls and root provenance were preserved. The finished activatio
 job is disabled and absent; the exact-return job remains unarmed. No second restart,
 permission probe or explicit baseline-return dispatch was performed during readback.
 
-Production activation is now proven. Real tool capability passthrough, successful-
-native production exact return, messaging delivery and reboot remain separate
-acceptance checks, not inferred from health or source tests. The following sections
+Production activation is now proven. Subsequent separately approved WebUI-tool
+checks passed bounded FDA open/close and Finder AXRole operations on fresh Python
+3.11 and 3.14 paths; authorization/preflight statuses matched across both ABIs.
+Location and Finder Apple Events remain not determined; Local Network was not
+retested. See `PRODUCTION-PERMISSIONS.md` for the exact matrix and causal limits.
+Successful-native production exact return, messaging delivery and reboot remain
+separate acceptance checks, not inferred from health or source tests. The following sections
 record preparation and superseded historical gates, not the current selection.
 
 ## Prepared no-app-replacement route (historical checkpoint)

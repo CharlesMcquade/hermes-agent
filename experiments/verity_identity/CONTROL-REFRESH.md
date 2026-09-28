@@ -12,6 +12,11 @@ The completed one-shot exited zero and was disabled/unloaded without another
 restart. The exact-return job remains unarmed. This closes production activation,
 not real tool permission passthrough or a successful-native production exact return.
 No permission/content probes or explicit return dispatch were part of this approval.
+A subsequent separate permission-testing approval exercised the live WebUI tool
+chain with fresh Python 3.11/3.14 executables. Bounded FDA open/close and Finder AX
+operations passed, with matching framework authorization/preflight statuses;
+Location and Finder Apple Events remain unresolved. See `PRODUCTION-PERMISSIONS.md`
+for the matrix and limits; this is not blanket permission or causal attribution proof.
 
 The prior preparation evidence remains below: focused source clearance,
 **163 tests / 865 subtests per ABI**, 50 fresh-process probes, approved installation
