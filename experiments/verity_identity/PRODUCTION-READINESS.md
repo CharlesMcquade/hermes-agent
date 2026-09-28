@@ -1,4 +1,32 @@
-# Production readiness: topology repaired offline; immutable deployment blocked
+# Production readiness: offline maintenance preparation; live deployment blocked
+
+## Current authorization and integrated baseline
+
+The operator approved expanding **offline implementation and testing** to a
+controlled maintenance approach. This is not approval for live downtime, installed
+artifact changes, signing, elevated observation, logout or reboot. Final live go is
+still required. The earlier admission review remains a design constraint, not an
+instruction to bypass unreadable identities or silence supervision.
+
+The reviewed one-hop installer/upgrade history is now merged with the exact gateway
+wrapper identity repair and separately pinned v1 return controller. On a frozen
+integrated snapshot, the parent independently replayed 48 installer/staging tests
+and 71 native/controller/migration/return tests on each of Python 3.11.16 and 3.14.7.
+Two installer subprocess cases and four controller native/compiler/subprocess cases
+were explicitly excluded. Permitted synthetic launcher-check subprocesses used
+strict fixture argv/environment/inventory checks; no production imports, native
+API calls, real compilation/signing or service changes were executed.
+
+The initial installer replay's cleanup was rejected because relative dirfd paths
+were evaluated from a working directory outside fixture scratch. The unchanged
+source and guard passed after running from the isolated fixture directory. This
+was a harness setup failure, not a product regression or a weakened safety check.
+
+Parallel offline work now owns three explicit gaps: upgrade-aware exact-return
+composition; retained-host staging without recompilation; and an achievable,
+fail-closed maintenance launch/consumer boundary. None is accepted merely because
+the integrated baseline passes. Maintenance publication must not be implemented as
+an unconditional dependency callback or a verbal exclusion declaration.
 
 ## Latest live outcome supersedes the preparation checkpoint below
 
@@ -79,11 +107,13 @@ this boundary; a maintenance window alone does not clear the exact-return gap.
 Before live use, the revised boundary needs regression evidence for an old controller
 paused after import but before locking, an unlocked launcher, native startup across
 each rename, unexpected selected descendants, dependency drift after journal intent,
-and exact retained-artifact recovery at every partial publication. No scope change,
-maintenance interruption, elevated observation, or implementation is authorized by
-these source-only reviews. Do not disable watchdog, overwrite v1, or rewrite its
-receipt to force admission. Deployment is blocked pending the operator's scope
-decision. This does not reintroduce automatic continuation or the entire future-
+and exact retained-artifact recovery at every partial publication. The source-only
+reviews did not themselves authorize implementation or interruption. The subsequent
+operator approval at the top of this document permits offline preparation only;
+no maintenance interruption, elevated observation or live publication is approved.
+Do not disable watchdog, overwrite v1, or rewrite its receipt to force admission.
+Deployment stays blocked until the implementation, evidence and final live approval
+are complete. This does not reintroduce automatic continuation or the entire future-
 upgrade roadmap as trial prerequisites.
 
 Fresh independent readback still reports healthy legacy services, exact original
