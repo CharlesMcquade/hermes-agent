@@ -11,6 +11,23 @@ struct ServiceSettings: Decodable {
     let launcher: String
     let launcher_sha256: String
     let roles: [String]
+    let bootstrap_environment: [String: String]?
+}
+func validateSettings(_ data: Data) throws {
+    let required: Set<String> = ["base", "bootstrap_python", "launcher", "launcher_sha256", "roles"]
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+          Set(object.keys) == required || Set(object.keys) == required.union(["bootstrap_environment"])
+    else { throw CocoaError(.fileReadCorruptFile) }
+    if let raw = object["bootstrap_environment"] {
+        let keys: Set<String> = ["HOME", "TMPDIR", "HERMES_HOME", "PATH",
+                                 "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE"]
+        guard let env = raw as? [String: String], Set(env.keys) == keys,
+              env.values.allSatisfy({ !$0.contains("\u{0}") }),
+              ["HOME", "TMPDIR", "HERMES_HOME"].allSatisfy({ env[$0]!.hasPrefix("/") }),
+              env["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin",
+              env["PYTHONNOUSERSITE"] == "1", env["PYTHONDONTWRITEBYTECODE"] == "1"
+        else { throw CocoaError(.fileReadCorruptFile) }
+    }
 }
 func emit(_ event: String, _ values: [String: Any] = [:]) {
     var record = values
@@ -48,8 +65,9 @@ guard args.count == 1, ["agent", "webui"].contains(args[0]),
       let resources = Bundle.main.resourceURL else { exit(64) }
 let config: ServiceSettings
 do {
-    config = try JSONDecoder().decode(ServiceSettings.self, from:
-        ownedFile(resources.appendingPathComponent("service-settings.json").path))
+    let settingsData = try ownedFile(resources.appendingPathComponent("service-settings.json").path)
+    try validateSettings(settingsData)
+    config = try JSONDecoder().decode(ServiceSettings.self, from: settingsData)
     guard config.roles == ["agent", "webui"],
           config.launcher == config.base + "/production_launcher.py",
           config.base.hasPrefix("/"), config.bootstrap_python.hasPrefix("/") else { exit(78) }
@@ -62,9 +80,11 @@ do {
 guard chdir(config.base) == 0 else { exit(78) }
 let command = [config.bootstrap_python, "-I", "-B", config.launcher, args[0],
                "--manifest", config.base + "/production-release.json"]
-let environment = ["HOME=" + config.base + "/home", "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-                   "TMPDIR=" + config.base + "/tmp", "HERMES_HOME=" + config.base + "/state",
-                   "PYTHONNOUSERSITE=1", "PYTHONDONTWRITEBYTECODE=1"]
+let environment = config.bootstrap_environment.map { env in
+    env.keys.sorted().map { $0 + "=" + env[$0]! }
+} ?? ["HOME=" + config.base + "/home", "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+      "TMPDIR=" + config.base + "/tmp", "HERMES_HOME=" + config.base + "/state",
+      "PYTHONNOUSERSITE=1", "PYTHONDONTWRITEBYTECODE=1"]
 var argv = command.map { strdup($0) } + [nil]
 var envp = environment.map { strdup($0) } + [nil]
 // One close-on-exec writer stays in the host; neither runtime nor guard inherits

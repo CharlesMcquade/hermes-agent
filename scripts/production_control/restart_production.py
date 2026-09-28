@@ -228,16 +228,39 @@ class Controller:
         overrides = new.get('launchd_overrides', {})
         require(isinstance(overrides, dict) and set(overrides) <= set(SERVICES),
                 'Unknown launchd override service')
+        native = new.get('native_host')
+        native_fields = {'AssociatedBundleIdentifiers', 'AbandonProcessGroup'}
+        allowed = {'ProgramArguments', 'WorkingDirectory', 'EnvironmentVariables'}
+        if native is not None:
+            allowed |= native_fields
         proposed = {}
         for service in SERVICES:
             data = plistlib.loads(saved[service])
             override = overrides.get(service, {})
-            require(isinstance(override, dict) and set(override) <=
-                    {'ProgramArguments', 'WorkingDirectory', 'EnvironmentVariables'},
+            require(isinstance(override, dict) and set(override) <= allowed,
                     'Unsupported launchd override field')
             if override:
-                require({'ProgramArguments', 'WorkingDirectory'} <= set(override),
-                        'Launchd override requires explicit argv and anchor')
+                required = {'ProgramArguments', 'WorkingDirectory'}
+                if native is not None:
+                    required |= native_fields
+                require(required <= set(override),
+                        'Launchd override requires explicit argv and anchor and native policy when applicable')
+                if native is not None:
+                    require(override['ProgramArguments'] == [native['executable'], service],
+                            'Unexpected native host argv')
+                    require(type(override['AssociatedBundleIdentifiers']) is list and
+                            override['AssociatedBundleIdentifiers'] == [native['bundle_id']],
+                            'Native associated bundle mismatch')
+                    require(override['AbandonProcessGroup'] is False,
+                            'Native AbandonProcessGroup must be false')
+            # A Program override wins over argv in launchd. Only the explicit
+            # legacy-to-native migration may remove a previously matching one.
+            source_argv = data.get('ProgramArguments', [])
+            require('Program' not in data or
+                    (source_argv and data['Program'] == source_argv[0]),
+                    'Conflicting launchd Program')
+            remove_program = (native is not None and 'native_host' not in old and
+                              bool(override) and 'Program' in data)
             if 'EnvironmentVariables' in override:
                 env = override['EnvironmentVariables']
                 require(isinstance(env, dict) and all(
@@ -246,8 +269,12 @@ class Controller:
                     'Invalid launchd environment')
             require('WorkingDirectory' not in override or
                     isinstance(override['WorkingDirectory'], str), 'Invalid launchd anchor')
-            changed = any(data.get(k) != v for k, v in override.items())
+            changed = remove_program or any(k not in data or data[k] != v or
+                                            (k in native_fields and type(data[k]) is not type(v))
+                                            for k, v in override.items())
             require(not changed or reload, 'Changed launchd overrides require explicit --reload')
+            if remove_program:
+                del data['Program']
             data.update(override)
             proposed[service] = plistlib.dumps(data)
         return self.definitions(new, saved=proposed)

@@ -1,4 +1,4 @@
-# Production readiness: signer recovered and verified; native staging unfinished
+# Production readiness: signer complete; native integration verified in part
 
 The reviewed isolated gates are complete; see `COMBINED-CANARY.md`. They do
 not constitute a production cutover-ready artifact. The operator requested
@@ -74,6 +74,18 @@ The final bundle `com.charles.verity` at `~/Applications/Verity.app` needs its o
 system consent. Existing lab grants are not production grants. Do not rename or
 transplant TCC records. Provisioning/trust and consent require operator involvement;
 no test can eliminate those approvals.
+
+## Native environment and migration integration
+
+The optional signed bootstrap environment and narrow legacy-to-native definition
+migration are implemented. The stager now supplies explicit HOME/TMPDIR and the
+common selected HERMES_HOME without altering selected source/runtime dictionaries.
+Offline migration tests prove exact manifest and binary-plist rollback on failed
+native readiness. A lab-only live environment gate passed 70 cases across both
+roles, with independently verified process/group/job cleanup; see
+`PRODUCTION-STAGING.md` for evidence and two retained harness failures/fixes.
+These are not final production identity, installation, messaging or cutover tests.
+Focused reviews and the synthetic migration live harness remain pending.
 
 ## Unfinished implementation and verification after that dependency
 

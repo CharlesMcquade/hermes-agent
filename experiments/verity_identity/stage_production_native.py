@@ -20,7 +20,7 @@ SOURCE = Path(__file__).resolve().parent
 CONTROL = SOURCE.parents[1] / "scripts/production_control"
 sys.path.insert(0, str(CONTROL))
 from production_launcher import inventory, load_manifest  # noqa: E402
-from native_identity import contract  # noqa: E402
+from native_identity import bootstrap_environment, contract  # noqa: E402
 from restart_production import Controller  # noqa: E402
 
 BUNDLE_ID = "com.charles.verity"
@@ -114,8 +114,26 @@ def wrappers(base, version):
     return result
 
 
+def production_environment(old, home, tmpdir):
+    """Explicit bootstrap paths, separate from preserved service env/env_files."""
+    if not isinstance(tmpdir, (str, Path)) or not Path(tmpdir).is_absolute():
+        raise ValueError("An explicit absolute bootstrap TMPDIR is required")
+    states = [old["services"][role].get("env", {}).get("HERMES_HOME") for role in ROLES]
+    if not all(isinstance(value, str) and value == states[0] for value in states):
+        raise ValueError("Selected roles must name one explicit HERMES_HOME")
+    return bootstrap_environment({
+        "base": str(home),
+        "bootstrap_environment": {
+            "HOME": str(home), "TMPDIR": str(tmpdir), "HERMES_HOME": states[0],
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
+        },
+    })
+
+
 def stage(
-    root, selected, identity_path, control_id, bootstrap, *, home=None, runner=run
+    root, selected, identity_path, control_id, bootstrap, *, bootstrap_tmpdir,
+    home=None, runner=run
 ):
     root, selected = absolute(root), absolute(selected)
     base = selected.parent
@@ -143,6 +161,7 @@ def stage(
         selected
     )  # Includes revocation policy; no imports or state reads.
     Controller(base).validate_manifest(old)
+    environment = production_environment(old, home, bootstrap_tmpdir)
     if "native_host" in old or "launchd_overrides" in old:
         raise ValueError(
             "Only the initial schema-2 legacy-to-native stage is supported"
@@ -218,6 +237,7 @@ def stage(
         launcher=str(base / "production_launcher.py"),
         launcher_sha256=launcher_hash,
         roles=list(ROLES),
+        bootstrap_environment=environment,
     )
     put(app / "Contents/Resources/service-settings.json", encoded(settings))
     put(
@@ -305,6 +325,7 @@ def stage(
         final_base=str(base),
         final_control_version=str(version),
         bootstrap_python=str(bootstrap),
+        bootstrap_tmpdir=str(bootstrap_tmpdir),
         selected_sha256=digest(before),
         candidate_sha256=digest(encoded(candidate)),
         rollback_sha256=inventory(root / "rollback"),
@@ -315,7 +336,7 @@ def stage(
         gates=[
             "final-path signature/settings preflight",
             "initial AssociatedBundleIdentifiers migration and bounded rollback",
-            "ServiceHost HOME/TMPDIR environment compatibility",
+            "signed bootstrap environment live compatibility",
             "final identity permission usage descriptions and grants",
             "exact-artifact isolated lifecycle/restart tests",
             "explicit activation approval",
@@ -410,6 +431,9 @@ def verify_stage(root, runner=run, *, report=None):
         launcher=str(Path(report["final_base"]) / "production_launcher.py"),
         launcher_sha256=native["launcher_sha256"],
         roles=list(ROLES),
+        bootstrap_environment=production_environment(
+            old, Path(report["final_bundle"]).parent.parent, report["bootstrap_tmpdir"]
+        ),
     )
     if (
         settings != expected
@@ -434,6 +458,7 @@ def main():
     parser.add_argument("--identity", required=True, type=Path)
     parser.add_argument("--control-id", required=True)
     parser.add_argument("--bootstrap-python", required=True)
+    parser.add_argument("--bootstrap-tmpdir", required=True)
     args = parser.parse_args()
     print(
         json.dumps(
@@ -443,6 +468,7 @@ def main():
                 args.identity,
                 args.control_id,
                 args.bootstrap_python,
+                bootstrap_tmpdir=args.bootstrap_tmpdir,
             ),
             indent=2,
         )

@@ -77,6 +77,38 @@ def contract(manifest):
     return native
 
 
+def bootstrap_environment(settings):
+    """Resolve only the signed allowlist; never inherit controller environment."""
+    defaults = {
+        "HOME": settings["base"] + "/home",
+        "TMPDIR": settings["base"] + "/tmp",
+        "HERMES_HOME": settings["base"] + "/state",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if "bootstrap_environment" not in settings:
+        return defaults
+    env = settings["bootstrap_environment"]
+    require(
+        isinstance(env, dict) and set(env) == set(defaults),
+        "Invalid signed bootstrap environment keys",
+    )
+    require(
+        all(isinstance(value, str) and "\u0000" not in value for value in env.values()),
+        "Invalid signed bootstrap environment values",
+    )
+    require(
+        all(env[key].startswith("/") for key in ("HOME", "TMPDIR", "HERMES_HOME"))
+        and all(
+            env[key] == defaults[key]
+            for key in ("PATH", "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE")
+        ),
+        "Invalid signed bootstrap environment policy",
+    )
+    return dict(env)
+
+
 def validate_bundle(manifest, base, host):
     from production_launcher import inventory
 
@@ -104,7 +136,17 @@ def validate_bundle(manifest, base, host):
     require(
         isinstance(settings, dict)
         and set(settings)
-        == {"base", "bootstrap_python", "launcher", "launcher_sha256", "roles"},
+        in (
+            {"base", "bootstrap_python", "launcher", "launcher_sha256", "roles"},
+            {
+                "base",
+                "bootstrap_python",
+                "launcher",
+                "launcher_sha256",
+                "roles",
+                "bootstrap_environment",
+            },
+        ),
         "Invalid signed settings",
     )
     require(
@@ -114,6 +156,7 @@ def validate_bundle(manifest, base, host):
         and settings["roles"] == ["agent", "webui"],
         "Native signed settings mismatch",
     )
+    bootstrap_environment(settings)
     python = settings["bootstrap_python"]
     require(
         isinstance(python, str)

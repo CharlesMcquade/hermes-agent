@@ -91,6 +91,222 @@ class NativeTests(unittest.TestCase):
         self.host.listener = lambda url: {201}
         save_json(self.c.manifest_path, self.manifest)
 
+    def test_bootstrap_environment_contract(self):
+        from native_identity import bootstrap_environment
+
+        expected = dict(
+            HOME=str(self.base / "home"),
+            TMPDIR=str(self.base / "tmp"),
+            HERMES_HOME=str(self.base / "state"),
+            PATH="/usr/bin:/bin:/usr/sbin:/sbin",
+            PYTHONNOUSERSITE="1",
+            PYTHONDONTWRITEBYTECODE="1",
+        )
+        with patch.dict(
+            os.environ, {"SECRET_SENTINEL": "never inherit", "HOME": "/wrong"}
+        ):
+            self.assertEqual(bootstrap_environment(self.settings), expected)
+        explicit = dict(expected, HOME=str(self.base / "explicit-home"))
+        settings = dict(self.settings, bootstrap_environment=explicit)
+        self.assertEqual(bootstrap_environment(settings), explicit)
+        self.assertIsNot(bootstrap_environment(settings), explicit)
+        from production_launcher import inventory
+
+        app = Path(self.manifest["native_host"]["bundle"])
+        path = app / "Contents/Resources/service-settings.json"
+        save_json(path, settings)
+        self.manifest["native_host"]["inventory"] = inventory(app)
+        self.c.preflight(self.manifest)
+        cases = [None, [], "inherit", {}, dict(explicit, SECRET_SENTINEL="bad")]
+        for key in explicit:
+            cases.append({k: v for k, v in explicit.items() if k != key})
+            for value in (None, 1, True, [], {}, "bad\u0000value"):
+                cases.append(dict(explicit, **{key: value}))
+        for key in ("HOME", "TMPDIR", "HERMES_HOME"):
+            for value in ("", "relative", "~/state"):
+                cases.append(dict(explicit, **{key: value}))
+        for key in ("PATH", "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE"):
+            cases.append(dict(explicit, **{key: "wrong"}))
+        for value in cases:
+            with self.subTest(environment=value):
+                bad = dict(self.settings, bootstrap_environment=value)
+                with self.assertRaises(ControlError):
+                    bootstrap_environment(bad)
+                save_json(path, bad)
+                self.manifest["native_host"]["inventory"] = inventory(app)
+                with self.assertRaises(ControlError):
+                    self.c.preflight(self.manifest)
+        self.assertEqual(self.host.calls, [])
+
+    def test_environment_harness_variants_and_fresh_root_safety(self):
+        import sys
+
+        source = Path(__file__).resolve().parents[2] / "experiments/verity_identity"
+        with patch.object(sys, "path", [str(source), *sys.path]):
+            import verify_service_environment as harness
+        from native_identity import bootstrap_environment
+        from production_launcher import inventory
+
+        app = Path(self.manifest["native_host"]["bundle"])
+        path = app / "Contents/Resources/service-settings.json"
+        for name, generated, expected in harness.variants(self.base):
+            with self.subTest(name=name):
+                settings = dict(self.settings)
+                for key in ("bootstrap_environment", "UNKNOWN"):
+                    if key in generated:
+                        settings[key] = generated[key]
+                save_json(path, settings)
+                self.manifest["native_host"]["inventory"] = inventory(app)
+                if expected is None:
+                    with self.assertRaises(ControlError):
+                        self.c.preflight(self.manifest)
+                else:
+                    self.c.preflight(self.manifest)
+                    self.assertEqual(bootstrap_environment(settings), expected)
+        with (
+            patch.object(harness, "run") as run,
+            patch.object(harness, "launchctl") as launch,
+        ):
+            with self.assertRaises(FileExistsError):
+                harness.verify(self.base, self.base / "no-identity-read.json")
+            run.assert_not_called()
+            launch.assert_not_called()
+
+    def test_swift_environment_validation_matches_python(self):
+        # Compile only the pure settings decoder, never the launchd host entrypoint.
+        import subprocess
+        import sys
+
+        source = Path(__file__).resolve().parents[2] / "experiments/verity_identity"
+        with patch.object(sys, "path", [str(source), *sys.path]):
+            import verify_service_environment as harness
+        prefix = (source / "ServiceHost.swift").read_text().split("func emit(", 1)[0]
+        swift = self.base / "validate.swift"
+        swift.write_text(
+            prefix
+            + """
+while let line = readLine() {
+    do {
+        let data = Data(line.utf8)
+        try validateSettings(data)
+        _ = try JSONDecoder().decode(ServiceSettings.self, from: data)
+        print("accepted")
+    } catch { print("refused") }
+}
+"""
+        )
+        exe = self.base / "validate"
+        subprocess.run(
+            [
+                "/usr/bin/xcrun",
+                "swiftc",
+                "-swift-version",
+                "5",
+                str(swift),
+                "-o",
+                str(exe),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=90,
+        )
+        cases = list(harness.variants(self.base))
+        result = subprocess.run(
+            [str(exe)],
+            input="\n".join(json.dumps(s) for _, s, _ in cases),
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=10,
+        )
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["accepted" if e is not None else "refused" for _, _, e in cases],
+        )
+
+    def test_environment_harness_rejects_extra_inherited_keys_and_surviving_groups(
+        self,
+    ):
+        import sys
+        from types import SimpleNamespace
+
+        source = Path(__file__).resolve().parents[2] / "experiments/verity_identity"
+        with patch.object(sys, "path", [str(source), *sys.path]):
+            import verify_service_environment as harness
+        job = dict(
+            target="unused-synthetic-target",
+            role="agent",
+            binary=self.base / "host",
+            out=self.base / "agent.out",
+            receipt=self.base / "agent.receipt.json",
+        )
+        host = dict(
+            event="service-host",
+            pid=100,
+            ppid=1,
+            pgid=100,
+            child_pid=101,
+            guard_pid=102,
+            role="agent",
+        )
+        expected = harness.defaults(self.base)
+        receipt = dict(
+            pid=101,
+            ppid=100,
+            pgid=100,
+            role="agent",
+            env=expected,
+            env_keys=sorted(expected),
+        )
+        job["out"].write_text(json.dumps(host) + "\n")
+        save_json(job["receipt"], receipt)
+        with (
+            patch.object(
+                harness, "launchctl", return_value=SimpleNamespace(stdout="pid = 100\n")
+            ),
+            patch.object(harness, "alive", return_value=True),
+            patch.object(harness.os, "getpgid", return_value=100),
+        ):
+            self.assertTrue(harness.ready(job, expected))
+            # Permit only independently measured runtime additions, never arbitrary
+            # inherited keys; their values must match the clean direct baseline.
+            runtime = harness.runtime_environment(expected)
+            receipt["env_keys"] = runtime["keys"].copy()
+            receipt["runtime_added"] = dict(runtime["added"])
+            save_json(job["receipt"], receipt)
+            self.assertTrue(harness.ready(job, expected, runtime))
+            receipt["env_keys"].append(harness.SENTINEL)
+            save_json(job["receipt"], receipt)
+            with self.assertRaises(AssertionError):
+                harness.ready(job, expected, runtime)
+        with (
+            patch.object(harness, "alive", return_value=False),
+            patch.object(harness.subprocess, "run") as ps,
+        ):
+            ps.return_value.stdout = "999 100 unrelated-worker\n"
+            self.assertFalse(harness.all_gone([job]))
+            ps.return_value.stdout = "999 999 unrelated-worker\n"
+            self.assertTrue(harness.all_gone([job]))
+            self.assertFalse(harness.all_gone([]))
+
+    def test_environment_refusal_accepts_only_launchd_config_exit(self):
+        import sys
+        from types import SimpleNamespace
+        source = Path(__file__).resolve().parents[2] / "experiments/verity_identity"
+        with patch.object(sys, "path", [str(source), *sys.path]):
+            import verify_service_environment as harness
+        job = dict(target="unused", out=self.base / "refusal.out",
+                   receipt=self.base / "absent.receipt")
+        job["out"].write_text(json.dumps(dict(event="host-refused")) + "\n")
+        for text, expected in (("last exit code = 78", True),
+                               ("last exit code = 78: EX_CONFIG", True),
+                               ("last exit code = 0", False),
+                               ("last exit code = 178", False)):
+            with self.subTest(text=text), patch.object(
+                harness, "launchctl", return_value=SimpleNamespace(stdout=text)
+            ):
+                self.assertIs(harness.ready(job, None), expected)
+
     def proof(self, **kw):
         return self.c.snapshot(self.manifest, self.c.definitions(self.manifest), **kw)
 

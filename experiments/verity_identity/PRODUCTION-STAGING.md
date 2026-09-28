@@ -9,7 +9,13 @@ start/stop any service. A success receipt explicitly says `activation_ready:fals
 
 Inputs are the explicit selected `production-release.json` (schema 2), completed
 production identity metadata, a fresh control-version ID, and the existing
-bootstrap interpreter. The bootstrap must match both legacy job definitions.
+bootstrap interpreter plus explicit bootstrap TMPDIR. The bootstrap interpreter
+must match both legacy job definitions. Signed bootstrap HOME is the operator's
+explicit home (the current home by default), HERMES_HOME must match the common
+explicit selected service value, and TMPDIR comes only from `--bootstrap-tmpdir`.
+The six-key allowlist fixes PATH to the system tools and both Python switches to
+`1`; caller environment and lab `<base>/home|tmp|state` defaults are not used.
+The selected services and their environment-file references remain unchanged.
 Metadata must declare production purpose and verified recovery; the builder does
 not perform Keychain trust, vault, recovery, or provisioning operations.
 
@@ -33,8 +39,8 @@ The new directory contains:
 
 The candidate now includes explicit per-role `launchd_overrides` for its exact
 native argv, anchor, bundle association and process-group policy. Their presence
-is not activation: the matching controller support is being implemented and tested
-separately. `verify_stage()` compares entire proposed plist dictionaries with the
+is not activation: matching controller support has passed offline migration and
+exact-byte rollback tests; its live synthetic migration gate remains separate. `verify_stage()` compares entire proposed plist dictionaries with the
 saved originals plus those exact overrides (and checked removal of `Program`),
 so unrelated environment, logging, lifecycle or throttling drift is rejected.
 All other top-level selection fields are retained exactly as well as services.
@@ -75,7 +81,8 @@ env -u PYTHONPATH -u PYTHONSAFEPATH "$PYTHON_311_OR_NEWER" -B \
   --selected "$MAINTENANCE/production-release.json" \
   --identity "$PRODUCTION_IDENTITY_JSON" \
   --control-id "$NEW_CONTROL_ID" \
-  --bootstrap-python "$EXISTING_BOOTSTRAP_PYTHON"
+  --bootstrap-python "$EXISTING_BOOTSTRAP_PYTHON" \
+  --bootstrap-tmpdir "$EXPLICIT_BOOTSTRAP_TMPDIR"
 ```
 
 The CLI compiles and signs **only the new staged app**; that invocation still
@@ -131,21 +138,51 @@ concurrent host/controller work. Parent execution passed all 14 staging tests on
 Python 3.11 and 3.14, plus 51 selected experiment/neighboring tests on Python 3.11.
 This closes only the two staging-review findings, not the remaining gates below.
 
+## Integrated environment and migration evidence
+
+Parent verification of the returned changes passed 69 controller tests on each
+of Python 3.11 and 3.14. Staging integration added two regression methods: absent
+signed environment and accepted mismatched role state reproduced before the fix;
+all 16 staging tests then passed. All 53 selected experiment tests passed on 3.11;
+45 passed on 3.14, excluding eight signer tests requiring unavailable cryptography.
+
+The first live environment run exposed a harness mismatch: Python/macOS adds
+`LC_CTYPE` and `__CF_USER_TEXT_ENCODING` despite an explicit six-key input. A
+separate direct launch of the exact interpreter with those six inputs reproduced
+both extra keys while retaining every configured value. The harness now compares
+those two additions against that independent baseline, rejects any other keys,
+and still rejects the injected synthetic secret sentinel. It does not log values
+of unknown keys. The second run correctly refused malformed settings but exposed
+launchctl's `78: EX_CONFIG` output rather than plain `78`; a red/green regression
+covers the narrow parser correction. Both failed receipts remain failed and
+independent scans confirmed all their recorded processes/groups had disappeared.
+
+A third fresh run, `~/.hermes/cache/scratch/verity-env-live-final3/`, passed all
+**70 live cases**: legacy and explicit settings for both roles (four), and malformed
+or unknown settings refused in both roles (66). The report's cleanup verification
+was independently repeated: all recorded PIDs/groups gone and all jobs absent.
+Only the existing lab signer and `com.charles.verity.environmentlab` were used;
+no privacy APIs, production services or real application content were exercised.
+The harness uses stage-local compiler scratch and converts CLI SIGTERM into a
+cleanup path; uncatchable termination remains outside that guarantee. The named
+exit-status regression brings the controller suite to 70 tests. Focused reviews
+and a new synthetic migration/rollback harness are pending.
+
 ## Concrete remaining gates / blockers
 
-1. **Initial migration cannot use the existing activation method unchanged.**
-   `Controller.candidate_definitions` only permits argv, working directory and
-   environment overrides; it cannot add `AssociatedBundleIdentifiers`. Staged
-   full definitions are proposals, not an executable transition. A separately
-   reviewed migration/rollback protocol must atomically coordinate wrappers,
-   immutable versioned controls, final bundle, definitions and selected manifest.
-   Preserve unrelated pending candidates and restore exact prior bytes on failure.
-2. **ServiceHost's lab environment is not production-transparent.** It explicitly
-   replaces HOME with `<base>/home`, TMPDIR with `<base>/tmp` and HERMES_HOME with
-   `<base>/state`, ignoring the launchd environment. Selected service env restores
-   some values but the current manifest has no explicit HOME/TMPDIR restoration.
-   Do not create those paths or compensate silently. Resolve/retest the host or
-   explicitly approved environment policy before production use.
+1. **Coordinated artifact installation remains.** The source controller now
+   permits only explicit native argv/anchor/association/process-group overrides,
+   requires `--reload` for changes, and removes a matching legacy `Program` only
+   during explicit legacy-to-native migration. Offline tests prove successful
+   migration and failed-start restoration of exact old manifest/binary-plist bytes.
+   The existing transaction does not install or restore host/control/wrapper
+   artifacts. Their coordinated installation and live synthetic migration must
+   still be verified; preserve unrelated candidates and retain legacy artifacts.
+2. **Final environment integration remains subject to review.** Optional signed
+   bootstrap settings now preserve legacy lab behavior when absent and validate
+   an explicit six-key environment in both Swift and the controller. The stager
+   supplies this field. The 70-case synthetic live environment gate below passed;
+   this is not final production-host execution or real application validation.
 3. **Permission metadata and final identity grants remain unresolved.** The exact
    tested ServiceHost has no consent APIs and its minimal Info.plist has no privacy
    usage descriptions. Production permission workflow, final-identity consent,

@@ -23,6 +23,7 @@ class StageTests(unittest.TestCase):
         self.base.mkdir()
         self.home = self.root / "home"
         self.home.mkdir()
+        (self.root / "bootstrap-tmp").mkdir()
         self.selected = self.base / "production-release.json"
         self.identity = self.root / "public-identity.json"
         self.identity.write_text(
@@ -109,6 +110,7 @@ class StageTests(unittest.TestCase):
             identity_path=self.identity,
             control_id="native-v1",
             bootstrap=self.bootstrap,
+            bootstrap_tmpdir=self.root / "bootstrap-tmp",
             home=self.home,
             runner=self.runner,
         )
@@ -144,6 +146,36 @@ class StageTests(unittest.TestCase):
             )
         self.assertTrue(staging.verify_stage(stage, runner=self.runner))
         self.assertIn("native_identity.py", result["control_sha256"])
+
+    def test_signed_bootstrap_environment_is_explicit_and_selection_preserved(self):
+        self.stage()
+        stage = self.root / "stage"
+        settings = json.loads(
+            (stage / "Verity.app/Contents/Resources/service-settings.json").read_text()
+        )
+        self.assertEqual(settings["bootstrap_environment"], {
+            "HOME": str(self.home),
+            "TMPDIR": str(self.root / "bootstrap-tmp"),
+            "HERMES_HOME": self.manifest["services"]["agent"]["env"]["HERMES_HOME"],
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        })
+        self.assertFalse((self.base / "home").exists())
+        self.assertFalse((self.base / "tmp").exists())
+        self.assertTrue(staging.verify_stage(stage, runner=self.runner))
+        candidate = json.loads((stage / "candidate-release.json").read_text())
+        self.assertEqual(candidate["services"], self.manifest["services"])
+
+    def test_ambiguous_bootstrap_state_rejected_before_writes(self):
+        for value in ("/other-state", "relative", None):
+            with self.subTest(value=value):
+                self.manifest["services"]["webui"]["env"]["HERMES_HOME"] = value
+                self.save()
+                with self.assertRaises((ValueError, RuntimeError)):
+                    self.stage()
+                self.assertFalse((self.root / "stage").exists())
+        self.assertEqual(self.calls, [])
 
     def test_tamper_rejected(self):
         for relative in (
