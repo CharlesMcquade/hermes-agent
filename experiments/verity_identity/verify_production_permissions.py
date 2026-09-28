@@ -28,7 +28,7 @@ BINARY = 'Contents/MacOS/VerityServiceHost'
 SETTINGS = 'Contents/Resources/service-settings.json'
 NAMES = ('Full Disk Access: Messages', 'Full Disk Access: Safari', 'Accessibility',
          'Input Monitoring', 'Screen Capture', 'Contacts', 'Calendar', 'Reminders',
-         'Camera', 'Microphone', 'Photos', 'Speech', 'Bluetooth', 'Location')
+         'Camera', 'Microphone', 'Photos', 'Speech', 'Bluetooth', 'Location', 'Local Network')
 MODES = ('permissions-check', 'permissions-request')
 
 
@@ -161,11 +161,35 @@ def accessibility(probe, request):
                 cf.CFRelease(handle)
 
 
+def validate_worker(name, mode):
+    check(name in NAMES and mode in MODES, 'Unknown worker/mode')
+    check(name != 'Local Network' or mode == 'permissions-request',
+          'Local Network requires permissions-request; no consent-free check-only status')
+
+
+def local_network(probe, request):
+    """One potentially prompting TCP connect; connectivity is not TCC proof."""
+    check(request is True, 'Local Network requires permissions-request')
+    import socket
+    status, error = 'tcp_connected', None
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+            connection.settimeout(5.0)
+            connection.connect(('10.101.0.2', 80))
+    except OSError as exc:
+        status = 'tcp_failed'
+        # Never expose exception text, arbitrary class names or OS details.
+        error = next((kind.__name__ for kind in
+                      (TimeoutError, ConnectionRefusedError, PermissionError)
+                      if isinstance(exc, kind)), 'OSError')
+    probe.permission('Local Network', status, None, True, error)
+
+
 def worker(config):
     """One launchd-owned Python child; no worker spawning or inherited PYTHONPATH."""
     root = Path(config['root'])
     check(sys.argv[1:] == ['--worker'], 'Only fixed worker invocation permitted')
-    check(config['name'] in NAMES and config['mode'] in MODES, 'Worker not allowed')
+    validate_worker(config['name'], config['mode'])
     check(list(sys.version_info[:2]) == config['abi'], 'Explicit ABI/bridge mismatch')
     check(os.environ['HOME'] == str(root / 'home') and
           os.environ['HERMES_HOME'] == str(root / 'state'), 'Nonisolated worker')
@@ -197,6 +221,8 @@ def worker(config):
                 os.environ['HOME'] = previous
         elif name == 'Accessibility':
             accessibility(probe, request)
+        elif name == 'Local Network':
+            local_network(probe, request)
         elif name in ('Input Monitoring', 'Screen Capture'):
             probe.preflight(name, request)
         else:
@@ -223,6 +249,15 @@ def sanitize(records, name):
               'Unexpected result name')
         check(type(r['requested']) is bool and (r['allowed'] is None or type(r['allowed']) is bool),
               'Bad permission scalar')
+        if name == 'Local Network':
+            check(r['name'] == name and r['allowed'] is None and r['requested'] is True,
+                  'Connectivity is not authorization')
+            check((r['status'] == 'tcp_connected' and r['error_type'] is None) or
+                  (r['status'] == 'tcp_failed' and r['error_type'] in
+                   {'TimeoutError', 'ConnectionRefusedError', 'PermissionError', 'OSError'}),
+                  'Unknown network result')
+            final.append(r)
+            continue
         check(r['error_type'] in errors, 'Unknown error scalar')
         if r['status'] == 'requesting':
             continue
@@ -259,12 +294,14 @@ def supervisor(config):
 
 
 def launcher_source(config):
+    validate_worker(config['name'], config['mode'])
     config = dict(sorted(config.items()))
     # Freeze reviewed worker functions into the hashed launcher, not control code.
     imports = ('import ctypes as C, hashlib, importlib.util, json, os, subprocess, sys, time\n'
                'from pathlib import Path\n')
     return (imports + f'NAMES={NAMES!r}\nMODES={MODES!r}\n' +
-            '\n'.join(inspect.getsource(f) for f in (check, sha, accessibility, sanitize, worker, supervisor)) +
+            '\n'.join(inspect.getsource(f) for f in (check, sha, accessibility, validate_worker,
+                                                    local_network, sanitize, worker, supervisor)) +
             f'\nraise SystemExit((worker if sys.argv[1:] == ["--worker"] else supervisor)({config!r}))\n').encode()
 
 
@@ -277,13 +314,13 @@ def job(root, home, label):
 
 def prepare(root, base, home, python, bridge, name, mode, *, python_home=None, abi='3.11', approve_sign=False, runner=None):
     check(approve_sign is True, 'Explicit --approve-sign required')
+    validate_worker(name, mode)
     install, stage = helpers()
     root, base, home = Path(root), install.safe(base), install.safe(home)
     check(root.parent == home / '.hermes/experiments', 'NEW durable experiments root required')
     install.safe(root.parent)
     install.safe(root, missing=True)
     check(not root.exists(), 'NEW root required')
-    check(name in NAMES and mode in MODES, 'Unknown worker/mode')
     check(python_home is not None and abi in ('3.11', '3.14'), 'Explicit Python home/ABI required')
     python_home = install.safe(python_home)
     worker_binary = install.safe((python_home / 'bin' / ('python' + abi)).resolve(strict=True))
@@ -340,6 +377,7 @@ def preflight(root, runner=None):
           'Foreign identity')
     check(p['config']['root'] == str(root) and p['config']['home'] == str(home) and
           p['config']['name'] in NAMES and p['config']['mode'] in MODES, 'Foreign worker')
+    validate_worker(p['config']['name'], p['config']['mode'])
     check((root / 'production_launcher.py').read_bytes() == launcher_source(p['config']) and
           sha((root / 'production_launcher.py').read_bytes()) == p['launcher_sha256'], 'Launcher changed')
     check(sha((root / 'permissions_probe.py').read_bytes()) == p['config']['probe_sha256'], 'Probe changed')

@@ -1,10 +1,12 @@
-# Bounded final-path permission experiment (review required)
+# Bounded final-path permission experiment
 
 `verify_production_permissions.py` adds **prepare**, **preflight**, **run**, and
 **recover** interfaces. This is not a production cutover, restart, upgrade, or
-permission grant tool. Offline tests, actual stage-only signing, copied-runtime
-imports and read-only absence checks have passed. Live swap/cleanup, OS dialogs
-and final-path attribution still need parent review and explicit live execution. Do not run the production app directly to test this.
+general permission-management tool. Reviewed bounded live checks have exercised the
+fixed-path temporary host and exact restoration; the original production services
+remain unselected and un-restarted. Location is unresolved, and the new Local Network
+worker is awaiting independent review/live execution. See the dated gate evidence
+below. Do not run the production-configured app directly to test this.
 
 ## Boundaries
 
@@ -41,8 +43,8 @@ and final-path attribution still need parent review and explicit live execution.
 
 `--worker` is an exact allowlist: the two `Full Disk Access: Messages` / `Full Disk
 Access: Safari` file tests, Accessibility, Input Monitoring, Screen Capture,
-Contacts, Calendar, Reminders, Camera, Microphone, Photos, Speech, Bluetooth and
-Location. Names with spaces must be quoted.
+Contacts, Calendar, Reminders, Camera, Microphone, Photos, Speech, Bluetooth,
+Location, and Local Network. Names with spaces must be quoted.
 
 - FDA: one `os.open(O_RDONLY)` and `close` for the named fixed file; no file bytes
   are read. Only the FDA call temporarily sets HOME to the real operator HOME.
@@ -51,6 +53,17 @@ Location. Names with spaces must be quoted.
 - Accessibility: trust/status/optional consent and **fixed Finder AXRole only**.
   The frozen probe's broader `accessibility()` is never called. No system-wide
   focused-application lookup, window titles, text or contents.
+- Local Network: **request mode only**, after explicit approval of one TCP connect
+  to the fixed numeric endpoint `10.101.0.2:80`. One IPv4 stream socket, one
+  `connect`, timeout 5 seconds, context-managed close on success or failure. No
+  application data is sent or received, no DNS, discovery, scanning, retries, or
+  CLI endpoint override. The connect can trigger a privacy popup; this is **not
+  check-only consent-free status**. HOME remains isolated.
+  Results are `tcp_connected` / `tcp_failed`, always `allowed=null` and
+  `requested=true` (a potentially prompting active test, not proof a dialog appeared).
+  Failures expose only `TimeoutError`, `ConnectionRefusedError`, `PermissionError`,
+  or `OSError`, never exception text. Connectivity success or failure does **not**
+  prove TCC enforcement, grant or denial.
 - Other names reuse only the frozen probe's consent/status functions: no camera
   or audio recording, screen capture, contact/calendar/photo enumeration,
   Bluetooth scanning/connections, location samples, or network connection.
@@ -100,7 +113,11 @@ No compiler is called. `prepare --approve-sign` executes codesign only on the
 staged copy, and verification on the original and temporary bundle. `preflight`
 is static/signature verification, not a dry live execution. The source tree must
 remain unchanged between prepare/preflight/run because launcher regeneration is
-one of the preflight checks.
+one of the preflight checks. Adding Local Network changes the frozen `NAMES`
+and launcher functions for **all** names: earlier prepared launchers no longer
+match current preflight regeneration. Use fresh preparations, not edits to old
+sealed artifacts. Recovery remains available for old roots; it does not regenerate
+the launcher or resume forward execution.
 
 ## Swap, identity gate and recovery
 
@@ -220,11 +237,57 @@ are completed observations, not a passed authorization gate. No content was read
 and no media recorded. Evidence is retained in each run root and in
 `~/.hermes/experiments/verity-production-install-v1/permission-baseline-verification.json`.
 
-A separately authorized serial consent batch was then started. Camera completed
-with `authorized`; System Settings showed the distinct `Verity` Camera toggle on.
-Remaining consent results and final restoration must be reconciled after the
-batch finishes. This does not establish cutover readiness or same-host ABI
-continuity. Pending consent is not permission to execute an actual user task.
+### Post-consent verification (2026-09-27)
+
+The serial consent batch completed Camera, Microphone, Contacts, Calendar,
+Reminders, Photos, Speech, Bluetooth, Accessibility and Input Monitoring with
+allowed statuses. Screen Capture's requesting process continued waiting after
+Settings showed the grant; the parent interrupted only the exactly identified
+experiment harness. Its failed/interrupted receipt retains verified cleanup and
+restoration. A fresh check then reported authorized; the interruption is not
+relabelled as a successful request. The operator enabled the distinct Verity FDA
+entry, followed by actual open/close verification rather than toggle-only proof.
+
+Using frozen source `63b3552492206821956573e2719017937edb0aaf`, the parent ran a
+fresh check-only matrix of all 14 original named workers on both copied runtimes:
+**28 completed runs**, all with clean worker/host exits, verified exact target/
+PID/PGID cleanup and original restoration. Thirteen named workers per runtime
+reported allowed: both protected-file read-opens, AX trust plus fixed Finder
+AXRole, Input Monitoring, Screen Capture, Contacts, full Calendar/Reminders,
+Camera, Microphone, Photos, Speech and Bluetooth. No protected bytes, media,
+application contents, device scan or location sample were collected.
+
+Location's separate consent run ended `incomplete` with `ConsentTimeout` and
+`not_determined`; it still restored and cleaned up successfully. Fresh Location
+checks on both runtimes remain `not_determined` (`allowed=null`), not denied or
+passed authorization. This is an unresolved pre-cutover gate, not an implicit
+exclusion. Evidence is retained at
+`~/.hermes/experiments/verity-production-install-v1/permission-post-consent-verification.json`
+and the referenced individual run roots. Independent installed-artifact/selector/
+plist/live-process/health read-back passed after every completed matrix run.
+
+These are separate signed temporary hosts at the final path, not same-temporary-
+host ABI switching or proof of either actual production service's descendants.
+The production app is restored, the native candidate is unselected, and neither
+production service restarted. Pending consent is not authorization for a user task.
+
+## Local Network offline verification
+
+The worker and generated sealed launcher are exercised in-process with socket/
+context and probe mocks. Tests require exactly one numeric endpoint connect, a
+5-second timeout, closure on success and failure, isolated HOME and sanitized
+unknown authorization. Network/DNS constructors are tripwires unless explicitly
+mocked. Invalid/check-only modes fail before preparation mutations and before
+worker readiness; preflight also rejects a check-only network config. No live
+network, signing, launchd operation, or consent API is exercised by these tests.
+Parent review and the explicitly approved live connect remain separate.
+The permission harness and neighboring install/stage modules pass **82 tests on
+each of Python 3.11 and 3.14**, including 34 permission-harness tests. Changed-file
+Ruff and `git diff --check` pass. The request-admission regression was observed
+failing before implementation and passing afterward. Parent independently reran
+the same 82-test aggregate on both runtimes in new isolated scratch fixtures; both
+passed, as did changed-file Ruff/diff checks. Focused read-only review
+`deleg_b19c0cd8` is pending; no live network connection has been made.
 
 ## Offline evidence
 

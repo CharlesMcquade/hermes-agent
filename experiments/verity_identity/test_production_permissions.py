@@ -92,6 +92,11 @@ class PermissionTests(unittest.TestCase):
         self.process_patch = patch.object(h.subprocess, 'run', side_effect=AssertionError('offline subprocess'))
         self.process_patch.start()
         self.addCleanup(self.process_patch.stop)
+        import socket
+        for name in ('socket', 'create_connection', 'getaddrinfo', 'gethostbyname'):
+            tripwire = patch.object(socket, name, side_effect=AssertionError('offline network'))
+            tripwire.start()
+            self.addCleanup(tripwire.stop)
 
     def runner(self, args, **kwargs):
         self.calls.append(args)
@@ -128,6 +133,152 @@ class PermissionTests(unittest.TestCase):
         self.assertEqual(settings['base'], str(self.root))
         self.assertIn("PYTHONHOME=config['python_home']", source)
         self.assertIn("'-S', '-s', '-P', '-u'", source)
+
+    def test_local_network_request_prepares_and_preflights_offline(self):
+        self.assertIn('Local Network', h.NAMES)
+        h.prepare(self.root, self.base, self.home, self.python, self.bridge,
+                  'Local Network', 'permissions-request', python_home=self.python_home,
+                  approve_sign=True, runner=self.runner)
+        plan, _, _ = h.preflight(self.root, self.runner)
+        self.assertEqual(plan['config']['name'], 'Local Network')
+        self.assertEqual(h.tree(self.app), self.before)
+
+    def test_local_network_modes_refuse_before_preparation_or_worker_activity(self):
+        import sys
+        import socket
+        for mode in ('permissions-check', 'invalid', ''):
+            with self.subTest(mode=mode), patch.object(h, 'helpers') as helpers, \
+                    patch.object(socket, 'socket') as connect:
+                with self.assertRaises(ValueError):
+                    h.prepare(self.root, self.base, self.home, self.python, self.bridge,
+                              'Local Network', mode, approve_sign=True)
+                config = dict(root=str(self.root), name='Local Network', mode=mode)
+                with patch.object(sys, 'argv', ['fixture', '--worker']):
+                    with self.assertRaises(ValueError):
+                        h.worker(config)
+                with self.assertRaises(ValueError):
+                    h.launcher_source(config)
+                helpers.assert_not_called()
+                connect.assert_not_called()
+                self.assertFalse(self.root.exists())
+        self.assertEqual(self.calls, [])
+        self.assertEqual(h.tree(self.app), self.before)
+        with patch.object(socket, 'socket') as connect:
+            with self.assertRaises(ValueError):
+                h.local_network(None, False)
+            connect.assert_not_called()
+
+    def test_local_network_has_no_cli_endpoint_override(self):
+        import contextlib
+        import io
+        with patch.object(h, 'prepare') as prepare, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as exited:
+                h.main(['prepare', '--root', str(self.root), '--worker', 'Local Network',
+                        '--mode', 'permissions-request', '--endpoint', '127.0.0.1:80'])
+            self.assertEqual(exited.exception.code, 2)
+            prepare.assert_not_called()
+        self.assertFalse(self.root.exists())
+
+    def test_local_network_preflight_refuses_check_only_config(self):
+        plan = self.prepare()
+        plan['config'].update(name='Local Network', mode='permissions-check')
+        (self.root / 'prepared.json').write_text(json.dumps(plan))
+        with self.assertRaisesRegex(ValueError, 'requires permissions-request'):
+            h.preflight(self.root, self.runner)
+        self.assertEqual(h.tree(self.app), self.before)
+
+    def test_local_network_source_and_sealed_worker_connect_once_without_payload(self):
+        import contextlib
+        import io
+        import socket
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        plan = self.prepare()
+        config = dict(plan['config'], name='Local Network', mode='permissions-request',
+                      abi=list(sys.version_info[:2]))
+        nonce = b'x' * 24
+        ready = dict(event='worker-ready', pid=os.getpid(), ppid=os.getppid(),
+                     pgid=os.getpgrp(), nonce=nonce.hex())
+        (self.root / 'GO').write_text(json.dumps(ready))
+
+        class PrivateSocketError(OSError):
+            pass
+
+        for sealed in (False, True):
+            for error, error_type in ((None, None), (TimeoutError('private'), 'TimeoutError'),
+                                     (ConnectionRefusedError('private'), 'ConnectionRefusedError'),
+                                     (PermissionError('private'), 'PermissionError'),
+                                     (PrivateSocketError('private'), 'OSError')):
+                with self.subTest(sealed=sealed, error_type=error_type):
+                    events = []
+
+                    class Connection:
+                        # Deliberately no send/recv/discovery methods: any use fails.
+                        def __enter__(self):
+                            events.append('enter')
+                            return self
+
+                        def settimeout(self, timeout):
+                            events.append(('timeout', timeout))
+
+                        def connect(self, endpoint):
+                            events.append(('connect', endpoint))
+                            self_outer.assertEqual(os.environ['HOME'], str(self_outer.root / 'home'))
+                            if error:
+                                raise error
+
+                        def __exit__(self, kind, value, tb):
+                            events.append(('closed', kind))
+
+                    self_outer = self
+                    probe = SimpleNamespace(FILE_PATHS={})
+                    probe.permission = lambda name, status, allowed, requested, error_type: probe.emit(
+                        'permission', name=name, status=status, allowed=allowed,
+                        requested=requested, error_type=error_type)
+                    spec = SimpleNamespace(loader=SimpleNamespace(exec_module=Mock()))
+                    output = io.StringIO()
+                    with patch.object(socket, 'socket', return_value=Connection()) as factory, \
+                            patch.object(socket, 'getaddrinfo', side_effect=AssertionError('DNS')), \
+                            patch.object(socket, 'gethostbyname', side_effect=AssertionError('DNS')), \
+                            patch.object(h.importlib.util, 'spec_from_file_location', return_value=spec), \
+                            patch.object(h.importlib.util, 'module_from_spec', return_value=probe), \
+                            patch.object(os, 'urandom', return_value=nonce), \
+                            patch.object(sys, 'argv', ['fixture', '--worker']), \
+                            patch.object(sys, 'path', list(sys.path)), \
+                            patch.dict(os.environ, {'HOME': str(self.root / 'home'),
+                                                    'HERMES_HOME': str(self.root / 'state')}), \
+                            contextlib.redirect_stdout(output):
+                        if sealed:
+                            with self.assertRaises(SystemExit) as exited:
+                                exec(compile(h.launcher_source(config), 'sealed-launcher', 'exec'), {})
+                            self.assertEqual(exited.exception.code, 0)
+                        else:
+                            self.assertEqual(h.worker(config), 0)
+                    factory.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
+                    self.assertEqual(events, ['enter', ('timeout', 5.0),
+                                              ('connect', ('10.101.0.2', 80)),
+                                              ('closed', type(error) if error else None)])
+                    result = json.loads(output.getvalue().splitlines()[-1])
+                    self.assertEqual(result, dict(event='worker-complete', exit_code=0, results=[
+                        dict(event='permission', name='Local Network',
+                             status='tcp_failed' if error else 'tcp_connected', allowed=None,
+                             requested=True, error_type=error_type)]))
+                    self.assertNotIn('private', output.getvalue())
+
+    def test_local_network_sanitizer_never_accepts_authorization_or_unsanitized_errors(self):
+        record = dict(event='permission', name='Local Network', status='tcp_connected',
+                      allowed=None, requested=True, error_type=None)
+        self.assertEqual(h.sanitize([record], 'Local Network'), [record])
+        for delta in ({'allowed': True}, {'allowed': False}, {'requested': False},
+                      {'status': 'authorized'}, {'status': 'requesting'},
+                      {'status': 'tcp_failed'}, {'error_type': 'OSError'},
+                      {'status': 'tcp_failed', 'error_type': 'private'},
+                      {'name': 'Accessibility Finder role'}):
+            with self.subTest(delta=delta), self.assertRaises(ValueError):
+                h.sanitize([dict(record, **delta)], 'Local Network')
+        with self.assertRaises(ValueError):
+            h.sanitize([dict(record, name='Camera')], 'Camera')
 
     def test_live_opt_in_precedes_reads(self):
         with self.assertRaisesRegex(ValueError, '--live'):
