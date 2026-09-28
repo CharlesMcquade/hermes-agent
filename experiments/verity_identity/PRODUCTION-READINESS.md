@@ -1,24 +1,36 @@
-# Production readiness: blocked on 1Password sign-in
+# Production readiness: signer recovered and verified; native staging unfinished
 
 The reviewed isolated gates are complete; see `COMBINED-CANARY.md`. They do
 not constitute a production cutover-ready artifact. The operator requested
 completion through readiness, with notification only at readiness or a genuine
 blocker. Production selection, service restarts and reboot remain unapproved.
 
-## Current blocker: 1Password authentication
+## Production signer and recovery gate
 
-The operator approved a dedicated production signing identity and chose 1Password
-for its recovery copy. 1Password for Mac 8.12.36 is now installed at the explicitly
-requested `/Applications/1Password.app`, and CLI 2.39.0 at `/opt/homebrew/bin/op`.
-Both code signatures verified. The temporary user-Applications installation was
-removed; its remaining empty directory was also removed.
+The operator approved a dedicated production signing identity, code-signing-only
+trust, and encrypted 1Password recovery. 1Password for Mac 8.12.36 is installed at
+the explicitly requested `/Applications/1Password.app`; CLI 2.39.0 is installed at
+`/opt/homebrew/bin/op`. Both signatures verified. Desktop sign-in and CLI integration
+are now verified. Headless and PTY authorization timed out; the user approved a
+native request from a dedicated Terminal.app tab, after which vault access passed.
+This successful alternative does not isolate the cause of the headless timeout.
 
-`op account list` reports zero configured accounts; `op vault list` fails with
-a sign-in/integration requirement. No account secrets were read or printed.
-The user must sign into their personal account and enable Developer → Integrate
-with 1Password CLI. After authentication, resolve the explicit personal vault,
-save recovery material, and read it back before relying on the new signer.
-No production key or certificate has been generated yet.
+`create_production_identity.py` generated a new RSA production identity in memory,
+saved encrypted PKCS8 and its strong passphrase in concealed fields of the explicitly
+selected Private vault (not Shared), then fetched the exact item by vault/item ID.
+Every recovery field matched, decryption succeeded, and a signing challenge verified
+against its certificate. Only the recovered key was written to an owner-only
+transient file and imported non-extractable with the codesign ACL; that file is gone.
+The operator approved macOS's trust request. Read-back shows exactly one trust policy,
+CodeSigning, in the user domain. An actual copied Mach-O was signed using this restored
+key, verified against its leaf pin, and executed successfully.
+
+Public production certificate SHA-1: `B72A53676319B035EF637A6DEF27F026009D989C`.
+Nonsecret local checkpoint: `~/.hermes/signing/verity-production-v1/identity.json`.
+Recovery item identifiers stay in that local checkpoint, not in tracked source.
+No secrets were printed or passed in command arguments. Six offline recovery/trust
+regressions and changed-file Ruff checks passed. Source review is pending; production
+host/control staging and final-identity permission validation remain unfinished.
 
 ## Previously identified signing prerequisite
 
@@ -76,7 +88,8 @@ no test can eliminate those approvals.
    contexts. Logout/login and reboot need separately agreed disruption timing.
    Do not call process restarts a reboot test or start a second real gateway.
 
-No new certificate, Keychain trust, final app installation, production-control
-write, launchd definition change, permission request, release selection, or
-production restart was performed during this readiness audit. The existing
-baseline check returned hashes/PIDs/health unchanged and health `ok`.
+The approved new certificate, its restored Keychain key, and code-signing-only trust
+have been provisioned. No final app installation, production-control write, launchd
+definition change, final-app permission request, release selection, or production
+restart has occurred. The production baseline still returns hashes/PIDs/health
+unchanged and health `ok`.
