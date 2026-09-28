@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -509,25 +510,177 @@ class Controller:
         self.save_transaction(txn, 'rolled_back')
         return self.receipt(txn['operation_id'], 'rolled_back', recovery=proof)
 
-    def restart(self, candidate=None, reload=False, yes=False, confirm=None):
+    @staticmethod
+    def retained_file(path):
+        """Read an owned regular file through canonical, non-writable ancestors."""
+        path = Path(path)
+        require(path.is_absolute() and path == path.resolve(), 'Unsafe retained path')
+        ancestors = []
+        for item in (path, *path.parents):
+            info = item.lstat()
+            if item != path:
+                ancestors.append((info.st_dev, info.st_ino, info.st_uid, info.st_mode))
+            require((stat.S_ISREG(info.st_mode) if item == path else stat.S_ISDIR(info.st_mode))
+                    and info.st_uid in ({os.getuid()} if item == path else {0, os.getuid()})
+                    and not info.st_mode & 0o7022, 'Unsafe retained owner/mode/type')
+        before = path.stat()
+        data = path.read_bytes()
+        after = path.stat()
+        def identity(info):
+            return (info.st_dev, info.st_ino, info.st_uid, info.st_mode, info.st_size,
+                    info.st_mtime_ns, info.st_ctime_ns)
+
+        require(identity(before) == identity(after), 'Retained file changed while reading')
+        return data, (identity(after), tuple(ancestors))
+
+    def return_baseline(self, expected):
+        """Caller holds control.lock; resolve the independently retained install receipt.
+
+        The externally approved file digest pins provenance; its internal checksum
+        is corruption detection, not a signature or authorization by itself.
+        """
+        require(isinstance(expected, str) and re.fullmatch(r'[0-9a-f]{64}', expected),
+                'Expected install receipt SHA-256 required')
+        observed = {}
+
+        def read(path):
+            path = Path(path)
+            value = self.retained_file(path)
+            observed[path] = value
+            return value[0]
+
+        read(self.base / 'control.lock')
+        raw = read(self.base / 'native-install-receipt.json')
+        require(hashlib.sha256(raw).hexdigest() == expected, 'Install receipt digest mismatch')
+        envelope = json.loads(raw)
+        receipt = envelope['receipt']
+        payload = (json.dumps(receipt, indent=2, sort_keys=True) + '\n').encode()
+        require(type(envelope['schema_version']) is int and envelope['schema_version'] == 1
+                and hashlib.sha256(payload).hexdigest() == envelope['sha256'], 'Corrupt install receipt')
+        require(receipt['phase'] == 'installed' and receipt['base'] == str(self.base)
+                and receipt['home'] == str(Path.home()), 'Foreign or incomplete install receipt')
+        report = receipt['report']
+        require(report['status'] == 'staged_not_activated' and report['activation_ready'] is False,
+                'Invalid retained stage report')
+        version = Path(report['final_control_version'])
+        require(report['final_base'] == str(self.base)
+                and version.parent == self.base / 'control-versions'
+                and re.fullmatch(r'[A-Za-z0-9_-]+', version.name)
+                and Path(__file__).resolve().parent == version, 'Wrong installed control identity')
+        names = {'restart_production.py', 'approved_restart_job.py', 'production_launcher.py',
+                 'native_identity.py', 'watchdog.py'}
+        require(set(report['control_sha256']) == names, 'Incomplete control provenance')
+        require(json.loads(read(version / 'control-receipt.json')) == report['control_sha256']
+                and stat.S_IMODE(version.stat().st_mode) == 0o555
+                and stat.S_IMODE((version / 'control-receipt.json').stat().st_mode) == 0o444,
+                'Control receipt or installed mode mismatch')
+        for name in names:
+            require(hashlib.sha256(read(version / name)).hexdigest() == report['control_sha256'][name]
+                    and stat.S_IMODE((version / name).stat().st_mode) == 0o444,
+                    'Installed control drift')
+        wrappers = names - {'native_identity.py'}
+        require(set(receipt['wrappers']) == set(receipt['replacements']) == wrappers,
+                'Incomplete wrapper provenance')
+        for name in wrappers:
+            record = receipt['wrappers'][name]
+            path = self.base / name
+            require(read(path) == base64.b64decode(receipt['replacements'][name], validate=True)
+                    and type(record['uid']) is int and record['uid'] == os.getuid()
+                    and type(record['mode']) is int
+                    and stat.S_IMODE(path.stat().st_mode) == record['mode'], 'Installed wrapper drift')
+        read(self.transaction_path)
+        txn = self.read_transaction()
+        require(txn is not None and txn['phase'] in {'verified', 'rolled_back'},
+                'Return requires a terminal current transaction; use recovery separately')
+        current = self.validate_manifest(json.loads(read(self.manifest_path)))
+        require('native_host' in current and current['native_host']['bundle'] == report['final_bundle'],
+                'Return requires the installed native selection')
+        require(hashlib.sha256((json.dumps(current, indent=2, sort_keys=True) + '\n').encode()).hexdigest()
+                == report['candidate_sha256'], 'Current selection differs from installed stage')
+        records = receipt['baseline']
+        record = records[str(self.manifest_path)]
+        target = self.validate_manifest(json.loads(base64.b64decode(record['data'], validate=True)))
+        require('native_host' not in target and 'launchd_overrides' not in target,
+                'Retained baseline must be original legacy selection')
+        require(target['labels'] == current['labels'] and target['state_dir'] == current['state_dir']
+                and target.get('launcher_path') == current.get('launcher_path'),
+                'Baseline labels/state/launcher mismatch')
+        paths = [self.manifest_path] + [self.plist_path(target, s) for s in SERVICES]
+        require(len(set(paths)) == 3 and set(records) == {str(p) for p in paths},
+                'Incomplete or aliased baseline')
+        for s in SERVICES:
+            require(self.plist_path(target, s) == self.plist_path(current, s), 'Baseline plist path mismatch')
+        exact = {}
+        for path in paths:
+            record = records[str(path)]
+            require(set(record) == {'data', 'mode', 'uid'} and type(record['mode']) is int
+                    and 0 <= record['mode'] <= 0o777 and not record['mode'] & 0o022
+                    and type(record['uid']) is int and record['uid'] == os.getuid(),
+                    'Malformed baseline metadata')
+            read(path)
+            require(stat.S_IMODE(path.stat().st_mode) == record['mode'], 'Baseline mode drift')
+            exact[path] = base64.b64decode(record['data'], validate=True)
+        require(hashlib.sha256(exact[self.manifest_path]).hexdigest() == report['selected_sha256'],
+                'Retained manifest stage mismatch')
+        # Stage rollback copies are deliberately mode 0600, independently of
+        # the original modes retained in the installer snapshot records.
+        rollback = {s + '.plist': {'sha256': hashlib.sha256(exact[self.plist_path(target, s)]).hexdigest(),
+                                   'executable': False}
+                    for s in SERVICES}
+        for name in wrappers:
+            record = receipt['wrappers'][name]
+            rollback['maintenance/' + name] = dict(
+                sha256=hashlib.sha256(base64.b64decode(record['data'], validate=True)).hexdigest(),
+                executable=False)
+        require(rollback == report['rollback_sha256'], 'Retained rollback stage mismatch')
+        policy = self.base / 'revoked-releases.json'
+        policy_exists = policy.exists()
+        if policy_exists:
+            read(policy)
+
+        def unchanged(prepared=None):
+            require(policy.exists() == policy_exists, 'Revocation policy changed')
+            for path, value in observed.items():
+                if path == self.transaction_path and prepared is not None:
+                    self.retained_file(path)
+                    require(self.read_transaction() == prepared, 'Prepared return transaction changed')
+                else:
+                    require(self.retained_file(path) == value, 'Return input changed: ' + str(path))
+            for name in ('restart-result.json', 'restart-journal.jsonl'):
+                path = self.base / name
+                require(not path.is_symlink(), 'Unsafe receipt output')
+                if path.exists():
+                    self.retained_file(path)
+
+        unchanged()
+        return target, exact, unchanged, {Path(p): r['mode'] for p, r in records.items()}
+
+    def restart(self, candidate=None, reload=False, yes=False, confirm=None, return_baseline=None):
         if yes:
             require(self.owner() == 1, '--yes requires a launchd-owned independent controller (ppid 1)')
         else:
             require(confirm is not None and confirm(), 'Explicit interactive confirmation required')
         operation_id = str(uuid.uuid4())
+        if return_baseline is not None:
+            require(candidate is None and reload, 'Return requires --reload and excludes --activate')
+            lock_identity = self.retained_file(self.base / 'control.lock')
         with control_lock(self.base):
+            if return_baseline is not None:
+                require(self.retained_file(self.base / 'control.lock') == lock_identity, 'Control lock changed')
+                exact = self.return_baseline(return_baseline)
+                return self._restart(operation_id, None, True, exact, return_baseline)
             recovery = self.recover_locked()
             if recovery is not None:
                 return recovery  # Recovery never activates the supplied candidate.
             return self._restart(operation_id, candidate, reload)
 
-    def _restart(self, operation_id, candidate, reload):
+    def _restart(self, operation_id, candidate, reload, exact=None, baseline_digest=None):
         touched = False
         old_bytes = self.manifest_path.read_bytes()
         saved_plists = {}
         try:
             old = self.load()
-            new = self.load(candidate) if candidate else old
+            new = exact[0] if exact else (self.load(candidate) if candidate else old)
             self.check_revocation(old)
             self.check_revocation(new)
             self.preflight(old)
@@ -541,30 +694,49 @@ class Controller:
                 before = {s: self.host.job(self.target(old, s)) for s in SERVICES}
             else:
                 before = self.loaded(old, definitions)
-            if candidate:
+            if candidate or exact:
                 self.snapshot(old, definitions)  # Only a proven live pair can be a candidate's fallback.
-            new_definitions = self.candidate_definitions(old, new, saved_plists, reload) if candidate else definitions
+            new_definitions = (self.definitions(new, saved={s: exact[1][self.plist_path(new, s)] for s in SERVICES})
+                               if exact else self.candidate_definitions(old, new, saved_plists, reload)
+                               if candidate else definitions)
             txn = {'operation_id': operation_id, 'reload': reload,
-                   'authorization': 'verified-live-fallback' if candidate else 'same-release-restart',
+                   'authorization': 'verified-live-fallback' if candidate or exact else 'same-release-restart',
                    'manifest': base64.b64encode(old_bytes).decode('ascii'),
                    'plists': {s: base64.b64encode(b).decode('ascii') for s, b in saved_plists.items()}}
+            if exact:
+                exact[2]()
+                txn.update(operation='return-retained-baseline', baseline_sha256=baseline_digest)
             self.journal(operation_id, 'prepared')
+            if exact:
+                exact[2]()
             self.save_transaction(txn, 'prepared')
+            if exact:
+                exact[2](txn)
             since = self.clock()
             touched = True  # Atomic replacement can succeed before a following fsync fails.
-            if candidate:
+            if exact:
+                atomic_write(self.manifest_path, exact[1][self.manifest_path])
+            elif candidate:
                 save_json(self.manifest_path, new)
             if reload:
                 for service in SERVICES:
-                    atomic_write(self.plist_path(new, service), plistlib.dumps(new_definitions[service]))
+                    path = self.plist_path(new, service)
+                    atomic_write(path, exact[1][path] if exact else plistlib.dumps(new_definitions[service]))
             for service in SERVICES:
                 if reload:
                     self.host.reload(self.target(new, service), self.plist_path(new, service))
                 else:
                     self.host.kickstart(self.target(new, service))
             proof = self.wait_ready(new, new_definitions, since, before)
+            if exact:
+                for path, data in exact[1].items():
+                    require(self.retained_file(path)[0] == data
+                            and stat.S_IMODE(path.stat().st_mode) == exact[3][path],
+                            'Exact return readback mismatch')
             self.save_transaction(txn, 'verified')
         except Exception as exc:
+            if exact and not touched:
+                raise  # A rejected input must not write through an unsafe receipt path.
             self.receipt(operation_id, 'failed', error=str(exc))
             if not touched:
                 raise
@@ -580,10 +752,15 @@ def main(argv=None):
     parser.add_argument('--base', type=Path, default=BASE)
     parser.add_argument('--restart', action='store_true')
     parser.add_argument('--yes', action='store_true')
-    parser.add_argument('--activate', type=Path)
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument('--activate', type=Path)
+    target.add_argument('--return-baseline', metavar='INSTALL_RECEIPT_SHA256',
+                        help='Explicit exact legacy return using the retained installed receipt')
     parser.add_argument('--reload', action='store_true', help='Explicit launchd-definition migration')
     args = parser.parse_args(argv)
-    if (args.yes or args.activate or args.reload) and not args.restart:
+    if args.return_baseline is not None and not args.reload:
+        parser.error('--return-baseline requires --reload')
+    if (args.yes or args.activate or args.reload or args.return_baseline is not None) and not args.restart:
         parser.error('--yes/--activate/--reload require --restart')
     controller = Controller(args.base)
     if not args.restart:
@@ -593,7 +770,8 @@ def main(argv=None):
             controller.loaded(manifest, controller.definitions(manifest))
         return {'status': 'checked', 'changed': False}
     return controller.restart(args.activate, args.reload, args.yes,
-                              lambda: sys.stdin.isatty() and input('Type restart to interrupt both services: ') == 'restart')
+                              lambda: sys.stdin.isatty() and input('Type restart to interrupt both services: ') == 'restart',
+                              return_baseline=args.return_baseline)
 
 
 if __name__ == '__main__':

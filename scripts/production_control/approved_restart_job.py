@@ -3,6 +3,9 @@
 
 Does not create/submit its own job or grant approval. --restart --yes are still
 required; pass --activate/--reload only when the user approved that operation.
+--return-baseline INSTALL_RECEIPT_SHA256 is a distinct, separately approved
+--reload operation. It uses only the retained installed baseline, never arbitrary
+restore paths or an edited transaction phase.
 The controller's durable journal is authoritative, including rollback outcomes.
 """
 import json

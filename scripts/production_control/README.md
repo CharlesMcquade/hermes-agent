@@ -127,6 +127,49 @@ snapshot. Never prune a runtime still referenced by loaded plists, manager
 preflight, watchdog wrappers, manifest, or transaction backup. Do not update
 source or packages in-place inside a release directory.
 
+## Exact return to the retained legacy baseline (new control version)
+
+`--restart --reload --return-baseline INSTALL_RECEIPT_SHA256` is distinct from
+activation and incomplete-transaction recovery; it excludes `--activate`.
+The argument is the separately reviewed SHA-256 of the **exact bytes** of
+`BASE/native-install-receipt.json`, not a filename or a self-reported checksum.
+It requires the installed receipt's terminal `installed` phase, current terminal
+activation transaction, and the exact native candidate recorded by that stage
+(semantic candidate digest permits noncanonical current JSON). No arbitrary
+backup file, command, destination, label or state-directory override is accepted.
+
+The controller verifies the receipt checksum, base/home, embedded stage hashes,
+retained manifest/plists and wrapper baseline inventory, installed version/path,
+five control hashes/modes and installed wrapper bytes/modes. Both selections
+must pass existing revocation and preflight checks; both definitions are validated
+before publication, and the current native pair must pass the existing snapshot.
+Canonical paths, ownership/modes, file and ancestor identity, existing shared lock,
+and input stability are checked before publication. All cooperating control-plane
+writers must honor `control.lock`; this is not containment against a malicious
+same-UID process that can replace owned files between system calls.
+
+The existing transaction saves the **current exact native manifest and plists**
+as a fresh verified-live fallback, with `operation=return-retained-baseline` and
+the approved receipt digest. Original legacy bytes remain separately retained in
+the unchanged install receipt. Atomic per-file publication bypasses override
+merging and serialization; successful readiness is followed by exact byte and
+owner/mode readback. There is no multi-file atomic rename: the durable prepared
+transaction covers interruption between publications. Failed/interrupted returns
+use existing one-attempt recovery to native; failed recovery is terminal. A
+prepublication race detected after durable preparation may leave a prepared
+transaction without changing the selection: do not edit its phase; use separately
+approved ordinary recovery. Informational receipts are not recovery authority.
+
+`--yes` still requires a directly launchd-owned independent controller; otherwise
+interactive confirmation is required. Neither flag grants operator approval.
+This source change requires a **new retained, verified control version and matched
+stage/install provenance**. Existing installations do not acquire the operation
+from a checkout edit. The first-install-only installer is not an upgrade path;
+reconciling an already installed version requires a separately reviewed deployment
+step, preserving original baseline provenance rather than forging receipts.
+No installation, cutover, service interruption, permission grant, wrapper restore,
+artifact removal, or same-session autonomous resume is proved by offline tests.
+
 ## Verification and limits
 
 Focused lifecycle suites and hermetic fault tests are required before install.

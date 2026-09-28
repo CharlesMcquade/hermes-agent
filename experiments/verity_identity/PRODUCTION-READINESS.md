@@ -189,10 +189,18 @@ modules; static inventory validation is not an equivalent test.
 `Controller.recover_locked()` restores an incomplete transaction's original
 manifest/plist bytes once. It returns without restoring a terminal `verified`
 transaction. Repeating restart after successful activation therefore does not
-request rollback. There is no rollback-only CLI switch. The installer restore is
-wrapper-only and rejects changed selection; it cannot undo an activated pair.
-A post-success return-to-legacy procedure remains to be designed and verified;
-do not change a verified transaction's phase to manufacture recovery authority.
+request rollback. The installed controller has no explicit post-success return
+operation. The source extension delivered by `deleg_940d4efe` task 1 now adds
+`--return-baseline INSTALL_RECEIPT_SHA256`, preserving exact legacy target bytes
+and recording the current native bytes as a new one-attempt fallback. The parent
+independently passed 72 permitted fixture tests per Python ABI with native/network
+tripwires; see `PRODUCTION-CUTOVER.md` for the author's disclosed earlier
+no-compile scope breach and the parent's bounded verification. Focused source
+review remains pending. A new immutable control version with matching stage and
+install provenance is still required; the first-install-only installer is not an
+upgrade path. The installed artifacts have not changed. Installer restore is
+wrapper-only and cannot undo an activated pair. Never change a verified
+transaction's phase to manufacture recovery authority.
 The old `prepare_cutover.py` rebuilds Python overrides and is not a native recipe.
 
 ## Final-identity continuity implementation checkpoint
@@ -265,6 +273,22 @@ HTTP entry point's compression-lineage guard.
   audit found deferred process-wakeup state to be in-memory; ordinary checkpoint
   recovery alone does not prove safe dispatch across a restart.
 
+Independent source audit `deleg_940d4efe` task 2 confirms those limits. An
+independent one-shot can durably commit to at most one POST, but a crash between
+that commitment and sending loses delivery; after an ambiguous response it cannot
+retry safely. The frozen HTTP path also lacks an atomic expected session-revision,
+workspace and lineage comparison at admission. A logged-in browser fetch avoids
+credential extraction, but does not repair those contracts and adds a browser
+dependency. No such POST or browser authentication action has been attempted.
+
+An isolated implementation is now assigned on a separate WebUI worktree based on
+the selected source commit, not the development checkout: one private local
+continuation request consumed inside the owning WebUI with real startup/admission
+wiring and offline fake-worker tests. It must preserve existing admission and
+cross-service ownership, block unknown/changed/closed bindings, and persist a
+nonsecret execution receipt without blind retry. It is not implemented or
+verified in the selected production release.
+
 The proposed direction, not yet implemented or verified, is one durable cutover
 job plus a narrowly scoped record consumed inside WebUI. Bind operation, initiating
 session, profile, workspace and expected release; persist admission identity before
@@ -290,8 +314,10 @@ authority.
    acceptance; neither is silently
    removed from the requirements. A missing Settings target stops the scoped
    deny/allow experiment, not permission to change unrelated Python/app grants.
-2. Final-identity AppleEvents authorization-only coverage is still omitted. Preserve
-   the original no-content test boundary; lab Finder automation is separate evidence.
+2. Final-identity AppleEvents authorization-only live coverage remains open.
+   The fixed Finder implementation, parent offline tests and focused static review
+   are complete; no live execution is implied. Preserve the no-content boundary;
+   lab Finder automation is separate evidence.
 3. Reconcile the original continuity matrix against final-identity evidence. Current
    final-path checks use separately signed temporary settings, one permission and ABI
    per root, and the `agent` role. They do not prove same-temporary-host ABI switching,
@@ -300,10 +326,11 @@ authority.
 4. Revalidate the exact matched installed host/control, staged native manifest and
    both definitions, retained rollback material, and independent activation/recovery
    procedure. Selection and activation remain unarmed until the conditional resume
-   requirement and readiness gates pass. The existing controller lacks a byte-exact
-   post-success return to legacy; `PRODUCTION-CUTOVER.md` records the reproduced
-   limitation. Synthetic failed-activation rollback does not close that gap or prove
-   live wrapper restore.
+   requirement and readiness gates pass. The installed controller lacks a byte-exact
+   post-success return to legacy. Its source extension has parent offline evidence
+   but awaits focused review and a verified immutable deployment path;
+   `PRODUCTION-CUTOVER.md` records the distinction. Synthetic failed-activation
+   rollback does not prove live successful-cutover return or wrapper restore.
 5. The operator has authorized autonomous selection/reload/restart once a reliable
    same-session resume method is verified. Verify that method independently before
    interruption; a cron's fresh session or a recovered transcript alone is not the
