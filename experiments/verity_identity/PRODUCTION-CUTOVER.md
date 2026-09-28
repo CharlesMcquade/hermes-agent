@@ -1,14 +1,19 @@
-# Schema-2 native cutover: exact return still required, unarmed
+# Schema-2 native cutover: supervised trial prepared, unarmed
 
 **Current scope update:** the operator accepted a supervised production trial with
 manual “continue” after reconnecting. Automatic same-session continuation and the
 future upgrade roadmap are no longer prerequisites for that trial. See the current
 scope at the top of `PRODUCTION-READINESS.md`; the older recipe and authority
 paragraphs below describe the prior autonomous-cutover plan. No job is armed.
-The installed v1 app/wrappers will stay unchanged; a separately pinned immutable
-return-controller extension is being prepared and must be verified/deployed before
-submitting the supervised trial. This is an explicit executor-provenance extension,
-not permission to bypass or rewrite the original installed receipt.
+The installed v1 app/wrappers remain unchanged. The separately pinned immutable
+return controller is staged after independent fixture replay, bounded source review,
+fresh direct-CLI import/ownership checks and installed-context provenance validation.
+Private activation and return one-shot definitions are prepared and verified unarmed;
+exact paths, command arrays and both provenance pins are retained in the local trial
+receipt. The native-success return has not yet been exercised live. This explicit
+executor-provenance extension never bypasses or rewrites the installation receipt.
+The controller default base is its own directory: always pass the actual `--base`
+on both command arrays. A successful API fixture is not direct CLI import evidence.
 
 **Historical blocked recipe (not an activation cue):** The old activation interface cannot
 perform a byte-exact post-success return; `test_production_cutover_recipe.py`

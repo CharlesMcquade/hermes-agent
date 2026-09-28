@@ -1,4 +1,4 @@
-# Production readiness: installed, not cutover-ready
+# Production readiness: supervised trial prepared, not yet activated
 
 The reviewed isolated gates are complete; see `COMBINED-CANARY.md`. They do
 not establish universal macOS permission inheritance or production acceptance.
@@ -25,10 +25,16 @@ original scope; they must not reimpose the superseded autonomous-resume conditio
 Installed v1 ordinary reverse activation restores Python argv but leaves native
 `AssociatedBundleIdentifiers` and `AbandonProcessGroup` settings behind. Source
 review and the parent's installed in-memory definition check agree. That is not
-the clean permission/launchd fallback required for this trial. A narrowly scoped,
-separately pinned immutable return-controller extension is in preparation; it must
-retain all original installation checks and restore exact baseline bytes without
-replacing the installed app, controls or wrappers. It is not yet deployed or verified.
+the clean permission/launchd fallback required for this trial. The narrowly scoped
+separately pinned immutable return controller is now staged without replacing the
+installed app, controls or wrappers. Its source checkpoint passed 56 hermetic tests
+on each of Python 3.11 and 3.14, independent parent replay and bounded source review.
+Fresh retained-bootstrap subprocesses verified direct CLI sibling imports, parent-
+ownership refusal, installed-v1 receipt/control/wrapper provenance and the expected
+refusal while legacy remains selected. Real static runtime validation also passed.
+This is not yet a live successful-native return. The prepared private one-shot
+activation and return definitions are unarmed, with exact digests and commands in
+a local durable receipt; no production restart has been performed.
 
 Parent live read-only checks passed the installed signature/inventory/settings,
 control/wrapper provenance, exact retained baseline, loaded legacy identities,
