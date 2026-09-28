@@ -209,15 +209,62 @@ checkpoints stop further matrix work; an in-flight operation may finish before
 its next checkpoint. Cleanup/recovery complete one bounded reconciliation pass,
 never rerun the matrix, and preserve the same exact-intent ownership. The deferral
 is scoped to that pass, not a permanent ignore policy or a hard wall-time limit
-on filesystem I/O. Repeated signals may raise; caller handlers are restored on
-exit, including ordinary failures. An interrupted run/recovery returns non-success
-even when restoration succeeds.
+on filesystem I/O. Repeated signals may raise; caller handlers and the caller's
+thread signal mask are restored on exit, including ordinary failures. An
+interrupted run/recovery returns non-success even when restoration succeeds.
+
+### Synchronous terminal decision
+
+After the entire cleanup/restoration pass and provisional report publication,
+exit blocks SIGINT/SIGTERM on the calling thread. It restores callable/default
+caller handlers while blocked, then takes **one `sigpending()` snapshot**. This
+snapshot is the exact first-interrupt settlement boundary. Pending signals that
+were not already blocked by the caller are consumed once per signal number and
+latched before the durable decision. There is no polling/reconciliation loop or
+matrix replay. Already caller-blocked signals remain pending under the unchanged
+caller mask. POSIX can coalesce repeated signals; this does not count arrivals.
+
+A caller's SIG_IGN disposition is restored only after the snapshot: installing it
+earlier would discard blocked pending evidence. It is never newly imposed on a
+caller that did not already ignore that signal. Signals arriving after the
+snapshot belong to the caller, even while the terminal receipt is being written;
+unmasking delivers them under the restored caller dispositions. A raising caller
+can prevent function return, but cannot mutate the already decided report or
+leave one of the transaction's handlers installed. This boundary is after, not
+instead of, the previously promised reconciliation. It does not include later
+control-lock release, CLI printing, or caller code.
+
+This is a synchronous main-thread/POSIX contract with no concurrent signal
+consumer. It is not a process-wide masking guarantee for arbitrary background
+threads; `pthread_sigmask` controls the calling thread only. The finite `sigwait`
+set consists solely of observed pending signals, not future arrivals. Unsupported
+signal APIs, external signal consumers, fatal signals and failing signal syscalls
+are outside this bound. No filesystem operation receives a hard timeout.
 
 Reports remain append-only. An interrupt during/after final report publication
-also produces `interrupt-*.json`, naming the affected `report` receipt. **That
-interrupt receipt overrides any completed/restored status in the named report**;
-consumers must inspect both, rather than treating an isolated `result.json` as
-success. It does not invalidate a later independent recovery report.
+also produces `interrupt-*.json` with exactly `status: failed`, `interrupted: true`,
+and the affected `report` filename. **That interrupt overrides success only in
+its named report**, not in a later independent recovery.
+
+A new `settled-REPORT` receipt records exactly `report` and terminal `status`.
+The report alone is provisional. Consumers must use `report_status(ROOT, REPORT)`:
+missing/malformed evidence refuses; a failed terminal decision or a valid
+correlated invalidator cannot pass. This explicit decision is needed for the
+concrete double-fault case: the success report was written, the first interrupt
+arrives, then writing its invalidator fails. Absence of the settlement receipt
+prevents that provisional success from becoming authoritative. No receipt is
+overwritten, removed or retried, and no repair/recovery report is retroactively
+invalidated. Pre-existing roots lacking a settlement receipt cannot supply new
+success evidence; independent recovery can still produce its own fresh decision.
+
+Report/invalidator/settlement write exceptions propagate, with mask/handlers
+restored. A report write that completed before throwing is settled failed. If an
+invalidator or terminal write fails before publication, the report is unsettled;
+if a terminal write completes and then throws, the durable terminal decision
+remains authoritative even though the function raises. Post-decision caller
+signals likewise cannot turn a committed success dictionary into failed. These
+are finite acknowledgement semantics, not a guarantee to durably record failure
+when the filesystem itself refuses writes.
 
 If cleanup
 is unknown, the original stays separately retained rather than moving a bundle
@@ -302,16 +349,52 @@ subprocess guards and only inspected disposable fixture subprocesses allowed.
 The first parent run exposed two mistakes in those guards (a bytes/string
 comparison and two missing compiler-environment keys); correcting only the guard
 produced green results. Delivered source and frozen snapshot hashes stayed unchanged;
-changed-file Ruff passed. Focused re-review `deleg_41bf0942` remains pending.
+changed-file Ruff passed. Focused re-review `deleg_41bf0942` then found the two
+exit blockers below; it otherwise bounded-cleared the earlier changes.
 
-**A further parent counterexample remains open:** a first signal during caller-
-handler restoration, after the exit method has already skipped its interruption
-receipt decision, changes the returned report to failed but leaves `result.json`
-completed with no companion interrupt receipt. Both ABIs reproduced this using
-real `run()` and disposable filesystem fixtures. The original app and signal
-handlers were restored and jobs were absent; the failure is durable report
-invalidation, not restoration. Do not consume this implementation as live evidence
-until that exit boundary and the focused review are resolved.
+The late-first-signal repair retained actual failing assertions against controller
+`0d06d7720956b39ef2d8f086a7e37a0b5e31f4f7` with the unchanged continuity harness
+from `3100a4f9d1a80a5a2b4c823933971815d9091ce4`. The first group failed all 16
+run/recover × signal × before/after each caller-handler restoration cases on both
+ABIs. The second group also reproduced four raising-caller failures, including
+leaving SIGTERM bound to the transaction after restoring SIGINT. The retained
+combined red receipt is `verity-continuity-parent-qi_sshlz/receipt.json` under the
+configured scratch directory (20 subtest assertion failures per ABI).
+
+Both original regression methods passed after the fix on both ABIs; their
+focused green receipt is `verity-continuity-parent-v2xi710y/receipt.json`.
+The expanded **131-test aggregate passed on Python 3.11 and 3.14**, preserving all
+124 prior tests. Its receipt is `verity-continuity-parent-mqn0hei_/receipt.json`.
+Seven new methods cover the two blockers, both sides of mask/pending-observation/
+terminal-write/unmask boundaries, post-decision raising callers, prior masks and
+ignored dispositions, exact correlated invalidator contents, malformed evidence,
+before/after-write faults and later independent recovery. An intermediate fault
+test incorrectly expected missing paths to raise ValueError/OSError rather than
+the controller's ControlError; this fixture assertion was corrected explicitly.
+Pre-import native/network/subprocess tripwires and the parent's inspected fixture
+child-command allowlist remained in force. Snapshot/source hashes remained stable
+through each run; changed-file Ruff passed. This is offline evidence only.
+
+### Independent late-signal repair verification
+
+The parent froze the delivered three-file repair, matched its hashes to the
+implementer's source audit, and independently replayed the two original
+regression methods against the unchanged `3100a4f9` harness. Both Python 3.11.16
+and 3.14.7 produced **20 assertion failures and no test errors**. The repaired
+snapshot independently passed **131 tests on each ABI**, including all 124 prior
+fixtures and the seven new methods. Changed-file Ruff and `git diff --check`
+passed; snapshot/source bytes remained unchanged throughout verification.
+The parent's receipt is `verity-continuity-settlement-parent-f7nwdsbm/receipt.json`
+under the configured scratch directory. This is separate from the implementer's
+retained final aggregate `verity-continuity-parent-hk5mqcbv/receipt.json`.
+
+The runner installed native/network/subprocess guards before importing tests.
+Only inspected constant fixture child commands with disposable HOME/state were
+allowed; compiler, signing, kernel identity and permission behavior stayed fake.
+The run/recover filesystem transactions and self-directed POSIX signals were
+real. No production app, service, permissions or selected release was touched.
+Focused source-only re-review `deleg_318e8c97` is pending; these passing tests do
+not alone close the two reviewed teardown findings or establish live readiness.
 
 Real final-path execution remains for the parent after focused review and explicit
 bounded-live approval. No compile, signing, permission API, launchctl, service

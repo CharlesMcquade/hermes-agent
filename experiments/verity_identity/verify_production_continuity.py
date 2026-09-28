@@ -618,6 +618,36 @@ def strict_results(rows, name):
     return result, allowed
 
 
+def report_status(root, name):
+    """Read a terminal decision, not an isolated provisional success report.
+
+    Malformed/missing evidence refuses. Interrupts affect only their named report.
+    """
+    check(isinstance(name, str) and (name == 'result.json' or
+          re.fullmatch(r'recovery-[0-9a-f]{32}\.json', name)), 'Invalid report name')
+    root = Path(root)
+    report = read_json(root / name)
+    decision = read_json(root / ('settled-' + name))
+    check(type(decision) is dict and set(decision) == {'report', 'status'}
+          and decision['report'] == name and decision['status'] in ('completed', 'restored', 'failed'),
+          'Malformed terminal decision')
+    check(type(report) is dict and report.get('status') in ('completed', 'restored', 'failed'),
+          'Malformed report')
+    invalidated = False
+    for path in root.glob('interrupt-*.json'):
+        row = read_json(path)
+        check(type(row) is dict and set(row) == {'status', 'interrupted', 'report'}
+              and row['status'] == 'failed' and row['interrupted'] is True
+              and isinstance(row['report'], str) and (row['report'] == 'result.json' or
+              re.fullmatch(r'recovery-[0-9a-f]{32}\.json', row['report'])), 'Malformed invalidator')
+        invalidated |= row['report'] == name
+    if invalidated or decision['status'] == 'failed':
+        return 'failed'
+    check(decision['status'] == report['status'] and report.get('cleanup_verified') is True
+          and report.get('restored') is True, 'Unsettled report')
+    return decision['status']
+
+
 class ReconciliationSignals:
     """Latch the first signal; execution checkpoints cancel, cleanup keeps going.
 
@@ -648,15 +678,43 @@ class ReconciliationSignals:
         if self.report is not None:
             self.report['status'] = 'failed'
 
-    def __exit__(self, *_):
+    def __exit__(self, exc_type, *_):
+        # Block only teardown, after the complete reconciliation pass. In this
+        # synchronous main-thread transaction no other thread consumes signals.
+        watched = {signal.SIGINT, signal.SIGTERM}
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, watched)
         try:
-            if self.interrupted and self.report is not None:
-                self.report['status'] = 'failed'
-                durable(self.root, 'interrupt-' + uuid.uuid4().hex + '.json',
-                        dict(status='failed', interrupted=True, report=self.report_name))
-        finally:
             for sig, handler in self.previous.items():
-                signal.signal(sig, handler)
+                # Installing SIG_IGN discards blocked pending signals on POSIX.
+                # Defer that disposition until after the pending-set decision.
+                if handler != signal.SIG_IGN:
+                    signal.signal(sig, handler)
+            # Exact settlement boundary: this pending-set observation. Callable
+            # and default caller handlers are restored; ignored ones stay latched.
+            # Later arrivals belong to the caller.
+            pending = signal.sigpending() & (watched - previous_mask)
+            for sig in pending:
+                signal.sigwait({sig})
+            if pending:
+                self.handle()
+            if self.report is not None and self.report_name is not None:
+                if exc_type is not None:
+                    self.report['status'] = 'failed'
+                if self.interrupted:
+                    self.report['status'] = 'failed'
+                    durable(self.root, 'interrupt-' + uuid.uuid4().hex + '.json',
+                            dict(status='failed', interrupted=True, report=self.report_name))
+                # A report without this terminal decision is provisional, never
+                # authoritative success (including failed invalidator writes).
+                durable(self.root, 'settled-' + self.report_name,
+                        dict(report=self.report_name, status=self.report['status']))
+        finally:
+            try:
+                for sig, handler in self.previous.items():
+                    if signal.getsignal(sig) != handler:
+                        signal.signal(sig, handler)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
 def run(root, *, live=False, runner=None, adapter=None, dependency=None):

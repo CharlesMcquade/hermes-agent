@@ -184,6 +184,330 @@ class ContinuityTests(unittest.TestCase):
         report = h.run(self.root, live=True, runner=self.runner, adapter=adapter, dependency=lambda *_: True)
         return plan, adapter, report
 
+    def test_late_first_signal_restoration_durably_invalidates(self):
+        import signal
+        for recovery in (False, True):
+            for restored_sig in (signal.SIGINT, signal.SIGTERM):
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    for after in (False, True):
+                        with self.subTest(recovery=recovery, restored_sig=restored_sig, sig=sig, after=after):
+                            self.root = self.home / '.hermes/experiments' / f'late-{recovery}-{restored_sig}-{sig}-{after}'
+                            p = self.prepare()
+                            adapter = KernelFixture(self.root, p)
+                            if recovery:
+                                h.run(self.root, live=True, runner=self.runner, adapter=adapter,
+                                      dependency=lambda *_: True)
+                            actual = signal.signal
+                            callers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+                            mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+                            hit, delivered = [], []
+                            def caller(*args):
+                                delivered.append(args[0])
+                            for s in callers:
+                                actual(s, caller)
+                            def swap(s, handler):
+                                inject = s == restored_sig and handler is caller and not hit
+                                if inject and not after:
+                                    hit.append(True)
+                                    signal.raise_signal(sig)
+                                result = actual(s, handler)
+                                if inject and after:
+                                    hit.append(True)
+                                    signal.raise_signal(sig)
+                                return result
+                            try:
+                                with patch.object(h.signal, 'signal', side_effect=swap):
+                                    report = (h.recover(self.root, live=True, runner=self.runner, adapter=adapter)
+                                              if recovery else h.run(self.root, live=True, runner=self.runner,
+                                              adapter=adapter, dependency=lambda *_: True))
+                                names = list(self.root.glob('recovery-*.json')) if recovery else [self.root / 'result.json']
+                                names = [n for n in names if not n.name.endswith('.settled.json')]
+                                self.assertEqual(len(names), 1)
+                                stored = h.read_json(names[0])
+                                invalidators = [h.read_json(n) for n in self.root.glob('interrupt-*.json')]
+                                self.assertEqual(hit, [True])
+                                self.assertEqual(report['status'], 'failed')
+                                self.assertTrue(stored['status'] == 'failed' or any(
+                                    r == dict(status='failed', interrupted=True, report=names[0].name)
+                                    for r in invalidators), 'No durable invalidation of successful report')
+                                self.assertFalse(delivered)
+                                self.assertTrue(all(signal.getsignal(s) is caller for s in callers))
+                                self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), mask)
+                                self.assertTrue(report['restored'])
+                                self.assertFalse(adapter.loaded or adapter.processes)
+                                self.assertEqual(h.base.tree(self.app), self.original)
+                            finally:
+                                for s, handler in callers.items():
+                                    actual(s, handler)
+                                signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+
+    def test_raising_caller_cannot_escape_partial_handler_restoration(self):
+        import signal
+        for recovery in (False, True):
+            for boundary in (signal.SIGINT, signal.SIGTERM):
+                with self.subTest(recovery=recovery, boundary=boundary):
+                    self.root = self.home / '.hermes/experiments' / f'raising-{recovery}-{boundary}'
+                    p = self.prepare()
+                    adapter = KernelFixture(self.root, p)
+                    if recovery:
+                        h.run(self.root, live=True, runner=self.runner, adapter=adapter, dependency=lambda *_: True)
+                    actual = signal.signal
+                    previous = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+                    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+                    hit, errors = [], []
+                    def caller(*_):
+                        raise KeyboardInterrupt('caller must not run during partial restoration')
+                    for s in previous:
+                        actual(s, caller)
+                    def swap(s, handler):
+                        result = actual(s, handler)
+                        if s == boundary and handler is caller and not hit:
+                            hit.append(True)
+                            signal.raise_signal(signal.SIGINT)
+                        return result
+                    try:
+                        with patch.object(h.signal, 'signal', side_effect=swap):
+                            try:
+                                report = (h.recover(self.root, live=True, runner=self.runner, adapter=adapter)
+                                          if recovery else h.run(self.root, live=True, runner=self.runner,
+                                          adapter=adapter, dependency=lambda *_: True))
+                            except KeyboardInterrupt:
+                                errors.append('caller escaped')
+                        self.assertTrue(all(signal.getsignal(s) is caller for s in previous),
+                                        'Transaction handler leaked into caller')
+                        self.assertFalse(errors)
+                        self.assertEqual(report['status'], 'failed')
+                        receipts = [h.read_json(n) for n in self.root.glob('interrupt-*.json')]
+                        self.assertEqual(len(receipts), 1)
+                        name = receipts[0]['report']
+                        self.assertEqual(receipts[0], dict(status='failed', interrupted=True, report=name))
+                        self.assertTrue(name.startswith('recovery-') if recovery else name == 'result.json')
+                        self.assertTrue((self.root / name).is_file())
+                        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), mask)
+                        self.assertFalse(adapter.loaded or adapter.processes)
+                        self.assertEqual(h.base.tree(self.app), self.original)
+                    finally:
+                        for s, handler in previous.items():
+                            actual(s, handler)
+                        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+
+    def test_terminal_boundary_pending_signals_belong_to_exact_owner(self):
+        import signal
+        for recovery in (False, True):
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                for boundary in ('block-before', 'block-after', 'decision-before', 'decision-after',
+                                 'settlement-before', 'settlement-after', 'unmask-before', 'unmask-after'):
+                    with self.subTest(recovery=recovery, sig=sig, boundary=boundary):
+                        self.root = self.home / '.hermes/experiments' / f'boundary-{recovery}-{sig}-{boundary}'
+                        p = self.prepare()
+                        adapter = KernelFixture(self.root, p)
+                        if recovery:
+                            h.run(self.root, live=True, runner=self.runner, adapter=adapter, dependency=lambda *_: True)
+                        previous = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+                        actual_mask, actual_pending, actual_write = signal.pthread_sigmask, signal.sigpending, h.durable
+                        mask = actual_mask(signal.SIG_BLOCK, [])
+                        hit, delivered = [], []
+                        def caller(s, *_):
+                            self.assertTrue(all(signal.getsignal(n) is caller for n in previous))
+                            delivered.append(s)
+                        for s in previous:
+                            signal.signal(s, caller)
+                        def inject(at):
+                            if at == boundary and not hit:
+                                hit.append(at)
+                                signal.raise_signal(sig)
+                        def masking(how, values):
+                            label = 'block' if how == signal.SIG_BLOCK else 'unmask'
+                            inject(label + '-before')
+                            result = actual_mask(how, values)
+                            inject(label + '-after')
+                            return result
+                        def pending():
+                            inject('decision-before')
+                            result = actual_pending()
+                            inject('decision-after')
+                            return result
+                        def writing(root, name, value):
+                            if name.startswith('settled-'):
+                                inject('settlement-before')
+                            actual_write(root, name, value)
+                            if name.startswith('settled-'):
+                                inject('settlement-after')
+                        try:
+                            with patch.object(signal, 'pthread_sigmask', side_effect=masking), \
+                                    patch.object(signal, 'sigpending', side_effect=pending), \
+                                    patch.object(h, 'durable', side_effect=writing):
+                                report = (h.recover(self.root, live=True, runner=self.runner, adapter=adapter)
+                                          if recovery else h.run(self.root, live=True, runner=self.runner,
+                                          adapter=adapter, dependency=lambda *_: True))
+                            name = next(self.root.glob('recovery-*.json')).name if recovery else 'result.json'
+                            owned = boundary in ('block-before', 'block-after', 'decision-before')
+                            self.assertEqual(hit, [boundary])
+                            self.assertEqual(report['status'], 'failed' if owned else ('restored' if recovery else 'completed'))
+                            self.assertEqual(h.report_status(self.root, name), report['status'])
+                            self.assertEqual(delivered, [] if owned else [sig])
+                            self.assertEqual(actual_mask(signal.SIG_BLOCK, []), mask)
+                            self.assertFalse(adapter.loaded or adapter.processes)
+                            self.assertEqual(h.base.tree(self.app), self.original)
+                        finally:
+                            for s, handler in previous.items():
+                                signal.signal(s, handler)
+                            actual_mask(signal.SIG_SETMASK, mask)
+
+    def test_postdecision_raising_caller_does_not_mutate_settled_report(self):
+        import signal
+        for recovery in (False, True):
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                with self.subTest(recovery=recovery, sig=sig):
+                    self.root = self.home / '.hermes/experiments' / f'postdecision-{recovery}-{sig}'
+                    p = self.prepare()
+                    adapter = KernelFixture(self.root, p)
+                    if recovery:
+                        h.run(self.root, live=True, runner=self.runner, adapter=adapter, dependency=lambda *_: True)
+                    previous = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+                    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+                    actual, reports = h.durable, []
+                    def caller(*_):
+                        self.assertTrue(all(signal.getsignal(s) is caller for s in previous))
+                        raise KeyboardInterrupt('caller-owned after settlement')
+                    def writing(root, name, value):
+                        actual(root, name, value)
+                        if root == self.root and (name == 'result.json' or name.startswith('recovery-')):
+                            reports.append((name, value))
+                        if name.startswith('settled-'):
+                            signal.raise_signal(sig)
+                    for s in previous:
+                        signal.signal(s, caller)
+                    try:
+                        with patch.object(h, 'durable', side_effect=writing), self.assertRaises(KeyboardInterrupt):
+                            if recovery:
+                                h.recover(self.root, live=True, runner=self.runner, adapter=adapter)
+                            else:
+                                h.run(self.root, live=True, runner=self.runner, adapter=adapter, dependency=lambda *_: True)
+                        self.assertEqual(len(reports), 1)
+                        name, report = reports[0]
+                        self.assertEqual(report['status'], 'restored' if recovery else 'completed')
+                        self.assertEqual(h.report_status(self.root, name), report['status'])
+                        self.assertTrue(all(signal.getsignal(s) is caller for s in previous))
+                        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), mask)
+                        self.assertFalse(adapter.loaded or adapter.processes)
+                        self.assertEqual(h.base.tree(self.app), self.original)
+                    finally:
+                        for s, handler in previous.items():
+                            signal.signal(s, handler)
+                        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+
+    def test_terminal_publication_faults_never_leave_authoritative_success(self):
+        import signal
+        for recovery in (False, True):
+            for boundary in ('report-before', 'report-after', 'interrupt-before', 'interrupt-after',
+                             'settlement-before', 'settlement-after'):
+                with self.subTest(recovery=recovery, boundary=boundary):
+                    self.root = self.home / '.hermes/experiments' / f'fault-{recovery}-{boundary}'
+                    p = self.prepare()
+                    adapter = KernelFixture(self.root, p)
+                    if recovery:
+                        h.run(self.root, live=True, runner=self.runner, adapter=adapter, dependency=lambda *_: True)
+                    actual, hit = h.durable, []
+                    previous = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+                    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+                    report_names = []
+                    def writing(root, name, value):
+                        if root != self.root:
+                            return actual(root, name, value)
+                        label = ('report' if name == 'result.json' or name.startswith('recovery-') else
+                                 'interrupt' if name.startswith('interrupt-') else
+                                 'settlement' if name.startswith('settled-') else None)
+                        if label == 'report':
+                            report_names.append(name)
+                        if label and boundary == label + '-before':
+                            hit.append(boundary)
+                            raise OSError('fixture write fault')
+                        actual(root, name, value)
+                        if label == 'report':
+                            signal.raise_signal(signal.SIGINT)
+                        if label and boundary == label + '-after':
+                            hit.append(boundary)
+                            raise OSError('fixture after-write fault')
+                    with patch.object(h, 'durable', side_effect=writing), self.assertRaises(OSError):
+                        if recovery:
+                            h.recover(self.root, live=True, runner=self.runner, adapter=adapter)
+                        else:
+                            h.run(self.root, live=True, runner=self.runner, adapter=adapter, dependency=lambda *_: True)
+                    self.assertEqual(hit, [boundary])
+                    self.assertEqual(len(report_names), 1)
+                    name = report_names[0]
+                    if boundary in ('report-before', 'interrupt-before', 'interrupt-after', 'settlement-before'):
+                        from restart_production import ControlError
+                        with self.assertRaisesRegex(ControlError, 'Missing path:'):
+                            h.report_status(self.root, name)
+                    else:
+                        self.assertEqual(h.report_status(self.root, name), 'failed')
+                    self.assertTrue(all(signal.getsignal(s) is previous[s] for s in previous))
+                    self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), mask)
+                    self.assertFalse(adapter.loaded or adapter.processes)
+                    self.assertEqual(h.base.tree(self.app), self.original)
+                    before = set(self.root.glob('recovery-*.json'))
+                    later = h.recover(self.root, live=True, runner=self.runner, adapter=adapter)
+                    later_name = (set(self.root.glob('recovery-*.json')) - before).pop().name
+                    self.assertEqual(later['status'], 'restored')
+                    self.assertEqual(h.report_status(self.root, later_name), 'restored')
+                    self.assertTrue(all(h.read_json(n)['report'] == name for n in self.root.glob('interrupt-*.json')))
+
+    def test_caller_mask_pending_and_ignored_dispositions_are_restored(self):
+        import signal
+        for ignored in (False, True):
+            with self.subTest(ignored=ignored):
+                self.root = self.home / '.hermes/experiments' / f'caller-mask-{ignored}'
+                p = self.prepare()
+                adapter = KernelFixture(self.root, p)
+                previous = signal.getsignal(signal.SIGTERM)
+                mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM} if not ignored else set())
+                pending = signal.sigpending
+                hit = []
+                def observe():
+                    hit.append(True)
+                    signal.raise_signal(signal.SIGTERM)
+                    return pending()
+                try:
+                    if ignored:
+                        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                    with patch.object(signal, 'sigpending', side_effect=observe):
+                        report = h.run(self.root, live=True, runner=self.runner, adapter=adapter, dependency=lambda *_: True)
+                    self.assertEqual(hit, [True])
+                    self.assertEqual(report['status'], 'failed' if ignored else 'completed')
+                    self.assertEqual(h.report_status(self.root, 'result.json'), report['status'])
+                    self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN if ignored else previous)
+                    self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []),
+                                     mask if ignored else mask | {signal.SIGTERM})
+                    self.assertEqual(signal.SIGTERM in pending(), not ignored)
+                    if not ignored:
+                        signal.sigwait({signal.SIGTERM})
+                finally:
+                    signal.signal(signal.SIGTERM, previous)
+                    signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+
+    def test_terminal_evidence_schema_fails_closed(self):
+        self.run_it()
+        decision = self.root / 'settled-result.json'
+        good = decision.read_bytes()
+        for row in ({}, {'report': 'other.json', 'status': 'completed'},
+                    {'report': 'result.json', 'status': True},
+                    {'report': 'result.json', 'status': 'completed', 'extra': 1}):
+            decision.write_text(json.dumps(row))
+            with self.subTest(row=row), self.assertRaises(ValueError):
+                h.report_status(self.root, 'result.json')
+        decision.write_bytes(good)
+        invalidator = self.root / ('interrupt-' + 'a' * 32 + '.json')
+        for row in ({}, {'report': 'result.json', 'status': 'failed', 'interrupted': 1},
+                    {'report': '../result.json', 'status': 'failed', 'interrupted': True},
+                    {'report': 'result.json', 'status': 'failed', 'interrupted': True, 'extra': 1}):
+            invalidator.write_text(json.dumps(row))
+            with self.subTest(row=row), self.assertRaises(ValueError):
+                h.report_status(self.root, 'result.json')
+        invalidator.write_text(json.dumps(dict(report='result.json', status='failed', interrupted=True)))
+        self.assertEqual(h.report_status(self.root, 'result.json'), 'failed')
+
     def test_frozen_host_failures_restore_and_recover(self):
         for event in (dict(event='host-refused', error_type='DecodingError'),
                       dict(event='spawn-error', errno=2)):

@@ -380,28 +380,33 @@ bounded point-of-use checks replace the after-ready full traversal. Its temporal
 sealing limits are explicit in `PRODUCTION-CONTINUITY.md`; it is not an atomic
 freshness or hostile same-UID guarantee.
 
-**Two teardown defects keep the first-signal gate open.** The focused review
-confirmed the parent-reproduced reporting defect: a first signal while restoring
-caller handlers, after `ReconciliationSignals.__exit__` has skipped its
-interruption-receipt decision, leaves the returned status failed but the durable
-result completed with no companion interrupt record. A disposable full-run
-counterexample reproduced this on both ABIs. In that case cleanup, original
-restoration and caller-handler restoration all passed; durable invalidation did not.
+**The two teardown repairs are parent-tested; focused re-review remains open.**
+The original defects were a first signal during caller-handler restoration leaving
+a failed return but durable success without an invalidator, and a raising SIGINT
+caller escaping partial restoration with SIGTERM still bound to the transaction.
+Repair `deleg_f2a0fb07` delivered only the three continuity files. The parent
+independently replayed both regression methods against unchanged `3100a4f9` code:
+**20 assertion failures, zero test errors on each ABI**. This now includes executed
+proof of the partial-restoration defect, not only source inspection.
 
-The reviewer also identified a distinct partial-restoration path, which the parent
-confirmed by source inspection: after restoring the caller's SIGINT handler but
-before restoring SIGTERM, a first SIGINT can invoke a raising caller handler and
-escape the loop, leaving SIGTERM bound to the experiment handler. The durable
-success receipt can again lack an override. This second case is source-established,
-not yet independently executed by the parent. Both defects are within handler
-teardown, not repeated interrupts or post-return behavior.
+The repair briefly masks SIGINT/SIGTERM after the complete reconciliation pass,
+restores caller handlers, and uses one pending-signal snapshot as the explicit
+terminal boundary. It restores the caller's mask and dispositions. A new immutable
+`settled-REPORT` decision and `report_status()` distinguish provisional reports
+from authoritative results, including success-report/invalidator double faults.
+Invalidators name their exact report; later independent recovery is not invalidated.
+Signals after the decision belong to the caller. This is a synchronous main-thread
+POSIX bound, not arbitrary-thread masking, repeated-signal resilience or a hard
+filesystem timeout; see `PRODUCTION-CONTINUITY.md`.
 
-Repair `deleg_f2a0fb07` has both cases and the missing assertions: exercise each
-handler-restoration boundary in run and recovery; restore caller handlers; verify
-invalidator contents and exact report association, not mere file existence; and
-do not retroactively invalidate a later independent recovery. The repair remains
-confined to the three continuity files. Earlier green totals are retained, not
-treated as clearance over these newly exposed cases. No live continuity preparation
+The parent's frozen repaired snapshot passed **131 tests on Python 3.11.16 and
+3.14.7**, preserving all 124 prior fixtures and adding seven regression methods.
+Delivered hashes matched; source/snapshot bytes stayed stable; changed-file Ruff
+and diff checks passed. Receipt: `verity-continuity-settlement-parent-f7nwdsbm/receipt.json`
+under configured scratch. Native/network/subprocess tripwires stayed active with
+only inspected disposable fixture child commands allowed. Focused source-only
+re-review `deleg_318e8c97` covers signal ownership and durable report semantics.
+Passing tests alone do not close these two findings. No live continuity preparation
 or execution is cleared; frozen host/base probes and production artifacts remain
 unchanged.
 
