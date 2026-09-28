@@ -190,7 +190,9 @@ exception reconciliation. **76 combined tests pass per Python 3.11/3.14**, inclu
 28 permission-harness tests; Ruff/diff checks pass. The actual read-only census
 now passes with no artifact users. Fix commit:
 `55155520cc1450d237c1847aa6e75eab9f9cacdf` (pushed and remote verified).
-Focused re-review `deleg_d89c1c04` remains pending. No production service was restarted.
+Focused re-review `deleg_d89c1c04` found no concrete blockers. Parent matched
+source/tests to the reviewed fix commit with an empty path-scoped diff. The reviewer
+performed source review only; it did not run tests or live operations.
 
 A separate production-signed 3.14 check-only preparation at
 `~/.hermes/experiments/verity-permission-camera-check-314-v1` also passed static
@@ -200,6 +202,29 @@ were called. The original 3.11 stage still passes preflight after these parent-o
 recovery edits. Independent installed-artifact/selector/plist/PID read-back remains
 unchanged with health `ok`. These preparation smoke tests do not prove live host
 attribution, consent or cross-minor continuity.
+
+## First approved live check-only gate
+
+After review clearance, the parent exercised the final-path signed temporary host:
+**15 check-only runs** completed—Camera on copied Python 3.11 and 3.14, plus the
+other 13 named observations on copied 3.11. Every run verified the live host/guard/
+bootstrap/worker chain, zero exits, exact launchd/PID/PGID cleanup and original
+bundle restoration. Separate installed-artifact/selector/plist/process read-back
+passed after every run; production health stayed `ok`. The candidate was not selected
+and neither production service restarted.
+
+The new identity initially had no grants: the two FDA opens returned `EPERM`,
+Accessibility/Input Monitoring/Screen Capture were not authorized, Finder AXRole
+returned `-25211`, and native consent statuses were not determined. These denials
+are completed observations, not a passed authorization gate. No content was read
+and no media recorded. Evidence is retained in each run root and in
+`~/.hermes/experiments/verity-production-install-v1/permission-baseline-verification.json`.
+
+A separately authorized serial consent batch was then started. Camera completed
+with `authorized`; System Settings showed the distinct `Verity` Camera toggle on.
+Remaining consent results and final restoration must be reconciled after the
+batch finishes. This does not establish cutover readiness or same-host ABI
+continuity. Pending consent is not permission to execute an actual user task.
 
 ## Offline evidence
 
