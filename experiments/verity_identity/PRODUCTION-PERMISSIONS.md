@@ -4,9 +4,10 @@
 **recover** interfaces. This is not a production cutover, restart, upgrade, or
 general permission-management tool. Reviewed bounded live checks have exercised the
 fixed-path temporary host and exact restoration; the original production services
-remain unselected and un-restarted. Location is unresolved, and the new Local Network
-worker is awaiting independent review/live execution. See the dated gate evidence
-below. Do not run the production-configured app directly to test this.
+have not been restarted, and the native candidate remains unselected. Location is
+unresolved. The reviewed Local Network worker completed its single approved
+connection; permission enforcement remains unverified. See the dated evidence below.
+Do not run the production-configured app directly to test this.
 
 ## Boundaries
 
@@ -287,7 +288,30 @@ Ruff and `git diff --check` pass. The request-admission regression was observed
 failing before implementation and passing afterward. Parent independently reran
 the same 82-test aggregate on both runtimes in new isolated scratch fixtures; both
 passed, as did changed-file Ruff/diff checks. Focused read-only review
-`deleg_b19c0cd8` is pending; no live network connection has been made.
+`deleg_b19c0cd8` found no concrete blockers in the three-file diff against
+`63b3552492206821956573e2719017937edb0aaf`. The parent confirmed source/tests
+unchanged from `f6a3264f2383f3158b86227552af9ca261d42fec` before live execution.
+
+### Approved single-connection live result (2026-09-27)
+
+Fresh production-signed preparation and static preflight passed at
+`~/.hermes/experiments/verity-permission-network-v1`. Before execution, route/subnet
+checks confirmed the fixed endpoint was on-link through en0, not a gateway route.
+The parent executed exactly one approved live run: `tcp_connected`, `allowed=null`,
+`requested=true`, worker/supervisor/host exit zero, verified cleanup and exact
+original restoration. No application payload, DNS, discovery, scan or retry was
+performed by the worker. The result is retained in that root's `result.json`.
+
+Independent read-back verified original app signatures/inventory/settings,
+installed controls and wrapper bytes/modes, unchanged selector/plists/live legacy
+process identities, health `ok`, and an unselected native candidate. A separate
+read-only exact-target/recorded-PID/PGID/artifact-user census check also passed.
+Neither production service was restarted or selected for native execution.
+
+This establishes connectivity in the tested temporary-host configuration only.
+There was no scoped deny/allow control, so grant attribution and Local Network
+privacy enforcement remain unverified. Do not turn `allowed=null` into a permission
+pass or repeat the single-connection test without further authorization.
 
 ## Offline evidence
 
