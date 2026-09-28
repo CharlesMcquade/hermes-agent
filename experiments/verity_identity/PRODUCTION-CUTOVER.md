@@ -1,4 +1,14 @@
-# Schema-2 native cutover: supervised trial prepared, unarmed
+# Schema-2 native cutover: first supervised trial rolled back
+
+**Latest live outcome:** the forward trial reached native startup but failed the
+installed controller's direct-child readiness assumption and automatically recovered
+the exact original selector/plists. Independent readback verified healthy legacy
+services and retained artifact provenance. This is `rolled_back`, not native
+acceptance. The selected Agent uses a stderr-timestamp wrapper between the native
+host and actual gateway; the validator must recognize and strictly bind that exact
+chain before another trial. No successful-native return or live permission result
+is claimed. The sections below are retained preparation/history, not a retry cue.
+
 
 **Current scope update:** the operator accepted a supervised production trial with
 manual “continue” after reconnecting. Automatic same-session continuation and the

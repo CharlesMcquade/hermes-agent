@@ -1,4 +1,31 @@
-# Production readiness: supervised trial prepared, not yet activated
+# Production readiness: supervised trial rolled back; topology repair pending
+
+## Latest live outcome supersedes the preparation checkpoint below
+
+The supervised production activation was attempted and the installed controller
+reported `Readiness timeout: Native child is not direct host child`. It completed
+its one-attempt recovery with `rolled_back`, not native success. Independent
+readback verified the original selector and both plist bytes/modes/owners, unchanged
+installed app/control/wrapper provenance, healthy legacy service identities,
+shallow/deep health and all five served assets. No production permission operations
+were completed in the native window. Successful-native exact return remains untested.
+
+The selected Agent command runs `hermes_cli.stderr_timestamp`, which uses `Popen`
+to start the inner `hermes_cli.main gateway run --external-supervisor` command.
+The installed native `pair()` instead requires the gateway-state PID to be the
+native host's direct child and to match the outer selected argv. That cannot
+validate this supported wrapper topology. The recovered legacy process chain
+matches both selected outer and inner argv and the direct wrapper-to-gateway edge.
+The native window's full process identity chain was not retained, and the original
+error does not name the service; do not overstate those observations.
+
+A narrowly bounded offline repair is in progress. It must validate the exact
+selected wrapper and gateway separately, preserve every PID/UID/executable/argv/
+birth/signature check, and include the wrapper in stability rechecks. Generic
+ancestor/descendant acceptance is not an acceptable fix. Installed artifacts remain
+immutable; do not retry activation using the unchanged failing controller.
+
+## Historical preparation checkpoint
 
 The reviewed isolated gates are complete; see `COMBINED-CANARY.md`. They do
 not establish universal macOS permission inheritance or production acceptance.
