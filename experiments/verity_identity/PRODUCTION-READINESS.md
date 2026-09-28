@@ -28,8 +28,20 @@ key, verified against its leaf pin, and executed successfully.
 Public production certificate SHA-1: `B72A53676319B035EF637A6DEF27F026009D989C`.
 Nonsecret local checkpoint: `~/.hermes/signing/verity-production-v1/identity.json`.
 Recovery item identifiers stay in that local checkpoint, not in tracked source.
-No secrets were printed or passed in command arguments. Six offline recovery/trust
-regressions and changed-file Ruff checks passed. Source review is pending; production
+No secrets were printed or passed in command arguments. The initial source review
+found two blockers: partial-key writes were outside the cleanup boundary, and trust
+validation checked the name without the policy identifier. Two regression methods
+reproduced five failing subcases on the original code (partial write/close and three
+invalid identifiers). Serialization/write now sit inside `try/finally`, and trust
+validation requires exact `CSSMOID_APPLE_TP_CODE_SIGNING` bytes (`2a864886f763640110`).
+The constant was independently compared with Security.framework's exported symbol;
+a fresh user-domain trust export passes the stricter validator. The real transient
+key file remains absent. No repro used actual private material or Keychain writes.
+
+Eight signer tests (including ordinary serialization/write/close/checkpoint/import
+failure paths) and all 37 affected/neighboring experiment tests pass on Python 3.11;
+changed-file Ruff checks pass. This does not claim cleanup survives process kill,
+OS crash, or filesystem unlink failure. Independent re-review is pending; production
 host/control staging and final-identity permission validation remain unfinished.
 
 ## Previously identified signing prerequisite

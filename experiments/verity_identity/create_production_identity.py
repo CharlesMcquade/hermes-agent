@@ -23,6 +23,9 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 NAME = "Verity Production Code Signing"
 TITLE = "Verity production signing identity recovery"
+# Raw CSSM OID bytes exported by security trust-settings-export. Verified against
+# Security.framework's CSSMOID_APPLE_TP_CODE_SIGNING, not its display-name string.
+CODE_SIGNING_POLICY_OID = bytes.fromhex("2a864886f763640110")
 
 
 def run(argv, data=None):
@@ -131,8 +134,10 @@ def validate_trust(data, pin):
         "kSecTrustSettingsPolicyName",
         "kSecTrustSettingsResult",
     }
-    if set(policy) - allowed or not policy.get("kSecTrustSettingsPolicy"):
+    if set(policy) - allowed:
         raise ValueError("unexpected trust policy constraint")
+    if policy.get("kSecTrustSettingsPolicy") != CODE_SIGNING_POLICY_OID:
+        raise ValueError("unexpected trust policy identifier")
     if policy.get("kSecTrustSettingsResult", 1) != 1:
         raise ValueError("unexpected trust result")
 
@@ -223,14 +228,16 @@ def create(root, account, vault):
         private_key_extractable=False,
         acl_application="/usr/bin/codesign",
     )
-    key_path.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.TraditionalOpenSSL,
-            serialization.NoEncryption(),
-        )
-    )
     try:
+        # Writing (including flush/close) can fail after exposing partial bytes.
+        # Cleanup must cover serialization and the first possible file creation.
+        key_path.write_bytes(
+            key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption(),
+            )
+        )
         save("key_import_attempted")
         run([
             "/usr/bin/security",
