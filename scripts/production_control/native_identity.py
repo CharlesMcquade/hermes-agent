@@ -319,7 +319,39 @@ def pair(manifest, service, parent_pid, child_pid, host, now, since=None):
     native = contract(manifest)
     parent = host.process_identity(parent_pid)
     child = host.process_identity(child_pid)
-    for record, pid in ((parent, parent_pid), (child, child_pid)):
+    argv = manifest["services"][service]["argv"]
+    identity = {"host": parent, "child": child}
+    records = [(parent, parent_pid), (child, child_pid)]
+    direct = parent
+    child_argv = argv
+    if service == "agent" and child["ppid"] != parent_pid:
+        # Only the selected timestamp wrapper may add one edge. Never search
+        # ancestors or infer authority from an argv substring.
+        require(
+            isinstance(argv, list) and len(argv) == 12
+            and all(isinstance(arg, str) and "\x00" not in arg for arg in argv)
+            and Path(argv[0]).is_absolute()
+            and argv[1:4] == ["-m", "hermes_cli.stderr_timestamp", "--error-log"]
+            and Path(argv[4]).is_absolute()
+            and argv[5:] == ["--", argv[0], "-m", "hermes_cli.main",
+                            "gateway", "run", "--external-supervisor"],
+            "Unrecognized native agent wrapper",
+        )
+        wrapper_pid = child["ppid"]
+        require(type(wrapper_pid) is int and wrapper_pid > 1
+                and wrapper_pid not in (parent_pid, child_pid),
+                "Invalid native wrapper PID")
+        wrapper = host.process_identity(wrapper_pid)
+        require(wrapper["ppid"] == parent_pid,
+                "Native wrapper is not direct host child")
+        require(wrapper["argv"] == argv
+                and wrapper["executable"] == str(Path(argv[0]).resolve()),
+                "Native wrapper runtime/argv mismatch")
+        identity["wrapper"] = wrapper
+        records.append((wrapper, wrapper_pid))
+        direct = wrapper
+        child_argv = argv[6:]
+    for record, pid in records:
         require(
             record["pid"] == pid and record["uid"] == os.getuid(),
             "Native process PID/UID mismatch",
@@ -333,27 +365,30 @@ def pair(manifest, service, parent_pid, child_pid, host, now, since=None):
         )
         if since is not None:
             require(birth >= since, "Native process predates restart")
+    if "wrapper" in identity:
+        require(direct["start_time"] >= parent["start_time"],
+                "Native wrapper predates host")
     require(
         parent["ppid"] == 1
         and parent["argv"] == [native["executable"], service]
         and parent["executable"] == str(Path(native["executable"]).resolve()),
         "Native host role/executable mismatch",
     )
-    argv = manifest["services"][service]["argv"]
     require(
-        child["ppid"] == parent_pid and child["pid"] != parent_pid,
+        child["ppid"] == direct["pid"] and child["pid"] != direct["pid"],
         "Native child is not direct host child",
     )
-    require(child["start_time"] >= parent["start_time"], "Native child predates host")
+    require(child["start_time"] >= direct["start_time"], "Native child predates host")
     require(
-        child["argv"] == argv and child["executable"] == str(Path(argv[0]).resolve()),
+        child["argv"] == child_argv
+        and child["executable"] == str(Path(child_argv[0]).resolve()),
         "Native child runtime/argv mismatch",
     )
     require(
         host.verify_native_signature(parent_pid, native["requirement"]),
         "Running native signature invalid",
     )
-    return {"host": parent, "child": child}
+    return identity
 
 
 def unchanged(identity, host):

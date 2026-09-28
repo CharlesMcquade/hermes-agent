@@ -211,6 +211,36 @@ not an app upgrade, automatic continuation mechanism, or general installer.
 No installation, cutover, service interruption, permission grant, wrapper restore,
 artifact removal, or same-session autonomous resume is proved by offline tests.
 
+## Native gateway timestamp-wrapper identity
+
+Native readiness normally binds a direct service child. For the Agent only, it also
+recognizes the exact selected command below when the gateway-state PID is not the
+native host's direct child:
+
+```text
+PYTHON -m hermes_cli.stderr_timestamp --error-log ABSOLUTE_LOG -- PYTHON -m hermes_cli.main gateway run --external-supervisor
+```
+
+The wrapper must be the gateway's direct parent and the native host's direct child.
+Both Python executable spellings must match the selected command, and each observed
+executable must match its resolved path. Host, wrapper and gateway retain exact
+PID/UID/argv/birth checks, chronological birth ordering, restart freshness and
+running-host signature validation. Unknown wrappers, extra hops and extra arguments
+are refused; this is not a general descendant search. The returned Agent identity
+includes `wrapper`, so snapshot reobservation and readiness stability cover it without
+changing the direct WebUI identity shape.
+
+Independent frozen-source replay passed 71 offline native, restart, migration,
+transaction-recovery and retained-return tests on Python 3.11.16 and 3.14.7. Both new
+wrapper invariant methods failed against the unchanged old validator on each ABI
+with `degraded != healthy`, then passed with the repair. Four explicitly excluded
+tests require a subprocess probe, compilation or native execution. HOME/state were
+isolated and pre-import host/network/application guards recorded no violations.
+Ruff and `git diff --check` passed. This is fixture evidence, not live acceptance:
+installed v1 remains unchanged and failed its first supervised trial. Activation,
+watchdog and exact-return execution must all use a supported corrected control
+version before retrying; replacing only the trial executor leaves stale supervision.
+
 ## Verification and limits
 
 The separately pinned executor checkpoint passed 56 hermetic return, migration,

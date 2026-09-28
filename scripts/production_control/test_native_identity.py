@@ -382,6 +382,119 @@ while let line = readLine() {
                 if point == "body-and-bootout":
                     self.assertEqual(receipt["error_type"], "RuntimeError")
 
+    def wrapped_agent(self):
+        """Selected stderr wrapper is the host child; state names its gateway."""
+        python = "/usr/bin/python3"
+        inner = [python, "-m", "hermes_cli.main", "gateway", "run",
+                 "--external-supervisor"]
+        argv = [python, "-m", "hermes_cli.stderr_timestamp", "--error-log",
+                str(self.base / "errors.log"), "--", *inner]
+        self.manifest["services"]["agent"]["argv"] = argv
+        self.processes[101]["argv"] = argv.copy()
+        self.processes[102] = dict(self.processes[101], pid=102, ppid=101,
+                                   argv=inner.copy())
+        path = self.base / "gateway_state.json"
+        state = json.loads(path.read_text())
+        save_json(path, dict(state, pid=102))
+        save_json(self.c.manifest_path, self.manifest)
+
+    def test_wrapped_gateway_snapshot_watchdog_and_stable_readiness(self):
+        self.wrapped_agent()
+        # This behavioral assertion fails as degraded on the original pair().
+        self.assertEqual(tick(self.c, grace=0)["status"], "healthy")
+        proof = self.proof(since=self.clock() - 1)
+        identities = proof["process_identity"]
+        self.assertEqual(identities["agent"], {
+            "host": self.processes[100], "wrapper": self.processes[101],
+            "child": self.processes[102]})
+        self.assertEqual(set(identities["webui"]), {"host", "child"})
+        self.assertEqual(proof["gateway_child_pid"], 102)
+        ready = self.c.wait_ready(self.manifest, self.c.definitions(self.manifest),
+                                  self.clock() - 1, None)
+        self.assertEqual(ready["process_identity"], identities)
+        # Change only wrapper birth BETWEEN complete observations. Snapshot remains
+        # valid, but unchanged host/gateway PIDs cannot confer stable readiness.
+        original_sleep = self.c.sleep
+        def churn(seconds):
+            original_sleep(seconds)
+            self.processes[101]["start_time"] -= 0.01
+        with patch.object(self.c, "sleep", side_effect=churn):
+            with self.assertRaisesRegex(ControlError, "Readiness timeout"):
+                self.c.wait_ready(self.manifest, self.c.definitions(self.manifest),
+                                  None, None)
+        self.assertEqual(self.host.calls, [])
+
+    def test_wrapped_gateway_rejects_unbound_or_mutating_identity(self):
+        self.wrapped_agent()
+        # Establish the same-input positive control before hostile perturbations.
+        self.assertEqual(tick(self.c, grace=0)["status"], "healthy")
+        clean = copy.deepcopy(self.processes)
+        cases = []
+        for pid in (100, 101, 102):
+            cases.extend((pid, key, value) for key, value in [
+                ("pid", 999), ("uid", os.getuid() + 1),
+                ("executable", "/wrong"), ("argv", ["/wrong"]),
+                ("start_time", 0), ("start_time", float("nan")),
+                ("start_time", float("inf")), ("start_time", True),
+                ("start_time", self.clock() + 6)])
+        cases.extend([(100, "ppid", 102), (101, "ppid", 999),
+                      (101, "ppid", 102), (102, "ppid", 100),
+                      (102, "ppid", 102), (102, "ppid", 1),
+                      (101, "start_time", self.clock() - 2),
+                      (102, "start_time", self.clock() - 0.5)])
+        for pid, field, value in cases:
+            with self.subTest(pid=pid, field=field, value=value):
+                self.processes = copy.deepcopy(clean)
+                self.processes[pid][field] = value
+                with self.assertRaises(ControlError):
+                    self.proof()
+        self.processes = copy.deepcopy(clean)
+        # All three births must satisfy restart freshness independently.
+        for pid in (100, 101, 102):
+            with self.subTest(stale=pid):
+                self.processes = copy.deepcopy(clean)
+                for record in self.processes.values():
+                    record["start_time"] = self.clock()
+                self.processes[pid]["start_time"] -= 0.1
+                with self.assertRaises(ControlError):
+                    self.proof(since=self.clock())
+        self.processes = copy.deepcopy(clean)
+        argv = self.manifest["services"]["agent"]["argv"].copy()
+        forms = [argv + ["--extra"], argv[:-1],
+                 [argv[0], "-m", "unknown_wrapper", *argv[3:]],
+                 [*argv[:4], "relative.log", *argv[5:]],
+                 [*argv[:5], "not-separator", *argv[6:]],
+                 [*argv[:6], "/other/python", *argv[7:]],
+                 [*argv[:4], "bad\x00log", *argv[5:]]]
+        for form in forms:
+            with self.subTest(form=form):
+                self.manifest["services"]["agent"]["argv"] = form
+                self.processes[101]["argv"] = form.copy()
+                self.processes[102]["argv"] = form[6:]
+                with self.assertRaises(ControlError):
+                    self.proof()
+        self.manifest["services"]["agent"]["argv"] = argv
+        self.processes = copy.deepcopy(clean)
+        with patch.object(self.host, "verify_native_signature", return_value=False):
+            with self.assertRaisesRegex(ControlError, "signature"):
+                self.proof()
+        # Reobserve every identity field, including the otherwise invisible wrapper.
+        for pid in (100, 101, 102):
+            for field in ("pid", "ppid", "uid", "start_time", "argv", "executable"):
+                counts = {}
+                def racing(queried):
+                    counts[queried] = counts.get(queried, 0) + 1
+                    record = copy.deepcopy(clean[queried])
+                    if queried == pid and counts[queried] > 1:
+                        record[field] = "changed"
+                    return record
+                with self.subTest(race=(pid, field)), patch.object(
+                    self.host, "process_identity", side_effect=racing
+                ):
+                    with self.assertRaisesRegex(ControlError, "changed during inspection"):
+                        self.proof()
+        self.assertEqual(self.host.calls, [])
+
     def proof(self, **kw):
         return self.c.snapshot(self.manifest, self.c.definitions(self.manifest), **kw)
 

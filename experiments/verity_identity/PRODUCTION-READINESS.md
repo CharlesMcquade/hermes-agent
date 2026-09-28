@@ -19,11 +19,16 @@ matches both selected outer and inner argv and the direct wrapper-to-gateway edg
 The native window's full process identity chain was not retained, and the original
 error does not name the service; do not overstate those observations.
 
-A narrowly bounded offline repair is in progress. It must validate the exact
-selected wrapper and gateway separately, preserve every PID/UID/executable/argv/
-birth/signature check, and include the wrapper in stability rechecks. Generic
-ancestor/descendant acceptance is not an acceptable fix. Installed artifacts remain
-immutable; do not retry activation using the unchanged failing controller.
+The narrow offline repair now validates the exact selected wrapper and gateway
+separately, preserving PID/UID/executable/argv/birth/signature checks and including
+the wrapper in stability rechecks. Independent frozen replay passed 71 tests on
+Python 3.11.16 and 3.14.7; both added invariants failed with the old validator's
+`degraded != healthy` result on each ABI. Four subprocess/native/compiler tests
+were deliberately excluded, with no offline guard violations. Ruff and whitespace
+checks passed. Focused source review and the supported deployment route are still
+pending. Generic ancestor/descendant acceptance is not used. Installed artifacts
+remain immutable; do not retry with the old activation controller, watchdog or
+return executor. These fixture results do not establish production acceptance.
 
 ## Historical preparation checkpoint
 
