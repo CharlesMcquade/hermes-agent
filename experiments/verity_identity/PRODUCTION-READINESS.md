@@ -291,20 +291,41 @@ root receipt, app inode and legacy selector/plists remained unchanged. These are
 real disposable filesystem operations with synthetic OS observations, not live
 process evidence. The earlier 43-case green suite missed this topology.
 
-Regression-first repair `deleg_daa86bb8` is restricted to the isolated installer,
-focused tests and installation documentation. Child admission must bind the exact
-command and executable to the actually loaded selected job's stable parent
-PID/start/UID identity, with repeated validation; matching arbitrary argv or
-allowing every descendant is not an acceptable repair. The tests must also include
-the installer's own PID and exercise its narrow direct-invocation exemption,
-which the previous successful census fixture omitted.
+Repair `deleg_daa86bb8` delivered only the isolated installer, focused tests and
+installation documentation. It is committed as
+`3b04d5486898d4d865b81145fb64ed29fea9d278` on the upgrade branch; no controller
+files or installed artifacts changed. Admission carries the actual loaded-job
+observation into the census. The sole supported gateway child must bind exact
+argv/executable and UID to the selected parent's stable PID/start identity;
+reparenting, identity drift, replacement, duplicate children, unknown observations
+and arbitrary descendants refuse. Self admission now requires the actual
+installer PID/current UID/current interpreter and a direct absolute script
+invocation, optionally `-B`, rather than an argv token merely naming the script.
 
-The reviewers found no additional supported-scope blocker in the immutable
-provenance, observed-state recovery or postreturn digest interface they inspected.
-That bounded source result does **not** clear process-census liveness: reading
-`KERN_PROCARGS2` for every system-owned PID remains unverified, and inaccessible or
-changing processes must still refuse. Repair red/green verification and focused
-re-review are pending; no live census or production operation was attempted.
+The parent hash-matched the delivered snapshot and independently replayed its
+original two-case probe against the unchanged `1038706243` installer on both ABIs:
+the parent-only control passed, while adding only the generated child produced
+the exact opaque-interpreter rejection before the first journal. The repaired
+installer passed both probe cases. The expanded suite passed **48 tests per ABI**
+(Python 3.11.16 and 3.14.7), both on the frozen delivery and final committed source:
+20 upgrade, 12 installer and 16 permitted stage cases. New coverage uses the
+actual default checker with the generated parent/child topology and installer
+self PID, including ownership loss after upgrade, recovery and postreturn journals.
+Two non-launcher subprocess stage cases remain deliberately excluded.
+
+A separate disposable overlay with main's current return/revocation controller
+also passed **48 tests per ABI**; this is fixture compatibility, not real chained
+return evidence. Native/network/subprocess/file-scope tripwires remained active;
+only the inspected synthetic launcher check was allowed. Source hashes stayed
+stable and changed-file Ruff/diff checks passed. Parent evidence:
+`verity-upgrade-topology-verified-n4g9pmeh/receipt.json` under configured scratch.
+
+The earlier reviewers found no additional supported-scope blocker in immutable
+provenance, observed-state recovery or the postreturn digest interface they
+inspected. Focused repair re-review `deleg_e0c610b8` is pending; passing tests alone
+does not close the topology finding. Real `KERN_PROCARGS2` readability for every
+system-owned PID remains unverified, and inaccessible or changing processes must
+still refuse. No live census or production operation was attempted.
 
 The delivered receipt contract keeps **original baseline provenance** distinct
 from **current deployment provenance**, with explicit root and committed-upgrade
