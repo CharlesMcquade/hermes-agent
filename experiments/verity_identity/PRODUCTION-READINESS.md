@@ -245,10 +245,11 @@ is embedded in signed app settings and candidate identity. Updating only install
 controller files or wrappers is therefore not a matched deployment. A fresh stage
 and matching signed app are required; neither was produced by this design review.
 
-Offline implementation `deleg_f52dd994` is isolated on the upgrade worktree at
-`114a681e7babfee835a587085ad636b9787eb8df`. Its scope is the installer, focused tests
-and installation documentation; it does not edit the concurrently repaired
-controller. Required invariants are:
+Offline implementation `deleg_f52dd994` delivered the installer, focused tests
+and installation documentation on the isolated upgrade branch. The parent
+checkpoint is `1038706243f0e6838459ca06345882fe3434d381`; no controller files were
+changed or installed. It implements the following required invariants, subject to
+pending focused source review and live acceptance:
 
 - Keep the original install receipt, stage and controls unchanged. Retain the
   original signed app by rename, never rebuilding or re-signing its replacement.
@@ -267,14 +268,28 @@ controller. Required invariants are:
   A later upgraded-wrapper restore uses the original legacy wrapper records only
   after verified return to the legacy pair and affirmative dependency absence.
 
-The return controller must subsequently distinguish **original baseline
-provenance** from **current deployment provenance**, explicitly pinning both root
-and committed-upgrade receipts. No copied historical fields, recursive chain
-lookup or implicit latest receipt may substitute. The policy fix is now reviewed;
-that integration remains deferred until the installer receipt contract is delivered.
-Current return unit fixtures do not prove install-chain integration. Fresh staging/signing,
-install-only replacement and live verification remain separately gated. No live
-upgrade, recovery, restore or cutover was executed for this checkpoint.
+The parent independently passed **43 cases per ABI** (Python 3.11.16 and 3.14.7)
+on both the delivered snapshot and final committed source, with pre-import
+native/network/subprocess tripwires, disposable state and unchanged-source hashes.
+A separate snapshot using the newer revocation-safe controller also passed the
+same 43 cases per ABI. A parent-owned real first-install/fresh-stage entry test
+failed on the baseline installer with `bounded upgrade API missing` on both ABIs
+and passed on the delivery. The parent did not independently replay every
+intermediate child repair. Changed-file Ruff and whitespace checks passed.
+Two focused source-only reviews are running as `deleg_aa04d048`; green fixtures
+are not source-review clearance or real process-census usability evidence.
+
+The delivered receipt contract keeps **original baseline provenance** distinct
+from **current deployment provenance**, with explicit root and committed-upgrade
+pins. The future controller must produce a verified `return-retained-baseline`
+transaction containing both `baseline_sha256` and `upgrade_sha256`. The installer
+tests synthesize that future record; the real chained return is **not implemented
+or tested**. Current-controller compatibility does not close this gap. No copied
+historical fields, recursive chain lookup or implicit latest receipt may substitute.
+The policy fix is reviewed, but integration waits for the upgrade review. Fresh
+staging/signing, install-only replacement, census admission and live verification
+remain separately gated. No live upgrade, recovery, restore or cutover was executed
+for this checkpoint.
 
 ## Final-identity continuity implementation checkpoint
 
