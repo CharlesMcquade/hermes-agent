@@ -3,7 +3,11 @@
 The reviewed isolated gates are complete; see `COMBINED-CANARY.md`. They do
 not constitute a production cutover-ready artifact. The operator requested
 completion through readiness, with notification only at readiness or a genuine
-blocker. Production selection, service restarts and reboot remain unapproved.
+blocker. The operator subsequently authorized autonomous production selection,
+reload and service restart **conditional on a verified method to resume the same
+initiating WebUI session after restart**. That condition is not yet satisfied;
+no cutover job is armed. This does not waive the permission, continuity or recovery
+gates below. Logout/login and reboot remain separately unapproved.
 
 ## Production signer and recovery gate
 
@@ -207,11 +211,17 @@ The old `prepare_cutover.py` rebuilds Python overrides and is not a native recip
    descendant paths. Keep earlier lab rebuild/both-role evidence distinctly labelled.
 4. Revalidate the exact matched installed host/control, staged native manifest and
    both definitions, retained rollback material, and independent activation/recovery
-   procedure. Candidate selection and activation must remain unarmed until approval.
-   Synthetic restart/rollback passes do not mean live wrapper restore was exercised.
-5. Only after the pre-cutover gates and explicit exception decisions, request separate
-   selection/reload/restart authorization. Verify both real service chains, protected
-   checks and separately approved messaging afterward. Logout/login and reboot need
+   procedure. Selection and activation remain unarmed until the conditional resume
+   requirement and readiness gates pass. The existing controller lacks a byte-exact
+   post-success return to legacy; `PRODUCTION-CUTOVER.md` records the reproduced
+   limitation. Synthetic failed-activation rollback does not close that gap or prove
+   live wrapper restore.
+5. The operator has authorized autonomous selection/reload/restart once a reliable
+   same-session resume method is verified. Verify that method independently before
+   interruption; a cron's fresh session or a recovered transcript alone is not the
+   requested continuation. Resolve pre-cutover gates and explicit exception decisions
+   before consuming this authority. Verify both real service chains, protected checks
+   and separately approved messaging afterward. Logout/login and reboot still need
    separately agreed disruption timing; process restarts are not reboot evidence.
 
 Do not use the inherited `install_controls.py` or `prepare_cutover.py` as shortcuts:
@@ -223,4 +233,4 @@ OS grants changed under consent approval. The original app is restored after eac
 bounded experiment. The running production services, legacy selection and launchd
 definitions have not been switched or restarted. A cutover-ready receipt has not
 been published, and actual production descendant verification remains conditional
-on separately authorized activation.
+on satisfying the newly authorized conditional activation gates.

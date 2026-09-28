@@ -280,6 +280,231 @@ class PermissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             h.sanitize([dict(record, name='Camera')], 'Camera')
 
+    def test_finder_authorization_admission(self):
+        self.assertIn('Automation: Finder', h.NAMES)
+        for mode in h.MODES:
+            h.validate_worker('Automation: Finder', mode)
+            compile(h.launcher_source(dict(name='Automation: Finder', mode=mode)),
+                    'sealed-finder', 'exec')
+
+    def finder_definitions(self):
+        import ast
+        module = ast.parse(h.launcher_source(dict(name='Automation: Finder', mode='permissions-check')))
+        module.body.pop()  # Execute sealed definitions, never its supervisor.
+        namespace = {}
+        exec(compile(module, 'sealed-finder-definitions', 'exec'), namespace)
+        return namespace
+
+    def finder_fixture(self, sealed=False, request=False, status=0, created=0, error=None):
+        import builtins
+        import contextlib
+        import io
+        import sys
+        from types import SimpleNamespace as NS
+        from unittest.mock import Mock
+        events, descriptor = [], []
+        def create(kind, raw, size, ptr):
+            self.assertEqual((kind, raw, size), (int.from_bytes(b'bund', 'big'), b'com.apple.finder', 16))
+            self.assertEqual(ptr._obj._fields_, [('kind', h.C.c_uint32), ('handle', h.C.c_void_p)])
+            descriptor.append(ptr._obj)
+            events.append('create')
+            return created
+        def determine(ptr, event_class, event_id, ask):
+            self.assertIs(ptr._obj, descriptor[0])
+            self.assertEqual((event_class, event_id),
+                             (int.from_bytes(b'core', 'big'), int.from_bytes(b'getd', 'big')))
+            self.assertIs(ask, request)
+            self.assertEqual(os.environ['HOME'], str(self.root / 'home'))
+            events.append('determine')
+            if error:
+                raise error
+            return status
+        def dispose(ptr):
+            self.assertIs(ptr._obj, descriptor[0])
+            events.append('dispose')
+            return 0
+        lib = NS(AECreateDesc=Mock(side_effect=create),
+                 AEDeterminePermissionToAutomateTarget=Mock(side_effect=determine),
+                 AEDisposeDesc=Mock(side_effect=dispose))  # No other native entry points exist.
+        config = dict(root=str(self.root), home=str(self.home), name='Automation: Finder',
+                      mode='permissions-request' if request else 'permissions-check',
+                      abi=list(sys.version_info[:2]), bridge=str(self.bridge))
+        self.root.mkdir(exist_ok=True)
+        (self.root / 'permissions_probe.py').write_bytes(b'never imported fixture')
+        config['probe_sha256'] = h.sha((self.root / 'permissions_probe.py').read_bytes())
+        nonce = b'x' * 24
+        ready = dict(event='worker-ready', pid=os.getpid(), ppid=os.getppid(),
+                     pgid=os.getpgrp(), nonce=nonce.hex())
+        (self.root / 'GO').write_text(json.dumps(ready))
+        probe = NS(FILE_PATHS={})  # Only emit; no operation/native/framework methods.
+        spec = NS(loader=NS(exec_module=Mock()))
+        def load(name, path):
+            self.assertEqual((name, path), ('bounded_permission_functions', self.root / 'permissions_probe.py'))
+            return spec
+        original_import = builtins.__import__
+        def guarded_import(name, *args, **kwargs):
+            if name in ('probe', 'AppKit', 'Foundation', 'CoreLocation', 'socket'):
+                raise AssertionError('Forbidden import')
+            return original_import(name, *args, **kwargs)
+        output = io.StringIO()
+        with patch.object(builtins, '__import__', side_effect=guarded_import), \
+                patch.object(h.importlib.util, 'spec_from_file_location', side_effect=load), \
+                patch.object(h.importlib.util, 'module_from_spec', return_value=probe), \
+                patch.object(h.C, 'CDLL', return_value=lib) as factory, \
+                patch.object(h.subprocess, 'Popen', side_effect=AssertionError('spawn')), \
+                patch.object(os, 'system', side_effect=AssertionError('shell')), \
+                patch.object(os, 'urandom', return_value=nonce), \
+                patch.object(sys, 'argv', ['fixture', '--worker']), \
+                patch.object(sys, 'path', list(sys.path)), \
+                patch.dict(os.environ, HOME=str(self.root / 'home'), HERMES_HOME=str(self.root / 'state')), \
+                contextlib.redirect_stdout(output):
+            if sealed:
+                with self.assertRaises(SystemExit) as exited:
+                    exec(compile(h.launcher_source(config), 'sealed-finder', 'exec'), {})
+                code = exited.exception.code
+            else:
+                code = h.worker(config)
+        factory.assert_called_once_with('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
+        self.assertEqual(events, ['create'] if created else ['create', 'determine', 'dispose'])
+        self.assertIs(lib.AECreateDesc.restype, h.C.c_int32)
+        self.assertIs(lib.AEDeterminePermissionToAutomateTarget.restype, h.C.c_int32)
+        self.assertIs(lib.AEDisposeDesc.restype, h.C.c_int32)
+        self.assertEqual(lib.AEDeterminePermissionToAutomateTarget.argtypes,
+                         [h.C.POINTER(type(descriptor[0])), h.C.c_uint32, h.C.c_uint32, h.C.c_bool])
+        self.assertNotIn('private', output.getvalue())
+        lines = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0], ready)
+        self.assertEqual(lines[1]['exit_code'], code)
+        return lines[1]
+
+    def test_finder_source_and_generated_authorization_only(self):
+        for sealed in (False, True):
+            for request in (False, True):
+                for status, label, allowed in ((0, 'authorized', True), (-1743, 'denied', False),
+                                               (-1744, 'not_determined', None), (-600, 'target_not_running', None),
+                                               (-50, 'unknown', None), (42, 'unknown', None),
+                                               (-(2**31), 'unknown', None), (2**31 - 1, 'unknown', None)):
+                    with self.subTest(sealed=sealed, request=request, status=status):
+                        complete = self.finder_fixture(sealed, request, status)
+                        record = dict(event='permission', name='Automation: Finder', status=label,
+                                      osstatus=status, allowed=allowed, requested=request, error_type=None)
+                        self.assertEqual(complete, dict(event='worker-complete', exit_code=0, results=[record]))
+                        self.assertEqual(h.sanitize(complete['results'], 'Automation: Finder'), [record])
+
+    def test_finder_descriptor_failure_and_exception_disposal(self):
+        for sealed in (False, True):
+            for request in (False, True):
+                for created in (-50, -1743, -600):
+                    with self.subTest(sealed=sealed, request=request, created=created):
+                        complete = self.finder_fixture(sealed, request, created=created)
+                        self.assertEqual(complete['results'], [dict(
+                            event='permission', name='Automation: Finder', status='descriptor_error',
+                            osstatus=created, allowed=None, requested=False, error_type=None)])
+                complete = self.finder_fixture(sealed, request, error=RuntimeError('private error'))
+                self.assertEqual(complete, dict(event='worker-complete', exit_code=1, results=[]))
+                for invalid in (True, 'private', None, 2**31, -(2**31)-1):
+                    complete = self.finder_fixture(sealed, request, status=invalid)
+                    self.assertEqual(complete, dict(event='worker-complete', exit_code=1, results=[]))
+
+    def test_finder_metadata_closed_source_and_generated(self):
+        record = dict(event='permission', name='Automation: Finder', status='authorized',
+                      osstatus=0, allowed=True, requested=False, error_type=None)
+        for sanitize in (h.sanitize, self.finder_definitions()['sanitize']):
+            self.assertEqual(sanitize([record], 'Automation: Finder'), [record])
+            deltas = [{'osstatus': value} for value in (True, False, None, '0', {}, [], 0.0, 2**31, -(2**31)-1)]
+            deltas += [{'status': value} for value in ('private', 'requesting', 'unknown', 0, {}, [])]
+            deltas += [{'allowed': value} for value in (None, False, 1, 'private')]
+            deltas += [{'requested': value} for value in (None, 0, 1, 'private')]
+            deltas += [{'error_type': value} for value in ('private', 'ConsentTimeout', 'EPERM')]
+            deltas += [{'name': 'Accessibility Finder role'}, {'name': 'Camera'}, {'event': 'private'},
+                       {'target': 'com.apple.other'}, {'diagnostics': {}}, {'status': 'descriptor_error'}]
+            for delta in deltas:
+                with self.subTest(delta=delta), self.assertRaises((ValueError, TypeError)):
+                    sanitize([dict(record, **delta)], 'Automation: Finder')
+            for key in record:
+                reduced = dict(record)
+                del reduced[key]
+                with self.assertRaises((ValueError, KeyError)):
+                    sanitize([reduced], 'Automation: Finder')
+            for records in ([], [record, record]):
+                with self.assertRaises(ValueError):
+                    sanitize(records, 'Automation: Finder')
+            for status, label in ((-600, 'target_not_running'), (-1744, 'not_determined'), (999, 'unknown')):
+                for allowed in (False, True):
+                    with self.assertRaises(ValueError):
+                        sanitize([dict(record, osstatus=status, status=label, allowed=allowed)], 'Automation: Finder')
+            descriptor = dict(record, status='descriptor_error', osstatus=-50, allowed=None)
+            self.assertEqual(sanitize([descriptor], 'Automation: Finder'), [descriptor])
+            for delta in ({'requested': True}, {'allowed': False}, {'allowed': True}, {'osstatus': 0}):
+                with self.assertRaises(ValueError):
+                    sanitize([dict(descriptor, **delta)], 'Automation: Finder')
+            with self.assertRaises(ValueError):
+                sanitize([dict(record, name='Camera')], 'Camera')
+
+    def test_finder_refusal_before_activity_and_no_target_override(self):
+        import contextlib
+        import io
+        import sys
+        generated = self.finder_definitions()
+        with patch.object(h.C, 'CDLL', side_effect=AssertionError('native')) as native, \
+                patch.object(h, 'helpers') as helpers:
+            for mode in ('', 'invalid', None):
+                config = dict(root=str(self.root), name='Automation: Finder', mode=mode)
+                with self.assertRaises(ValueError):
+                    h.prepare(self.root, self.base, self.home, self.python, self.bridge,
+                              'Automation: Finder', mode, approve_sign=True)
+                for worker in (h.worker, generated['worker']):
+                    output = io.StringIO()
+                    with patch.object(sys, 'argv', ['fixture', '--worker']), contextlib.redirect_stdout(output):
+                        with self.assertRaises(ValueError):
+                            worker(config)
+                    self.assertEqual(output.getvalue(), '')
+                with self.assertRaises(ValueError):
+                    h.launcher_source(config)
+            for function in (h.finder_authorization, generated['finder_authorization']):
+                for request in (0, 1, None, 'true'):
+                    with self.assertRaises(ValueError):
+                        function(None, request)
+                with self.assertRaises(TypeError):
+                    function(None, False, target='com.apple.other')
+            native.assert_not_called()
+            helpers.assert_not_called()
+        with patch.object(h, 'prepare') as prepare, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as exited:
+                h.main(['prepare', '--root', str(self.root), '--worker', 'Automation: Finder',
+                        '--target', 'com.apple.other'])
+            self.assertEqual(exited.exception.code, 2)
+            prepare.assert_not_called()
+        self.assertFalse(self.root.exists())
+        self.assertEqual(self.calls, [])
+
+    def test_finder_prepare_preflight_and_unknown_report_restore(self):
+        for mode in h.MODES:
+            self.root = self.home / '.hermes/experiments' / mode
+            h.prepare(self.root, self.base, self.home, self.python, self.bridge,
+                      'Automation: Finder', mode, python_home=self.python_home,
+                      approve_sign=True, runner=self.runner)
+            plan, _, _ = h.preflight(self.root, self.runner)
+            self.assertEqual(plan['config']['mode'], mode)
+            adapter = FakeLive()
+            bootstrap = adapter.bootstrap
+            record = dict(event='permission', name='Automation: Finder', status='target_not_running',
+                          osstatus=-600, allowed=None, requested=mode == 'permissions-request', error_type=None)
+            def finder_bootstrap(target, root):
+                bootstrap(target, root)
+                events = h.records(root)
+                events[1]['results'] = [record]
+                (root / 'agent.out').write_text('\n'.join(json.dumps(event) for event in events))
+            with patch.object(adapter, 'bootstrap', side_effect=finder_bootstrap):
+                report = self.run_harness(adapter)
+            self.assertEqual(report['status'], 'completed')  # Observation, not authorization.
+            self.assertTrue(report['restored'] and report['cleanup_verified'])
+            self.assertEqual(report['results'], [record])
+            self.assertEqual(h.tree(self.app), self.before)
+            self.assertEqual(json.loads((self.root / 'result.json').read_text()), report)
+            self.assertEqual(self.recover()['status'], 'restored')
+
     def test_location_diagnostic_request_admission(self):
         self.assertIn('Location Diagnostic', h.NAMES)
         h.validate_worker('Location Diagnostic', 'permissions-request')

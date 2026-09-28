@@ -45,7 +45,8 @@ Do not run the production-configured app directly to test this.
 `--worker` is an exact allowlist: the two `Full Disk Access: Messages` / `Full Disk
 Access: Safari` file tests, Accessibility, Input Monitoring, Screen Capture,
 Contacts, Calendar, Reminders, Camera, Microphone, Photos, Speech, Bluetooth,
-Location, Local Network, and Location Diagnostic. Names with spaces must be quoted.
+Location, Local Network, Location Diagnostic, and Automation: Finder. Names with
+spaces must be quoted.
 
 - FDA: one `os.open(O_RDONLY)` and `close` for the named fixed file; no file bytes
   are read. Only the FDA call temporarily sets HOME to the real operator HOME.
@@ -70,7 +71,17 @@ Location, Local Network, and Location Diagnostic. Names with spaces must be quot
 - Other names reuse only the frozen probe's consent/status functions: no camera
   or audio recording, screen capture, contact/calendar/photo enumeration,
   Bluetooth scanning/connections, location samples, or network connection.
-- AppleEvents is intentionally omitted; no new AppleEvent implementation added.
+- Automation: Finder: **authorization only**, fixed `com.apple.finder`, event class
+  `core`, event ID `getd`. Calls only `AECreateDesc`,
+  `AEDeterminePermissionToAutomateTarget`, and `AEDisposeDesc` from
+  ApplicationServices. Check mode passes `false`; explicitly selected request
+  mode passes `true`. There is no event creation/delivery, `osascript`, Finder
+  operation, content access, application activation, subprocess or network work
+  in this worker. Only the descriptor/permission/disposal pattern of `probe.py`
+  lines 15–34 is reused; that module, its `automation()` and `main()` are never
+  imported or invoked. Successfully created descriptors are disposed in `finally`,
+  including permission-call exceptions and invalid results. No runtime target,
+  event-class, or event-ID override exists.
 
 `permissions-check` never requests consent. `permissions-request` allows the
 bounded consent APIs and up to 450 seconds for the permission phase. Additional
@@ -438,6 +449,72 @@ Neither production service was selected, reloaded or restarted. No additional li
 Location attempt is covered by the consumed approval. Location remains an unresolved
 requirement until separately fixed or explicitly accepted as a limitation.
 
+## Automation: Finder — offline authorization-only implementation
+
+The original `probe.py`, `permissions_probe.py`, ServiceHost, signing, swap,
+identity/GO, report completion, cleanup and receipt-based recovery contracts are
+unchanged. The new worker is included in both source and generated sealed
+launchers. Adding it changes launcher regeneration for **all** names: forward
+execution needs a fresh parent-reviewed preparation. Never rewrite old sealed
+roots; their receipt-based recovery still does not regenerate the launcher.
+No new live approval or production cutover is implied by this implementation.
+
+Exactly one permission record is admitted, with the original six keys plus
+`osstatus`. It contains no target strings, native error text, arbitrary metadata
+or exception descriptions. `osstatus` must be an integer in signed 32-bit range
+(not a boolean, float or numeric string), preserved without lossy normalization:
+
+| OSStatus from permission query | Closed status | allowed |
+|---|---|---|
+| 0 | `authorized` | true |
+| -1743 | `denied` | false |
+| -1744 | `not_determined` | null |
+| -600 | `target_not_running` | null |
+| Any other signed 32-bit value | `unknown` | null |
+
+A nonzero descriptor-creation result is preserved as `osstatus` with
+`status=descriptor_error`, `allowed=null`, `requested=false`; it is **not**
+interpreted as a permission-query result even if its number matches a known
+consent code. No permission query or disposal of an uncreated descriptor occurs.
+For a completed permission query, `requested` is the exact boolean passed to
+`AEDeterminePermissionToAutomateTarget`: it means prompting was permitted, not
+that a dialog actually appeared. `error_type` is always null. Exceptions produce
+the existing opaque worker failure with no results, never native exception text.
+The worker and parent both enforce the closed schema and status/allowed relation.
+
+An unknown or absent-target observation may complete the harness but is neither
+grant nor denial. A successful authorization query does not prove AppleEvent
+delivery, Finder functionality, TCC attribution to a production descendant, or
+user authorization for an application task. Parent live verification is separate.
+
+Offline source and generated-worker tests use a mock CDLL exposing only the three
+permitted entry points. They assert exact descriptor identity, fixed target and
+event codes, check/request booleans, single query, and disposal on success,
+unknown results, malformed results and exceptions. Subprocess, network and
+unrelated native/import paths are tripwires. Invalid modes are refused before
+readiness/preparation activity; CLI/function target overrides are rejected.
+Strict metadata tests reject extra/missing fields, duplicate records, arbitrary
+errors, wrong scalar types, range overflow and inconsistent authorization values.
+Fixture-only preparation/preflight/report/restoration/recovery runs cover both
+modes without calling codesign, launchd, native APIs or any live service.
+
+The admission regression failed before implementation (`Automation: Finder` was
+absent from the worker allowlist), then passed. Disposable, explicit per-process
+HOME/HERMES_HOME/HERMES_WEBUI_STATE_DIR/TMPDIR under scratch were used for:
+
+```text
+python -B -m unittest test_production_permissions test_install_production_native test_stage_production_native -q
+```
+
+This aggregate passed **98 tests on each of Python 3.11 and 3.14**, including
+**50 permission-harness tests**. The parent independently reran the same 98-test
+aggregate on both ABIs in a frozen scratch copy over `9a16f9aae8`; both passed.
+No real CDLL, consent request, signing, service operation, network, or production
+state was exercised. The parent's first lint attempt omitted the repository's
+configuration and inherited unrelated parent-directory rules; after including the
+actual repository configuration, changed-file Ruff passed. `git diff --check`
+passed. These are offline results, not a live Finder authorization claim.
+
 ## Offline evidence
 
 Run the unittest module from `experiments/verity_identity` with a disposable
@@ -466,7 +543,7 @@ sealed settings; completed scalar filtering and stale-GO rejection.
 Limitations: these tests are not macOS signing/permission/launchd/attribution
 proof. Cleanup requires independent process-census evidence and the expected
 launchctl absence/exit syntax; unknown output fails closed. One worker per root, no autonomous UI,
-no AppleEvents, no in-place same-host ABI switching, no grant revocation or
+no AppleEvent delivery, no in-place same-host ABI switching, no grant revocation or
 restoration of OS consent decisions, no broad runtime inventory seal, and no
 hostile same-account filesystem defense. Original filesystem metadata is
 preserved by rename; temporary copies do not promise ACL/xattr equivalence.

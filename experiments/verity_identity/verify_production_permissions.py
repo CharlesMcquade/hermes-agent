@@ -29,7 +29,7 @@ SETTINGS = 'Contents/Resources/service-settings.json'
 NAMES = ('Full Disk Access: Messages', 'Full Disk Access: Safari', 'Accessibility',
          'Input Monitoring', 'Screen Capture', 'Contacts', 'Calendar', 'Reminders',
          'Camera', 'Microphone', 'Photos', 'Speech', 'Bluetooth', 'Location', 'Local Network',
-         'Location Diagnostic')
+         'Location Diagnostic', 'Automation: Finder')
 MODES = ('permissions-check', 'permissions-request')
 
 
@@ -160,6 +160,49 @@ def accessibility(probe, request):
         for handle in (value.value, attr, element):
             if handle:
                 cf.CFRelease(handle)
+
+
+def finder_status(osstatus):
+    """OSStatus is signed int32; unknown/absent targets are not denial or grant."""
+    check(type(osstatus) is int and -(2**31) <= osstatus < 2**31, 'Bad Finder OSStatus')
+    return {0: ('authorized', True), -1743: ('denied', False),
+            -1744: ('not_determined', None), -600: ('target_not_running', None)}.get(
+                osstatus, ('unknown', None))
+
+
+def finder_authorization(probe, request):
+    """Authorization ONLY: fixed Finder core/getd; never deliver an AppleEvent.
+
+    Reuses only probe.py's descriptor/permission/disposal pattern, not its
+    automation() operation or main(). No target/config/environment override.
+    """
+    check(type(request) is bool, 'Finder requires explicit request boolean')
+
+    class Desc(C.Structure):
+        _fields_ = [('kind', C.c_uint32), ('handle', C.c_void_p)]
+
+    lib = C.CDLL('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
+    lib.AECreateDesc.argtypes = [C.c_uint32, C.c_void_p, C.c_long, C.POINTER(Desc)]
+    lib.AECreateDesc.restype = C.c_int32
+    lib.AEDeterminePermissionToAutomateTarget.argtypes = [C.POINTER(Desc), C.c_uint32, C.c_uint32, C.c_bool]
+    lib.AEDeterminePermissionToAutomateTarget.restype = C.c_int32
+    lib.AEDisposeDesc.argtypes = [C.POINTER(Desc)]
+    lib.AEDisposeDesc.restype = C.c_int32
+    raw, desc = b'com.apple.finder', Desc()
+    created = lib.AECreateDesc(int.from_bytes(b'bund', 'big'), raw, len(raw), C.byref(desc))
+    if created != 0:
+        finder_status(created)  # Validate without confusing descriptor failure with consent.
+        probe.emit('permission', name='Automation: Finder', status='descriptor_error',
+                   osstatus=created, allowed=None, requested=False, error_type=None)
+        return
+    try:
+        status = lib.AEDeterminePermissionToAutomateTarget(
+            C.byref(desc), int.from_bytes(b'core', 'big'), int.from_bytes(b'getd', 'big'), request)
+        label, allowed = finder_status(status)
+    finally:
+        lib.AEDisposeDesc(C.byref(desc))
+    probe.emit('permission', name='Automation: Finder', status=label, osstatus=status,
+               allowed=allowed, requested=request, error_type=None)
 
 
 def validate_worker(name, mode):
@@ -318,6 +361,8 @@ def worker(config):
                 probe.protected_file(name, False)
             finally:
                 os.environ['HOME'] = previous
+        elif name == 'Automation: Finder':
+            finder_authorization(probe, request)
         elif name == 'Accessibility':
             accessibility(probe, request)
         elif name == 'Location Diagnostic':
@@ -344,13 +389,24 @@ def sanitize(records, name):
     errors = {None, 'ConsentTimeout', 'FileNotFoundError', 'EPERM', 'EACCES'}
     final = []
     for r in records:
-        extra = {'diagnostics'} if name == 'Location Diagnostic' else set()
+        extra = ({'diagnostics'} if name == 'Location Diagnostic' else
+                 {'osstatus'} if name == 'Automation: Finder' else set())
         check(set(r) == {'event', 'name', 'status', 'allowed', 'requested', 'error_type'} | extra,
               'Bad permission record')
         check(r['event'] == 'permission' and r['name'] in (name, 'Accessibility Finder role'),
               'Unexpected result name')
         check(type(r['requested']) is bool and (r['allowed'] is None or type(r['allowed']) is bool),
               'Bad permission scalar')
+        if name == 'Automation: Finder':
+            label, allowed = finder_status(r['osstatus'])
+            check(r['name'] == name and r['error_type'] is None, 'Bad Finder result')
+            if r['status'] == 'descriptor_error':
+                check(r['osstatus'] != 0 and r['allowed'] is None and r['requested'] is False,
+                      'Bad Finder descriptor result')
+            else:
+                check(r['status'] == label and r['allowed'] is allowed, 'Bad Finder authorization')
+            final.append(r)
+            continue
         if name == 'Local Network':
             check(r['name'] == name and r['allowed'] is None and r['requested'] is True,
                   'Connectivity is not authorization')
@@ -371,6 +427,8 @@ def sanitize(records, name):
         check(r['status'] in statuses or (r['name'] == 'Accessibility Finder role' and
                                          type(r['status']) is int), 'Unknown status scalar')
         final.append(r)
+    if name == 'Automation: Finder':
+        check(len(final) == 1, 'Expected one Finder result')
     check(any(r['name'] == name for r in final), 'No completed permission result')
     return final
 
@@ -408,6 +466,7 @@ def launcher_source(config):
                'from pathlib import Path\n')
     return (imports + f'NAMES={NAMES!r}\nMODES={MODES!r}\n' +
             '\n'.join(inspect.getsource(f) for f in (check, sha, accessibility, validate_worker,
+                                                    finder_status, finder_authorization,
                                                     local_network, location_diagnostics, location_diagnostic,
                                                     sanitize, worker, supervisor)) +
             f'\nraise SystemExit((worker if sys.argv[1:] == ["--worker"] else supervisor)({config!r}))\n').encode()
