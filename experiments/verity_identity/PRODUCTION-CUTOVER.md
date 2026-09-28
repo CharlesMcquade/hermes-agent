@@ -6,8 +6,12 @@ the exact original selector/plists. Independent readback verified healthy legacy
 services and retained artifact provenance. This is `rolled_back`, not native
 acceptance. The selected Agent uses a stderr-timestamp wrapper between the native
 host and actual gateway; the validator must recognize and strictly bind that exact
-chain before another trial. No successful-native return or live permission result
-is claimed. The sections below are retained preparation/history, not a retry cue.
+chain before another trial. The narrow source repair is independently tested and
+source-reviewed, but not installed. The immutable deployment route is blocked by
+its observed protected-process census denial, missing upgrade-aware exact return,
+and absent retained-host staging path; see the current readiness summary. No
+successful-native return or live permission result is claimed. The sections below
+are retained preparation/history, not a retry cue.
 
 
 **Current scope update:** the operator accepted a supervised production trial with

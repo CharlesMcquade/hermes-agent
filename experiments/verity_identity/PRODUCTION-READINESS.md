@@ -1,4 +1,4 @@
-# Production readiness: supervised trial rolled back; topology repair pending
+# Production readiness: topology repaired offline; immutable deployment blocked
 
 ## Latest live outcome supersedes the preparation checkpoint below
 
@@ -25,10 +25,52 @@ the wrapper in stability rechecks. Independent frozen replay passed 71 tests on
 Python 3.11.16 and 3.14.7; both added invariants failed with the old validator's
 `degraded != healthy` result on each ABI. Four subprocess/native/compiler tests
 were deliberately excluded, with no offline guard violations. Ruff and whitespace
-checks passed. Focused source review and the supported deployment route are still
-pending. Generic ancestor/descendant acceptance is not used. Installed artifacts
-remain immutable; do not retry with the old activation controller, watchdog or
-return executor. These fixture results do not establish production acceptance.
+checks passed. Focused source review `deleg_a58f3994` is bounded-clear: the parent
+matched the reviewed runtime, tests, controller and watchdog to current bytes.
+Generic ancestor/descendant acceptance is not used. Installed artifacts remain
+immutable; do not retry with the old activation controller, watchdog or return
+executor. These fixture results do not establish production acceptance.
+
+### Current immutable-deployment blocker
+
+The deployment review traced all four maintenance wrappers to their immutable
+control version, and the launcher wrapper digest into signed host settings. A
+corrected activation-only executor would leave watchdog and routine restart on
+the old validator. There is no supported controls-only update. The existing
+one-hop upgrade can publish a new matched app/control version and retain the old
+artifacts, but it is not presently a complete deployment-and-return route:
+
+- Its default admission requires readable, stable identities for every PID above
+  1. A parent read-only necessary-condition probe used the unchanged identity API:
+  self inspection passed; one protected UID-0 process failed
+  `Cannot read process birth/ownership` with errno 1 (`EPERM`). PID/UID/start metadata
+  from `ps` was stable around that attempt, but is not a substitute for the required
+  kernel identity. The initial kernel-only discovery could not identify a system
+  target; the bounded follow-up used metadata-only `ps`, never command or environment
+  output. This is an observed live admission prerequisite failure, not an executed
+  installer attempt or proof that a privileged attempt would succeed.
+- The upgrade-aware exact-return controller is missing. Installed-v1 validation
+  rejects legitimate new controls/candidate/wrappers; the installer expects a
+  verified return record binding both root and upgrade receipt hashes, which the
+  current controller does not emit. Existing tests synthesize that future record.
+- New launcher settings require a newly signed bundle. No host implementation
+  change is needed, but the current stager always compiles/signs and has no explicit
+  retained-host-binary reuse path; it cannot promise identical signed executable
+  bytes.
+
+Do not silently skip unreadable identities, disable watchdog, overwrite v1, rewrite
+its receipt, or request elevated privileges as a workaround. A focused source-only
+review of the smallest achievable admission contract is pending; no policy change
+or deployment is authorized by this diagnostic. This concrete repair-deployment
+problem does not reintroduce automatic continuation or the entire future-upgrade
+roadmap as trial prerequisites.
+
+Fresh independent readback still reports healthy legacy services, exact original
+selector/plists, unchanged installed artifacts and both one-shot jobs absent. No
+new restart, signing, permission operation or installer mutation occurred. Private
+scalar diagnostic and matched review hashes are retained at
+`verity-native-topology-parent-thzs400t/review-reconciled.json` under configured
+scratch; the source review and offline repair gate are closed, deployment is not.
 
 ## Historical preparation checkpoint
 
