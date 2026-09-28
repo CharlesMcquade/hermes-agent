@@ -99,7 +99,8 @@ installation and permissions are not covered by that clearance.
    `~/.hermes/experiments/verity-production-stage-v1`, with strict signature,
    metadata/settings, source/control and original rollback bytes reverified.
    It is not installed or selected. Metadata review is clear; the new install-only
-   implementation passes offline tests and its safety review remains pending. See
+   implementation passes offline tests and its focused safety re-review is clear.
+   Real installation and final-identity permission testing await explicit approval. See
    `PRODUCTION-STAGING.md` and `PRODUCTION-INSTALL.md`. The frozen application pair
    and bootstrap runtime are unchanged.
 2. Adapt staging for the currently installed schema-2 controller. The inherited

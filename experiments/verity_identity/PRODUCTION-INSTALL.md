@@ -109,7 +109,14 @@ receipt writes. These are synthetic observations, not live restore evidence.
 After these changes, 77 experiment and 71 controller tests pass on Python 3.11;
 Python 3.14 passes 69 experiment and 71 controller tests (the same eight signer
 tests excluded). The 12 installer methods are selected once, not duplicated via
-the imported staging class. Ruff and diff checks pass. Focused re-review is pending.
+the imported staging class. Ruff and diff checks pass. Focused re-review
+(`deleg_be540b83`) found no blockers in the lock/recovery fix and default-checker
+test scope. It confirmed both entry points require the existing safe lock, the
+regression covers the original missing-lock boundary, and the default dependency
+binding plus real definitions/loaded checks are retained. This was a source-only
+review, not a test rerun or live restore. Parent matched the reviewed files to
+`e6d238e771d18bc270b6026e890b12c776ab4f67`. The installer review gate is clear;
+real installation/restore remain unexecuted and require separate authorization.
 
 The reviewer also noted that replacement receipt entries are not independently
 decoded/regenerated when a wrapper already equals its validated original. No unsafe
