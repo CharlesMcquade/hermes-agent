@@ -213,8 +213,17 @@ and observed read-time replacement. Existing return prepublication boundaries
 revalidate the retained policy bytes and identity. Regression fixtures verify
 refusal before selection or destructive calls, preserving the original transaction
 before preparation and the exact native fallback after durable preparation.
-Focused re-review `deleg_5ac429c9` is pending. These are source/fixture results, not
-an installed-controller or live rollback claim.
+Focused source-only re-review `deleg_5ac429c9` is **bounded clear**: the dangling
+policy blocker is fixed without a new concrete blocker in the reviewed return,
+ordinary restart and recovery paths. The parent independently inspected the cited
+reader, retained-input and prepublication paths, and matched the reviewed controller,
+runner and return tests byte-for-byte to committed `0d06d77209`, the current source
+and the parent 74-test-per-ABI receipt. The revocation source-review gate is closed.
+No new execution was needed for this documentation-only closeout; the existing
+red/green evidence remains the test basis. Recovery still consumes its one allowed
+attempt before reporting policy refusal as `rollback_failed`, never unsafe success.
+These are source/fixture results, not installed-controller, upgrade, live rollback
+or autoresume acceptance; no malicious same-UID containment is claimed.
 A new immutable control version with matching stage and install provenance is
 still required; the first-install-only installer is not an upgrade path.
 The installed artifacts have not changed. Installer restore is
@@ -261,9 +270,9 @@ controller. Required invariants are:
 The return controller must subsequently distinguish **original baseline
 provenance** from **current deployment provenance**, explicitly pinning both root
 and committed-upgrade receipts. No copied historical fields, recursive chain
-lookup or implicit latest receipt may substitute. That integration is deferred
-until the policy fix and installer receipt contract are delivered; current return
-unit fixtures do not prove install-chain integration. Fresh staging/signing,
+lookup or implicit latest receipt may substitute. The policy fix is now reviewed;
+that integration remains deferred until the installer receipt contract is delivered.
+Current return unit fixtures do not prove install-chain integration. Fresh staging/signing,
 install-only replacement and live verification remain separately gated. No live
 upgrade, recovery, restore or cutover was executed for this checkpoint.
 

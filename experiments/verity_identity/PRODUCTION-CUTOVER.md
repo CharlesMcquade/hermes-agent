@@ -354,7 +354,15 @@ The parent independently matched the delivered source hashes and froze them over
 the same unchanged controller dependencies. All **74 permitted tests per ABI**
 passed again. A separate replay placed the new regression over the original
 `29e5d28926` controller and reproduced `ControlError not raised` for the dangling
-entry on both ABIs. No real-native cases were enabled. Focused re-review
-`deleg_5ac429c9` remains pending; no new installed controls, signature verification
-or live service action is implied by this checkpoint.
+entry on both ABIs. No real-native cases were enabled. Focused source-only
+re-review `deleg_5ac429c9` is **bounded clear** across the shared policy reader,
+return validation and ordinary restart/recovery paths. The parent inspected those
+paths and matched reviewed controller, runner and return-test bytes to committed
+`0d06d77209`, current source and the prior parent 74-test-per-ABI receipt. The
+revocation source-review blocker is closed; tests were not rerun for this
+subsequent documentation-only review closeout. An unsafe policy during recovery
+still consumes the existing one-attempt recovery and reports `rollback_failed`,
+not successful restoration. No new installed controls, upgrade readiness, signature
+verification, live rollback or same-session resume is established. All installed
+and live acceptance gates remain separate.
 
