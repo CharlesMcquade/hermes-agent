@@ -14,6 +14,7 @@ from pathlib import Path
 import plistlib
 import re
 import subprocess
+import stat
 import sys
 
 SOURCE = Path(__file__).resolve().parent
@@ -188,10 +189,76 @@ def production_environment(old, home, tmpdir):
     })
 
 
+def retained_snapshot(root):
+    """Observe safe bytes/identities; not hostile same-UID inter-syscall containment."""
+    root = absolute(root)
+    result = {}
+    for parent in root.parents:
+        s = parent.lstat()
+        if not stat.S_ISDIR(s.st_mode) or s.st_uid not in (0, os.getuid()) or s.st_mode & 0o022:
+            raise ValueError("Unsafe retained ancestor")
+        # Creating the sibling destination changes ancestor timestamps.
+        result[str(parent)] = (s.st_dev, s.st_ino, s.st_uid, s.st_mode)
+
+    def visit(path):
+        s = path.lstat()
+        if (s.st_uid != os.getuid() or s.st_mode & 0o022
+                or not (stat.S_ISREG(s.st_mode) or stat.S_ISDIR(s.st_mode))
+                or stat.S_ISREG(s.st_mode) and s.st_nlink != 1):
+            raise ValueError("Unsafe retained artifact")
+        result[str(path)] = (s.st_dev, s.st_ino, s.st_uid, s.st_mode,
+                             s.st_size, s.st_mtime_ns, s.st_ctime_ns,
+                             digest(path.read_bytes()) if stat.S_ISREG(s.st_mode) else None)
+        if stat.S_ISDIR(s.st_mode):
+            for child in sorted(path.iterdir()):
+                visit(child)
+    visit(root)
+    return result
+
+
+def retained_host(root, report_pin, *, destination, selected_bytes, base, final_app, swift, requirement, runner):
+    """An independently approved exact stage-report pin is provenance authority.
+
+    Reuse only a complete verified stage for the same production selection/identity.
+    A naked binary or self-calculated descriptor cannot establish provenance.
+    """
+    root = absolute(root)
+    if destination.is_relative_to(root) or root.is_relative_to(destination):
+        raise ValueError("Retained and new stage must be disjoint")
+    snapshot = retained_snapshot(root)
+    report_bytes = (root / "stage-report.json").read_bytes()
+    if digest(report_bytes) != report_pin:
+        raise ValueError("Retained report pin mismatch")
+    report = json.loads(report_bytes)
+    if (not isinstance(report, dict) or report.get("status") != "staged_not_activated"
+            or report.get("activation_ready") is not False
+            or report.get("final_base") != str(base)
+            or report.get("final_bundle") != str(final_app)
+            or report.get("selected_sha256") != digest(selected_bytes)
+            or report.get("source_sha256") != digest(swift)
+            or (root / "ServiceHost.swift").read_bytes() != swift):
+        raise ValueError("Retained stage source/selection identity mismatch")
+    native = contract(json.loads((root / "candidate-release.json").read_bytes()))
+    if native["requirement"] != requirement:
+        raise ValueError("Retained signer identity mismatch")
+    verify_stage(root, runner=runner, report=report)
+    binary = root / "Verity.app/Contents/MacOS/VerityServiceHost"
+    data = binary.read_bytes()
+    if not binary.stat().st_mode & 0o111 or not data:
+        raise ValueError("Retained host must be executable")
+    if retained_snapshot(root) != snapshot:
+        raise ValueError("Retained stage changed during verification")
+    return data, snapshot
+
+
 def stage(
     root, selected, identity_path, control_id, bootstrap, *, bootstrap_tmpdir,
-    home=None, runner=run
+    home=None, runner=run, retained_stage=None, retained_report_sha256=None
 ):
+    if retained_stage is not None or retained_report_sha256 is not None:
+        if (retained_stage is None or not isinstance(retained_report_sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", retained_report_sha256)):
+            raise ValueError("Retained stage and explicit lowercase report SHA-256 pin required")
     root, selected = absolute(root), absolute(selected)
     base = selected.parent
     home = absolute(home or Path.home())
@@ -269,6 +336,21 @@ def stage(
     saved_wrappers = {name: absolute(base / name).read_bytes() for name in wrapper_text}
     controls = {name: (CONTROL / name).read_bytes() for name in FILES}
     swift = (SOURCE / "ServiceHost.swift").read_bytes()
+    requirement = f'identifier "{BUNDLE_ID}" and certificate leaf = H"{pin.lower()}"'
+    retained_data = None
+    retained_before = None
+    if retained_stage is not None:
+        retained_stage = absolute(retained_stage)
+        retained_data, retained_before = retained_host(
+            retained_stage, retained_report_sha256, destination=root,
+            selected_bytes=before, base=base, final_app=final_app, swift=swift,
+            requirement=requirement, runner=runner,
+        )
+
+    def check_retained():
+        if retained_stage is not None and retained_snapshot(retained_stage) != retained_before:
+            raise ValueError("Retained stage changed during staging")
+
     root.mkdir(mode=0o700, exist_ok=False)
     put(root / "selected-manifest.json", before)
     for role in ROLES:
@@ -302,9 +384,28 @@ def stage(
         plistlib.dumps(production_info_plist()),
     )
     put(root / "ServiceHost.swift", swift)
-    compile_host(root, root / "ServiceHost.swift", binary, runner=runner)
-    requirement = f'identifier "{BUNDLE_ID}" and certificate leaf = H"{pin.lower()}"'
+    if retained_data is None:
+        compile_host(root, root / "ServiceHost.swift", binary, runner=runner)
+    else:
+        check_retained()
+        put(binary, retained_data)
+        binary.chmod(0o700)
+        # Signing may rewrite Mach-O signature bytes. Retain pre-sign evidence,
+        # rather than claiming whole signed executable equality after signing.
+        put(root / "retained-host/VerityServiceHost", retained_data)
+        if binary.read_bytes() != retained_data:
+            raise ValueError("Retained executable copy changed before signing")
+        if (app / "Contents/Info.plist").read_bytes() != plistlib.dumps(production_info_plist()):
+            raise ValueError("Retained bundle metadata mismatch before signing")
+        check_retained()
     put(root / "requirements.txt", ("designated => " + requirement + "\n").encode())
+    if retained_data is not None:
+        check_retained()
+        retained_snapshot(app)  # No links/aliases into the original at signing.
+        if binary.read_bytes() != retained_data:
+            raise ValueError("Retained executable copy changed before signing")
+        if (app / "Contents/Info.plist").read_bytes() != plistlib.dumps(production_info_plist()):
+            raise ValueError("Retained bundle metadata mismatch before signing")
     runner([
         "/usr/bin/codesign",
         "--force",
@@ -365,7 +466,7 @@ def stage(
         raise RuntimeError(
             "Selection/definitions changed during staging; discard stage"
         )
-    report = dict(
+    report: dict = dict(
         status="staged_not_activated",
         activation_ready=False,
         final_bundle=str(final_app),
@@ -389,10 +490,17 @@ def stage(
             "explicit activation approval",
         ],
     )
+    if retained_data is not None:
+        report["retained_host"] = dict(
+            stage=str(retained_stage), report_sha256=retained_report_sha256,
+            executable_sha256=digest(retained_data),
+        )
     # No success-named file exists during verification, including interruption.
     verify_stage(root, runner=runner, report=report)
+    check_retained()
     provisional = root / "stage-report.next.json"
     put(provisional, encoded(report))
+    check_retained()
     provisional.replace(root / "stage-report.json")
     return report
 
@@ -418,6 +526,17 @@ def verify_stage(root, runner=run, *, report=None):
     )
     if report is None:
         report = json.loads((root / "stage-report.json").read_text())
+    if "retained_host" in report:
+        provenance = report["retained_host"]
+        if (not isinstance(provenance, dict)
+                or set(provenance) != {"stage", "report_sha256", "executable_sha256"}
+                or not isinstance(provenance["stage"], str)
+                or not Path(provenance["stage"]).is_absolute()
+                or any(not isinstance(provenance[k], str) or not re.fullmatch(r"[0-9a-f]{64}", provenance[k])
+                       for k in ("report_sha256", "executable_sha256"))
+                or digest((root / "retained-host/VerityServiceHost").read_bytes()) != provenance["executable_sha256"]
+                or digest((root / "ServiceHost.swift").read_bytes()) != report["source_sha256"]):
+            raise ValueError("Staged retained provenance mismatch")
     old_bytes = (root / "selected-manifest.json").read_bytes()
     old = json.loads(old_bytes)
     if (
@@ -504,6 +623,10 @@ def main():
     parser.add_argument("--control-id", required=True)
     parser.add_argument("--bootstrap-python", required=True)
     parser.add_argument("--bootstrap-tmpdir", required=True)
+    parser.add_argument("--retained-stage", type=Path,
+                        help="Complete retained verified stage; never a bare/installed binary")
+    parser.add_argument("--retained-report-sha256",
+                        help="Independently reviewed exact retained stage-report.json SHA-256")
     args = parser.parse_args()
     print(
         json.dumps(
@@ -514,6 +637,8 @@ def main():
                 args.control_id,
                 args.bootstrap_python,
                 bootstrap_tmpdir=args.bootstrap_tmpdir,
+                retained_stage=args.retained_stage,
+                retained_report_sha256=args.retained_report_sha256,
             ),
             indent=2,
         )

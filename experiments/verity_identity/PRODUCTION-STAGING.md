@@ -21,7 +21,8 @@ not perform Keychain trust, vault, recovery, or provisioning operations.
 
 The new directory contains:
 
-- `Verity.app`, compiled from the unchanged, copied `ServiceHost.swift`, with
+- `Verity.app`, normally compiled from unchanged, copied `ServiceHost.swift`
+  (or explicitly reusing the retained host below), with
   identifier `com.charles.verity`, leaf-pinned designated requirement, signed
   settings and strict signature verification;
 - `control-versions/<id>/` containing the launcher, restart controller, watchdog,
@@ -90,6 +91,40 @@ requires operator authorization. The identity metadata selects the signer; lab
 identity metadata is rejected. Do not run the candidate host: its settings are
 intentionally wired for the final maintenance base, not a canary sandbox.
 Do not feed this candidate to `prepare_cutover.py` or the schema-1 installer.
+
+## Retained-host staging without recompilation
+
+An explicitly approved retained stage can provide the host executable instead of
+compiling Swift. Add the paired options `--retained-stage RETAINED_STAGE` and
+`--retained-report-sha256 REPORT_SHA256` to the stage-only invocation. The digest
+must be the independently reviewed exact `stage-report.json` bytes, not a digest
+automatically trusted because it was read from disk. A bare or installed binary
+is not an accepted source. The default compilation route is unchanged.
+
+The retained stage must be complete, disjoint from the destination, and match the
+exact legacy selection, final base/app identity, signer, unchanged Swift source
+and canonical production Info.plist. Its signature, inventory and report are
+verified before any new stage write. Owned safe paths, nonsymlink/non-hardlinked
+files and input stability are checked through copy, signing and success-report
+publication. Drift refuses without a success report; originals remain untouched.
+
+The new app receives matching new signed launcher settings. Its executable is
+byte-equal to the retained executable **before signing**; fresh signing may change
+Mach-O signature bytes. The report records `retained_host` with the retained
+stage, report digest and pre-sign executable digest, and the stage keeps
+`retained-host/VerityServiceHost` as pre-sign evidence. Do not claim whole signed
+binary equality or independently infer binary compilation provenance from a
+source hash. The independently reviewed original report pin supplies that trust.
+
+This route still invokes code signing and requires separate staging/signing
+approval. Offline authorization does not permit using the production signer.
+Parent frozen replay passed the retained-stage/upgrade fixtures in a 131-test
+aggregate on both Python 3.11.16 and 3.14.7. On each ABI, deliberate scratch
+mutants forcing compilation and omitting retained-input stability checks failed
+with one and four assertions respectively, zero errors. These mutations establish
+test sensitivity; the original implementation only rejected the new keyword API.
+All signatures/compiler results in this checkpoint are fixture adapters, not
+Apple signing evidence. Focused source review remains pending.
 
 ## Offline verification
 

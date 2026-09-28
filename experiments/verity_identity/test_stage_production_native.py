@@ -117,6 +117,206 @@ class StageTests(unittest.TestCase):
         args.update(changes)
         return staging.stage(**args)
 
+    def retained_fixture(self):
+        self.stage()
+        retained = self.root / "stage"
+        self.calls.clear()
+        return retained, staging.digest((retained / "stage-report.json").read_bytes())
+
+    def test_retained_host_copies_before_resigning_without_compiler(self):
+        retained, pin = self.retained_fixture()
+        original = (retained / "Verity.app/Contents/MacOS/VerityServiceHost").read_bytes()
+        before = staging.inventory(retained)
+        target = retained / "new"  # nested retained sources must be refused
+        with self.assertRaises(ValueError):
+            self.stage(root=target, retained_stage=retained, retained_report_sha256=pin)
+        target = self.root / "fresh"
+        signed = []
+
+        def adapter(argv, **kw):
+            self.assertNotEqual(Path(argv[0]).name, "xcrun")
+            self.calls.append(argv)
+            if "--sign" in argv:
+                binary = Path(argv[-1]) / "Contents/MacOS/VerityServiceHost"
+                self.assertEqual(binary.read_bytes(), original)
+                signed.append(True)
+                binary.write_bytes(original + b" fixture replacement signature")
+
+        report = self.stage(root=target, control_id="native-v2", runner=adapter,
+                            retained_stage=retained, retained_report_sha256=pin)
+        self.assertEqual(signed, [True])
+        self.assertFalse((target / "compiler").exists())
+        self.assertEqual(staging.inventory(retained), before)
+        self.assertEqual(report["retained_host"]["executable_sha256"], staging.digest(original))
+        self.assertEqual(report["retained_host"]["report_sha256"], pin)
+        self.assertTrue(staging.verify_stage(target, runner=adapter))
+        settings = json.loads((target / "Verity.app/Contents/Resources/service-settings.json").read_bytes())
+        self.assertEqual(settings["launcher_sha256"], report["launcher_sha256"])
+        self.assertNotEqual(report["launcher_sha256"], json.loads((retained / "stage-report.json").read_bytes())["launcher_sha256"])
+
+    def test_retained_stage_composes_with_one_hop_upgrade(self):
+        from test_install_production_native import InstallTests
+        import install_production_native as install
+        fixture = InstallTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.go()
+        receipt = (fixture.base / install.RECEIPT).read_bytes()
+        retained = fixture.root / "stage"
+        before = staging.inventory(retained)
+        fresh = fixture.root / "fresh"
+        calls = []
+
+        def adapter(argv, **kw):
+            self.assertEqual(argv[0], "/usr/bin/codesign")
+            self.assertTrue(Path(argv[-1]).is_relative_to(fixture.root))
+            calls.append(argv)
+
+        fixture.stage(root=fresh, control_id="native-v2", runner=adapter,
+                      retained_stage=retained,
+                      retained_report_sha256=staging.digest((retained / "stage-report.json").read_bytes()))
+        result = install.upgrade(fresh, fixture.base, fixture.home,
+                                 original_stage=retained, root_sha256=staging.digest(receipt),
+                                 approve=True, runner=adapter, dependency_check=lambda *_: True)
+        self.assertEqual(result["status"], "upgraded_not_activated")
+        self.assertEqual((fixture.base / install.RECEIPT).read_bytes(), receipt)
+        self.assertEqual(staging.inventory(retained), before)
+        self.assertEqual(sum("--sign" in argv for argv in calls), 1)
+        fixture.preserved()
+
+    def test_retained_signature_rejection_precedes_any_new_stage_write(self):
+        retained, pin = self.retained_fixture()
+        calls = []
+
+        def reject(argv, **kw):
+            calls.append(argv)
+            raise RuntimeError("retained signature rejected")
+
+        with self.assertRaisesRegex(RuntimeError, "retained signature rejected"):
+            self.stage(root=self.root / "fresh", runner=reject,
+                       retained_stage=retained, retained_report_sha256=pin)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--verify", calls[0])
+        self.assertEqual(Path(calls[0][-1]), retained / "Verity.app")
+        self.assertFalse((self.root / "fresh").exists())
+
+    def test_retained_resealed_wrong_metadata_and_source_are_not_blessed(self):
+        retained, _ = self.retained_fixture()
+        report_path = retained / "stage-report.json"
+        candidate_path = retained / "candidate-release.json"
+        original_report = report_path.read_bytes()
+        original_candidate = candidate_path.read_bytes()
+        for relative in ("ServiceHost.swift", "Verity.app/Contents/Info.plist"):
+            with self.subTest(relative=relative):
+                artifact = retained / relative
+                original = artifact.read_bytes()
+                artifact.write_bytes(original + b"changed")
+                report = json.loads(original_report)
+                candidate = json.loads(original_candidate)
+                candidate["native_host"]["inventory"] = staging.inventory(retained / "Verity.app")
+                candidate_path.write_bytes(staging.encoded(candidate))
+                report["candidate_sha256"] = staging.digest(candidate_path.read_bytes())
+                report["source_sha256"] = staging.digest((retained / "ServiceHost.swift").read_bytes())
+                report_path.write_bytes(staging.encoded(report))
+                with self.assertRaises(ValueError):
+                    self.stage(root=self.root / "fresh", runner=lambda *a, **kw: None,
+                               retained_stage=retained,
+                               retained_report_sha256=staging.digest(report_path.read_bytes()))
+                self.assertFalse((self.root / "fresh").exists())
+                artifact.write_bytes(original)
+                report_path.write_bytes(original_report)
+                candidate_path.write_bytes(original_candidate)
+
+    def test_retained_host_requires_explicit_valid_pin(self):
+        retained, pin = self.retained_fixture()
+        for changes in ({"retained_stage": retained}, {"retained_report_sha256": pin},
+                        {"retained_stage": retained, "retained_report_sha256": "bad"},
+                        {"retained_stage": retained, "retained_report_sha256": "0" * 64}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.stage(root=self.root / "fresh", **changes)
+            self.assertFalse((self.root / "fresh").exists())
+        self.assertEqual(self.calls, [])
+
+    def test_retained_host_refuses_drift_unsafe_and_foreign_signer(self):
+        retained, pin = self.retained_fixture()
+        paths = ["ServiceHost.swift", "Verity.app/Contents/Info.plist",
+                 "Verity.app/Contents/MacOS/VerityServiceHost", "stage-report.json"]
+        for relative in paths:
+            path = retained / relative
+            old = path.read_bytes()
+            with self.subTest(relative=relative):
+                path.write_bytes(old + b"drift")
+                with self.assertRaises((ValueError, RuntimeError)):
+                    self.stage(root=self.root / "fresh", retained_stage=retained, retained_report_sha256=pin)
+                self.assertFalse((self.root / "fresh").exists())
+                path.write_bytes(old)
+        binary = retained / paths[2]
+        binary.chmod(0o777)
+        with self.assertRaisesRegex(ValueError, "Unsafe retained"):
+            self.stage(root=self.root / "fresh", retained_stage=retained, retained_report_sha256=pin)
+        binary.chmod(0o700)
+        extra = retained / "link"
+        extra.symlink_to(binary)
+        with self.assertRaises(ValueError):
+            self.stage(root=self.root / "fresh", retained_stage=retained, retained_report_sha256=pin)
+        extra.unlink()
+        identity = json.loads(self.identity.read_bytes())
+        identity["sha1"] = "b" * 40
+        self.identity.write_text(json.dumps(identity))
+        with self.assertRaisesRegex(ValueError, "signer"):
+            self.stage(root=self.root / "fresh", retained_stage=retained, retained_report_sha256=pin)
+        self.assertFalse((self.root / "fresh").exists())
+        self.assertFalse(any("--sign" in call for call in self.calls))
+
+    def test_retained_host_mutations_cannot_publish_success(self):
+        retained, pin = self.retained_fixture()
+        source = retained / "Verity.app/Contents/MacOS/VerityServiceHost"
+        original = source.read_bytes()
+        for moment in ("verify", "copy", "source-copy", "copy-link", "sign", "final", "report"):
+            with self.subTest(moment=moment):
+                # Reset at entry too: a failed assertion must not make a later
+                # subcase pass at an earlier, unintended refusal boundary.
+                source.write_bytes(original)
+                target = self.root / ("fresh-" + moment)
+                calls = []
+                reached = []
+                put = staging.put
+
+                def copying(path, data):
+                    put(path, data)
+                    if path == target / "Verity.app/Contents/MacOS/VerityServiceHost":
+                        if moment == "copy":
+                            reached.append(moment)
+                            path.write_bytes(b"changed copy")
+                        elif moment == "source-copy":
+                            reached.append(moment)
+                            source.write_bytes(original + b"drift")
+                    if moment == "copy-link" and path.name == "requirements.txt":
+                        reached.append(moment)
+                        binary = target / "Verity.app/Contents/MacOS/VerityServiceHost"
+                        binary.unlink()
+                        binary.symlink_to(source)
+                    if moment == "report" and path.name == "stage-report.next.json":
+                        reached.append(moment)
+                        source.write_bytes(original + b"drift")
+
+                def adapter(argv, **kw):
+                    calls.append(argv)
+                    if (moment == "verify" and "--verify" in argv and Path(argv[-1]) == retained / "Verity.app"
+                        or moment == "sign" and "--sign" in argv
+                        or moment == "final" and "--verify" in argv and Path(argv[-1]) == target / "Verity.app"):
+                        reached.append(moment)
+                        source.write_bytes(original + b"drift")
+
+                with patch.object(staging, "put", side_effect=copying):
+                    with self.assertRaises((ValueError, RuntimeError)):
+                        self.stage(root=target, runner=adapter, retained_stage=retained, retained_report_sha256=pin)
+                self.assertTrue(reached, "fault boundary was not reached")
+                self.assertFalse((target / "stage-report.json").exists())
+                if moment in ("verify", "copy", "source-copy", "copy-link"):
+                    self.assertFalse(any("--sign" in call for call in calls))
+                source.write_bytes(original)
+
     def test_preserves_selection_and_independent_roles(self):
         result = self.stage()
         stage = self.root / "stage"
