@@ -1,4 +1,4 @@
-# Schema-2 native first install (review required)
+# Schema-2 native first install and retained-artifact recovery
 
 `install_production_native.py` is a bounded first-install/restore tool, **not an
 activation tool**. Independent review and separate human approval are required
@@ -26,7 +26,7 @@ python -B install_production_native.py --base BASE --home HOME --stage STAGE --a
 python -B install_production_native.py --base BASE --home HOME --approve-restore
 ```
 
-These commands have **not** been run against production. Installation executes
+The install command has now run with operator approval; restore has not. Installation executes
 only read-only codesign verification, never signing, app execution, launchctl,
 selection, job reload/restart, or service-manager changes. Existing candidate
 files remain untouched. It uses the existing `control.lock`, `atomic_write`,
@@ -71,7 +71,37 @@ Post-cutover selector changes prevent rollback even if a live adapter would
 otherwise return true. A later manual, separately approved reconciliation must
 resolve retained artifacts before another first install.
 
-## Parent verification (not installation)
+## Approved install-only execution
+
+After the review gate cleared, the operator replied “go” to install-only and the
+bounded temporary same-identity permission-test proposal. This does not authorize
+selection, service restart, or cutover. The parent ran the reviewed installer from
+`2cf0201f689070e98e7af1d4baf4020a2b609f0b` with `--approve-install` against the
+verified stage. It returned `installed`, `selected_release_unchanged:true`,
+`activated:false`.
+
+A separate read-back of the real installed targets verified:
+
+- `~/Applications/Verity.app`: exact candidate inventory, canonical metadata,
+  signed settings, launcher hash and strict production-leaf-pinned signature;
+- `control-versions/verity-native-v1`: all five module hashes and control receipt,
+  0444 files in a 0555 directory; all four wrappers match exact expected bytes
+  and retain their original modes and ownership;
+- durable `native-install-receipt.json` phase `installed`, valid checksum,
+  exact retained selector/plist/wrapper baseline;
+- both candidate native definitions match the staged proposals, and the selected
+  source/runtime inventories validate without application imports or reading
+  credential contents;
+- legacy selected manifest, persisted plists, loaded job definitions and kernel
+  process identities remain unchanged; WebUI health remains `ok`.
+
+Passive LaunchServices registration subsequently resolved `com.charles.verity`
+to the exact installed app path. Registration did not execute the app or prove
+permissions. No native service role, production restart or restore was executed.
+The native candidate remains unselected. Permission testing and post-cutover
+actual-descendant proof are separate gates; this is not cutover readiness.
+
+## Historical parent verification (before installation)
 
 Parent runs passed 75 experiment and 71 controller tests on Python 3.11; Python
 3.14 passed 67 experiment and 71 controller tests, excluding eight signer tests
@@ -156,3 +186,5 @@ The child did not test default live dependency inspection; the parent read-only
 check above supplements that limitation. Real final-path codesign and installation
 remain untested. The installer itself is an operator-side review-required tool;
 only installed control execution is independent of the experiment source.
+The subsequent install-only execution above supersedes the earlier final-path
+untested status, not the remaining live restore and permission limitations.

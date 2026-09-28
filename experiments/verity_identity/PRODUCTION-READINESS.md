@@ -93,7 +93,19 @@ see `../../NATIVE-MIGRATION-CANARY.md`. Focused current-source review
 process/group evidence or cleanup/publication scope. Final production artifact
 installation and permissions are not covered by that clearance.
 
-## Unfinished implementation and verification after that dependency
+## Current install-only checkpoint
+
+The operator's “go” approved the reviewed install-only and bounded temporary
+same-identity permission-test proposal, not selection/restart. The real app,
+versioned controls and four wrappers are installed and separately verified at
+final paths. Both candidate definitions and source/runtime inventories validate;
+legacy selector/plists/process identities remain unchanged, with health `ok`.
+Passive registration resolves the final app path. See `PRODUCTION-INSTALL.md`
+for the exact execution/read-back scope. This closes installation, not live
+wrapper restore, permission grants or cutover readiness. The earlier unanswered
+prompts below are historical and no longer the install/test approval boundary.
+
+## Earlier unfinished implementation and verification after that dependency
 
 1. The production-signed host/control stage now exists at
    `~/.hermes/experiments/verity-production-stage-v1`, with strict signature,

@@ -239,7 +239,22 @@ response was received. That is not authorization. Continue isolated implementati
 and review, but do not install, register, replace maintenance wrappers, request
 final-identity consent, select, load/reload, or restart on the basis of staging.
 
-## Concrete remaining gates / blockers
+## Approved install-only execution
+
+The operator subsequently approved install-only and bounded same-identity,
+same-path temporary permission testing. The reviewed installer completed; separate
+read-back verified the exact installed app signature/inventory/settings, five
+control modules and receipt, four wrapper bytes/modes, rollback receipt and both
+candidate definitions. Source/runtime inventory validation did not import apps
+or read credential contents. Selected manifest/plists and loaded legacy process
+identities remain unchanged; health is `ok`. Passive registration resolves the
+final app path without launching it. See `PRODUCTION-INSTALL.md`.
+
+This supersedes the installation/approval blockers below. Permission tests have
+not yet run; the native candidate remains unselected and no production restart
+is authorized or performed. The original staging and failure evidence stays intact.
+
+## Earlier remaining gates / blockers (installation superseded above)
 
 1. **Coordinated artifact installation remains.** The source controller now
    permits only explicit native argv/anchor/association/process-group overrides,
