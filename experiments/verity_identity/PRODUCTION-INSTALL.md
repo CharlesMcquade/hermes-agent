@@ -1,7 +1,7 @@
-# Schema-2 native first install and retained-artifact recovery
+# Schema-2 native install, one-hop upgrade, and retained-artifact recovery
 
-`install_production_native.py` is a bounded first-install/restore tool, **not an
-activation tool**. Independent review and separate human approval are required
+`install_production_native.py` supports bounded first-install/restore and a single
+retained install-only upgrade, **not activation**. Independent review and separate human approval are required
 before real use. Offline tests are not evidence of real Apple signing, permission,
 live process identity, or production compatibility.
 
@@ -180,11 +180,201 @@ not arbitrary same-UID filesystem writers or manual launchctl operations.
 Canonical/owner/mode checks reject ordinary symlink escapes but are not a
 hostile same-account filesystem sandbox. Directory copy is deliberately not an
 atomic bundle rename; incomplete destinations are retained, never selected by
-this tool. There is no installer upgrade path, automatic cleanup, ACL/xattr
-backup, permission grant, live restart test, or resume-forward operation.
+this tool. At that first-install checkpoint there was no installer upgrade path;
+the bounded source-only extension below supersedes only that limitation. There is
+still no automatic cleanup, ACL/xattr backup, permission grant, live restart test,
+or resume-forward operation.
 The child did not test default live dependency inspection; the parent read-only
 check above supplements that limitation. Real final-path codesign and installation
 remain untested. The installer itself is an operator-side review-required tool;
 only installed control execution is independent of the experiment source.
 The subsequent install-only execution above supersedes the earlier final-path
 untested status, not the remaining live restore and permission limitations.
+
+## Bounded one-hop upgrade (source and offline fixtures only)
+
+This is one original installation to one fresh staged version, not a release
+manager. The original `native-install-receipt.json` must still say `installed`;
+its exact file SHA-256 is supplied explicitly. The legacy selector and both
+plists must match its retained bytes, owners and modes. All four current wrappers
+must be its regenerated v1 replacements. Partial/restored installations, unsafe
+or dangling paths, unresolved activations, existing new destinations, and any
+previous upgrade journal/commit refuse. No second hop or automatic latest-version
+selection is supported, even after successful recovery.
+
+The separately retained original stage is required because the root receipt
+contains the candidate digest, not the complete signed-app inventory. Both stages
+are reverified and their reports hash-linked. The fresh stage must have saved the
+v1 replacement wrappers as rollback inputs, while retaining exactly the root
+legacy selector/plists, service/runtime/environment configuration, signing
+requirement and bootstrap interpreter/environment. Its signed launcher hash must
+match its newly versioned wrappers. No controller, stager or native host source
+is changed by this extension.
+
+After independent review and separate approval only, the operator interface is:
+
+```text
+python -B install_production_native.py --base BASE --home HOME --stage V2_STAGE --original-stage V1_STAGE --root-sha256 ROOT_SHA256 --approve-upgrade
+python -B install_production_native.py --base BASE --home HOME --root-sha256 ROOT_SHA256 --recover-upgrade
+python -B install_production_native.py --base BASE --home HOME --root-sha256 ROOT_SHA256 --upgrade-sha256 UPGRADE_SHA256 --restore-upgraded-wrappers
+```
+
+These are interface descriptions, not authorization or executed production
+commands. Use the reviewed installer by its absolute path. The upgrade copies
+new controls to the fresh canonical `BASE/control-versions/ID` (0444 files,
+0555 directory), and a fresh app to `HOME/Applications/Verity.upgrade-v2.app`.
+It verifies the copies, then renames the **original app itself** to
+`HOME/Applications/Verity.upgrade-v1.app` before renaming v2 to `Verity.app`.
+The old app's inode/device, bytes, ownership and exact directory/file modes are
+retained; rename also preserves the original inode's metadata rather than
+reconstructing a historical signed app. Final-path signature verification occurs
+before any v2 wrapper publication. Wrappers are replaced individually with their
+actual original modes. Root receipt, original stage and original controls are
+never rewritten or deleted; the old first-install restore refuses once an upgrade
+journal or receipt exists.
+
+Each mutation group has a durable journal intent before it, and each app rename
+and wrapper publication has its own intent. File contents and destination
+directories are fsynced. The two same-filesystem app renames are **not one atomic
+swap**: there is a recorded gap with no `Verity.app`. This is permitted only with
+legacy selection and affirmative dependency absence. The shared `control.lock`
+is advisory: it does not prevent arbitrary same-UID writes or manual launches.
+
+The upgrade/recovery/postreturn default checker supplements the existing loaded
+legacy-job/kernel-identity check with `proc_listallpids` and repeated kernel
+identities for every PID except kernel PID 0 and launchd PID 1, regardless of UID.
+It rejects installed app/control/wrapper references and opaque Python interpreters
+other than the selected legacy commands or this directly invoked installer.
+Unknown, inaccessible, exiting or changing processes refuse; there is no retry
+that silently discards an uninspectable process. This deliberately conservative
+check may refuse on a busy or restricted machine. It is not an OS launch barrier
+or a proof against arbitrary injected code. No real census/native API was run in
+this task; only adapter fixtures exercise this path. Absence and exact baseline
+checks repeat before/after journal preparation and at publication boundaries.
+
+### Immutable provenance and later controller interface
+
+`BASE/native-upgrade-journal.json` is mutable, operator-owned, mode 0600, bounded
+to 4 MiB. `BASE/native-upgrade-receipt.json` is an exclusively published, never
+rewritten committed record, mode 0444, with the same bound. Read-only mode is not
+an immutable filesystem flag. Both use this envelope:
+
+```text
+{ "payload": {
+    "schema_version": 1,
+    "kind": "one-hop-native-upgrade",
+    "phase": JOURNAL_PHASE_OR_committed,
+    "plan": {
+      "root_sha256": ROOT_RECEIPT_FILE_SHA256,
+      "original_stage": ABSOLUTE_RETAINED_STAGE,
+      "new_stage": ABSOLUTE_RETAINED_STAGE,
+      "original_report": ORIGINAL_STAGE_REPORT,
+      "new_report": NEW_STAGE_REPORT,
+      "original_stage_sha256": ORIGINAL_REPORT_FILE_SHA256,
+      "new_stage_sha256": NEW_REPORT_FILE_SHA256,
+      "v1_tree": TREE_RECORDS,
+      "v2_tree": TREE_RECORDS,
+      "v1_identity": [DEVICE, INODE]
+    }
+  }, "sha256": SHA256(stage.encoded(payload)) }
+```
+
+`stage.encoded` is sorted, two-space-indented JSON with a trailing newline.
+Tree entries are relative paths (including `.`), each with exact `mode`, `uid`,
+and `sha256` (null for directories). Reports bind selected/candidate/control and
+rollback hashes. Destinations are reconstructed from explicit BASE/HOME and
+validated control-version names; tree keys never drive writes. SHA-256 detects
+corruption, not a malicious same-account replacement. The operator must pin exact
+**file** bytes externally: the root receipt remains baseline authority; the
+committed upgrade receipt, pinned separately, is current deployment authority.
+
+A future controller return must retain its existing explicit root-baseline pin
+and accept a separately explicit upgrade receipt digest. It must validate both,
+use the new report/candidate/controls/wrappers for current-deployment validation,
+and the original root receipt for the target legacy bytes. No recursive lineage
+or auto-latest lookup is permitted. After a successful verified return, the
+existing activation transaction must include:
+
+```text
+phase = verified
+reload = true
+operation = return-retained-baseline
+baseline_sha256 = ROOT_SHA256
+upgrade_sha256 = UPGRADE_SHA256
+```
+
+The postreturn wrapper operation requires that checksummed transaction, exact
+legacy bytes/modes/owners, both explicit receipt pins, intact retained artifacts,
+and repeated dependency absence. It preserves the transaction bytes during the
+operation and restores only the root's exact legacy wrapper records. Merely
+remaining legacy-selected after install-only upgrade does **not** authorize it.
+Its fixture completion record is synthetic; the current controller cannot yet
+produce the upgraded return linkage. **Chained return integration remains pending
+and was not claimed or executed.** No native activation, same-WebUI-session resume,
+permission, real signature or live upgrade gate is cleared by this patch.
+
+### Recovery and verification evidence
+
+Recovery reads observed app identities and wrapper bytes, not journal phase alone.
+Before commit, it retains v2 at the fixed pending path, renames the original v1 app
+back and restores v1 replacement wrappers, never resumes forward installation.
+Interrupted recovery is explicit and repeatable only for recognized arrangements.
+Unknown bytes, partial artifact copies or malformed preparation records are retained
+and refused for manual reconciliation; the tool never deletes or repairs them.
+After commit, recovery verifies the complete committed app/control/wrapper pair,
+not a blind rollback. A commit rename that succeeds before its fsync reports an
+error is recognized on subsequent recovery. Postreturn wrapper restoration is a
+separate repeatable operation and does not alter either immutable receipt.
+
+TDD first failed on the missing bounded-upgrade API. Further red/green cases
+covered legacy restore rewriting the root after upgraded restoration, missing
+final-path verification, mutable commit mode, unknown journal phase, independent
+stable-wrapper controller dependencies, absent revocation checks, and accepting
+legacy-but-never-returned state. One initial fault fixture matched copied control
+filenames rather than stable wrapper destinations; it was narrowed to exact paths
+before reporting wrapper fault coverage.
+
+The offline suite covers real first-install -> fresh-stage -> upgrade composition,
+all pre/post journal boundaries (`copy_controls`, `copy_app`, `retain_v1`,
+`publish_v2`, four wrapper publications, `commit`), both app rename-success/error
+boundaries, all four wrapper rename-success/error boundaries, commit publication
+success/error, failed final signature adapter, baseline drift after journaling,
+interrupted v1 recovery and interrupted legacy-wrapper restoration. Original
+receipt/stage/control bytes and exact original app inode/modes are checked.
+
+Verification uses stdlib unittest with explicitly selected classes, not repository
+pytest discovery. Source/configuration hashes are frozen before/after each run;
+HOME/HERMES_HOME/HERMES_WEBUI_STATE_DIR/TMPDIR are disposable per subprocess,
+PYTHONPATH/PYTHONSAFEPATH are removed, and no shared environment is exported.
+Before test imports, subprocess/native/network tripwires are installed. Only the
+inspected installed synthetic launcher `--check` is allowed as a subprocess, after
+checking exact argv, disposable environment, copied control bytes and empty
+application-probe/environment-file lists. Compiler/signature/kernel observations
+are fake adapters. The neighboring stage environment-probe and module-import
+subprocess cases are explicitly excluded; this task authorizes only launcher
+fixture subprocesses. Both requested ABIs are run. No real compile, signing,
+native process inspection, launchctl, network, production state, credentials,
+commit or push is part of this verification.
+
+Final isolated runs passed **43 cases on each requested ABI** (Python 3.11 and
+3.14): 15 upgrade methods with fault/adversarial subcases, all 12 installer
+methods, and 16 permitted neighboring stage methods. Each run verified unchanged
+hashes for a 61-file set comprising experiment/control Python files and the
+selected configuration. The two excluded stage methods are
+`test_compiler_uses_only_stage_local_scratch_and_clean_environment` and
+`test_snapshot_modules_import_without_application`. Changed-file Ruff and Git
+whitespace checks passed. The parent independently reran **43 cases per ABI**
+on a frozen delivered-source snapshot with pre-import native/network/subprocess
+tripwires and disposable state. A parent-owned entry regression composed the real
+first install and fresh stage: both ABIs failed on the baseline installer with
+`bounded upgrade API missing` and passed with the delivered installer. This is an
+API-entry regression, not independent replay of every intermediate child fix.
+
+The parent also reran the same **43 cases per ABI** on a separate snapshot with
+the newer revocation-safe controller, retaining the delivery's installer and
+stager bytes. That is compatibility evidence, **not** a chained controller-return
+test: postreturn fixtures still synthesize the future completion transaction.
+Source hashes stayed unchanged, and independent changed-file Ruff and Git
+whitespace checks passed. Two focused source-only reviews are pending. Deployment,
+real process-census usability, upgraded controller return integration and all live
+gates remain outstanding.
