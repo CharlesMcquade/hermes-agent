@@ -195,6 +195,46 @@ A post-success return-to-legacy procedure remains to be designed and verified;
 do not change a verified transaction's phase to manufacture recovery authority.
 The old `prepare_cutover.py` rebuilds Python overrides and is not a native recipe.
 
+## Same-session autonomous resume audit
+
+Source-only audit `deleg_22cc267f` inspected the selected frozen WebUI and Agent
+release. It found no demonstrated durable, idempotent, credential-free external
+resume interface. This is an implementation gap, not proof that autonomous resume
+is impossible. No API call, authentication change or restart was performed by the
+audit. The parent independently inspected `start_session_turn()` in that release:
+it is an in-process entry point, and it resolves workspace/model state without the
+HTTP entry point's compression-lineage guard.
+
+- `POST /api/chat/start` can target a session but requires authentication; absence
+  of browser Origin/Referer affects CSRF handling, not authentication. The audit
+  found no caller-supplied durable idempotency key. A lost response must not cause
+  a blind retry; a client-side sent marker does not close the dispatch/crash gap.
+- `api.routes.start_session_turn()` must run inside the owning WebUI process.
+  Importing it from an independent job creates separate runtime state, not an
+  enqueue into the running WebUI. Busy admission is not durable deduplication.
+- Agent cron creates separate execution sessions. Origin delivery and transcript
+  mirroring do not establish continuation of the initiating WebUI session. The
+  audit found deferred process-wakeup state to be in-memory; ordinary checkpoint
+  recovery alone does not prove safe dispatch across a restart.
+
+The proposed direction, not yet implemented or verified, is one durable cutover
+job plus a narrowly scoped record consumed inside WebUI. Bind operation, initiating
+session, profile, workspace and expected release; persist admission identity before
+worker execution and reconcile it against a nonsecret execution receipt. Duplicate
+triggers must resolve to the same disposition, busy work must remain pending, and
+uncertain dispatch must stop for reconciliation rather than repost. Resolve only
+authorized compression descendants before mutation and revalidate at admission.
+Do not weaken authentication or copy browser credentials to make this work.
+
+The consumer must be present in the release that boots after cutover; an unconsumed
+record is not a recovery mechanism. Before arming, use isolated state to verify
+browser-independent restart/resume, duplicate and lost-response behavior, crash
+boundaries, busy/human-send races, repeated compression, and rejection of wrong
+profile/workspace/release or explicitly closed sessions without mutation. Evidence
+must establish turn execution, not merely queue acceptance. These checks and the
+bootstrap/staging path remain open; this audit does not satisfy conditional cutover
+authority.
+
 ## Remaining gates and boundaries
 
 1. The approved Location diagnostic is complete as an observation, not a grant.
