@@ -2,6 +2,7 @@
 import argparse
 import base64
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -178,8 +179,8 @@ def install(root, base, home, *, approve=False, runner=stage.run):
         return {'status': 'installed', 'selected_release_unchanged': True, 'activated': False}
 
 
-def no_live_native_dependency(base, old):
-    """Read-only loaded-job + process identity check; no state files/app imports."""
+def selected_legacy_observation(base, old):
+    """Retain the loaded-job authority and its kernel identities as one observation."""
     controller = Controller(base)
     definitions = controller.definitions(old)
     jobs = controller.loaded(old, definitions)
@@ -187,6 +188,9 @@ def no_live_native_dependency(base, old):
     for role in stage.ROLES:
         pid = jobs[role]['pid']
         record = controller.host.process_identity(pid)
+        require(isinstance(record, dict) and type(record.get('start_time')) in (int, float)
+                and math.isfinite(record['start_time']) and record['start_time'] > 0,
+                'Unknown selected process identity')
         require(record['pid'] == pid and record['uid'] == os.getuid()
                 and record['ppid'] == 1
                 and record['argv'] == old['services'][role]['argv']
@@ -196,6 +200,12 @@ def no_live_native_dependency(base, old):
     require(controller.loaded(old, definitions) == jobs, 'Loaded jobs changed')
     require(all(controller.host.process_identity(jobs[r]['pid']) == records[r]
                 for r in stage.ROLES), 'Live process identity changed')
+    return controller, definitions, jobs, records
+
+
+def no_live_native_dependency(base, old):
+    """Read-only loaded-job + process identity check; no state files/app imports."""
+    selected_legacy_observation(base, old)
     return True
 
 
@@ -316,15 +326,34 @@ def census_pids(host):
 
 def upgrade_dependency_check(base, old):
     # The old two-job check is necessary but cannot exclude independently launched hosts.
-    no_live_native_dependency(base, old)
-    host = Controller(base).host
+    controller, definitions, jobs, parents = selected_legacy_observation(base, old)
+    host = controller.host
     pids = census_pids(host)
+    require({r['pid'] for r in parents.values()} <= pids, 'Selected parents missing from census')
+    parent = parents['agent']
+    command = parent['argv']
+    # Only release_build's exact stderr-wrapper topology, not arbitrary -- tails.
+    child_argv = [command[0], '-m', 'hermes_cli.main', 'gateway', 'run', '--external-supervisor']
+    gateway_wrapper = (len(command) == 12
+        and command[1:4] == ['-m', 'hermes_cli.stderr_timestamp', '--error-log']
+        and command[5:] == ['--', *child_argv])
+    def is_gateway_child(record):
+        return (gateway_wrapper and record['ppid'] == parent['pid']
+            and record['uid'] == parent['uid']
+            and record['start_time'] >= parent['start_time']
+            and record['executable'] == parent['executable']
+            and record['argv'] == child_argv)
+
     wrapper_paths = {str(base / n) for n in stage.wrappers(base, base / 'control-versions')}
     records = {}
     for pid in pids:
         record = host.process_identity(pid)
-        require(record.get('pid') == pid and record.get('start_time') is not None
-                and record.get('executable') and record.get('argv'), 'Unknown process identity')
+        require(isinstance(record, dict) and record.get('pid') == pid
+                and type(record.get('start_time')) in (int, float)
+                and math.isfinite(record['start_time']) and record['start_time'] > 0
+                and type(record.get('uid')) is int and type(record.get('ppid')) is int
+                and record.get('executable') and isinstance(record.get('argv'), list)
+                and record['argv'], 'Unknown process identity')
         tokens = [record['executable'], *record['argv']]
         require(all(isinstance(t, str) for t in tokens), 'Unknown process arguments')
         # Conservatively refuse even non-running command references. Do not exclude
@@ -334,18 +363,33 @@ def upgrade_dependency_check(base, old):
                         or t in wrapper_paths
                         for t in tokens), 'Independent native/control dependency')
         records[pid] = record
-        if re.search(r'python|pypy', Path(record['executable']).name, re.I):
+        selected = any(record == r for r in parents.values())
+        gateway_child = is_gateway_child(record)
+        if pid == os.getpid() or re.search(r'python|pypy', Path(record['executable']).name, re.I):
             import sys
-            selected = any(record['argv'] == old['services'][role]['argv'] for role in stage.ROLES)
             own_direct_installer = (pid == os.getpid()
                 and record['executable'] == str(Path(sys.executable).resolve())
-                and str(Path(__file__).resolve()) in record['argv']
+                and record['uid'] == os.getuid()
+                and (record['argv'][:2] == [sys.executable, str(Path(__file__).resolve())]
+                     or record['argv'][:3] == [sys.executable, '-B', str(Path(__file__).resolve())])
                 and '-c' not in record['argv'] and '-m' not in record['argv'])
-            require(selected or own_direct_installer,
+            require(selected or gateway_child or own_direct_installer,
                     'Opaque interpreter may retain installed controls; dependency unknown')
+    require(sum(is_gateway_child(r) for r in records.values()) <= 1,
+            'Multiple gateway children; dependency unknown')
+    owned_pids = {r['pid'] for r in parents.values()}
+    for record in records.values():
+        if record['ppid'] in owned_pids:
+            require(is_gateway_child(record), 'Unexpected selected-job descendant')
+            require(not any(r['ppid'] == record['pid'] for r in records.values()),
+                    'Unexpected gateway descendant')
+    require(controller.loaded(old, definitions) == jobs, 'Loaded jobs changed during census')
+    require(all(records[r['pid']] == r for r in parents.values()),
+            'Selected parent identity changed during census')
     require(census_pids(host) == pids, 'Process census changed')
     require(all(host.process_identity(pid) == record for pid, record in records.items()),
             'Process identity changed')
+    require(controller.loaded(old, definitions) == jobs, 'Loaded jobs changed after census')
     return True
 
 

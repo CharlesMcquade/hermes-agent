@@ -211,6 +211,273 @@ class UpgradeTests(unittest.TestCase):
         for n, record in self.v1.items():
             self.assertEqual(install.snapshot(f.base / n), record)
 
+    def legacy_topology(self):
+        """OS adapters only; definitions, loaded ownership and default checker stay real."""
+        import copy
+        import os
+        import sys
+        from contextlib import ExitStack
+        f = self.fixture
+        c = install.Controller(f.base)
+        definitions = c.definitions(f.manifest)
+        jobs = {c.target(f.manifest, role): dict(pid=110 + index,
+                argv=definitions[role]['ProgramArguments'], cwd=definitions[role]['WorkingDirectory'])
+                for index, role in enumerate(stage.ROLES)}
+        records = {110 + index: dict(pid=110 + index, ppid=1, uid=os.getuid(),
+                   argv=f.manifest['services'][role]['argv'], start_time=10.0,
+                   executable=str(Path(f.manifest['services'][role]['argv'][0]).resolve()))
+                   for index, role in enumerate(stage.ROLES)}
+        parent = records[110]
+        command = parent['argv']
+        self.assertEqual(command[1:4], ['-m', 'hermes_cli.stderr_timestamp', '--error-log'])
+        self.assertEqual(command[5:], ['--', command[0], '-m', 'hermes_cli.main',
+                                      'gateway', 'run', '--external-supervisor'])
+        records[112] = dict(pid=112, ppid=110, uid=os.getuid(), start_time=11.0,
+                            executable=parent['executable'], argv=command[6:])
+        records[os.getpid()] = dict(pid=os.getpid(), ppid=50, uid=os.getuid(), start_time=12.0,
+            executable=str(Path(sys.executable).resolve()),
+            argv=[sys.executable, '-B', str(Path(install.__file__).resolve()), '--approve-upgrade'])
+        stack = ExitStack()
+        stack.enter_context(patch.object(Host, 'job', side_effect=lambda target: copy.deepcopy(jobs[target])))
+        census = stack.enter_context(patch.object(install, 'census_pids', side_effect=lambda host: set(records)))
+        identity = stack.enter_context(patch.object(Host, 'process_identity',
+                                                  side_effect=lambda pid: copy.deepcopy(records[pid])))
+        return stack, jobs, records, census, identity
+
+    def default_upgrade(self):
+        f = self.fixture
+        return install.upgrade(self.fresh, f.base, f.home, original_stage=f.root / 'stage',
+                               root_sha256=self.pin, approve=True, runner=self.verifier)
+
+    def test_default_generated_gateway_child_and_direct_installer_complete_lifecycle(self):
+        stack, jobs, records, census, identity = self.legacy_topology()
+        f = self.fixture
+        with stack:
+            self.assertEqual(self.default_upgrade()['status'], 'upgraded_not_activated')
+            self.assertGreater(census.call_count, 4)
+            self.assertEqual(install.recover_upgrade(f.base, f.home, root_sha256=self.pin,
+                approve=True, runner=self.verifier)['status'], 'committed_verified')
+            committed = (f.base / install.UPGRADE_RECEIPT).read_bytes()
+            self.mark_returned(stage.digest(committed))  # synthetic completion only
+            install.restore_upgraded_wrappers(f.base, f.home, root_sha256=self.pin,
+                upgrade_sha256=stage.digest(committed), approve=True, runner=self.verifier)
+        self.assertEqual((f.base / install.RECEIPT).read_bytes(), self.root_bytes)
+        for name, record in f.originals.items():
+            self.assertEqual(install.snapshot(f.base / name), record)
+        f.preserved()
+
+    def test_default_topology_refuses_unowned_unknown_and_drifting_identities(self):
+        import copy
+        import os
+        cases = ['unowned', 'reparented', 'uid', 'executable', 'start', 'missing_uid',
+                 'missing_ppid', 'unreadable', 'parent_missing', 'parent_replaced',
+                 'parent_birth', 'parent_job', 'census', 'grandchild', 'other_child',
+                 'opaque', 'control', 'selected_clone', 'uid_drift', 'executable_drift',
+                 'bad_start', 'predates_parent', 'duplicate_child']
+        for case in cases:
+            with self.subTest(case=case):
+                self.setUp()  # independent filesystem even if a regression unexpectedly writes
+                stack, jobs, records, census, identity = self.legacy_topology()
+                with stack:
+                    child = records[112]
+                    if case == 'unowned':
+                        child['ppid'] = 50
+                    elif case == 'uid':
+                        child['uid'] = os.getuid() + 1
+                    elif case == 'executable':
+                        child['executable'] = '/fixture/not-python'
+                    elif case.startswith('missing_'):
+                        child.pop(case[8:])
+                    elif case == 'bad_start':
+                        child['start_time'] = 'unknown'
+                    elif case == 'predates_parent':
+                        child['start_time'] = 1.0
+                    elif case == 'duplicate_child':
+                        records[114] = dict(child, pid=114)
+                    elif case == 'unreadable':
+                        def unreadable(pid):
+                            if pid == 112:
+                                raise OSError('unreadable child')
+                            return copy.deepcopy(records[pid])
+                        identity.side_effect = unreadable
+                    elif case == 'parent_missing':
+                        census.side_effect = lambda host: set(records) - {110}
+                    elif case == 'parent_replaced':
+                        target = install.Controller(self.fixture.base).target(self.fixture.manifest, 'agent')
+                        jobs[target]['pid'] = 113
+                        records[113] = dict(records[110], pid=113)
+                    elif case == 'parent_job':
+                        job = Host.job.side_effect
+                        calls = []
+                        def replacement(target):
+                            calls.append(target)
+                            result = job(target)
+                            if len(calls) > 4:
+                                result['pid'] += 100
+                            return result
+                        Host.job.side_effect = replacement
+                    elif case == 'census':
+                        census.side_effect = [set(records), set(records) - {112}]
+                    elif case in ('grandchild', 'other_child', 'opaque', 'control', 'selected_clone'):
+                        records[114] = dict(pid=114, ppid=112 if case == 'grandchild' else 111,
+                            uid=os.getuid(), start_time=13.0, executable='/usr/bin/innocent',
+                            argv=['/usr/bin/innocent'])
+                        if case == 'opaque':
+                            records[114].update(ppid=50, executable='/fixture/python', argv=['/fixture/python'])
+                        elif case == 'control':
+                            records[114]['argv'] = [str(self.fixture.base / 'restart_production.py')]
+                        elif case == 'selected_clone':
+                            records[114] = dict(records[110], pid=114, ppid=50)
+                    else:
+                        seen = {}
+                        def drift(pid):
+                            seen[pid] = seen.get(pid, 0) + 1
+                            result = copy.deepcopy(records[pid])
+                            target = 110 if case == 'parent_birth' else 112
+                            if pid == target and seen[pid] > (2 if pid == 110 else 1):
+                                if case == 'uid_drift':
+                                    result['uid'] += 1
+                                elif case == 'executable_drift':
+                                    result['executable'] += '.changed'
+                                else:
+                                    result['ppid' if case == 'reparented' else 'start_time'] += 1
+                            return result
+                        identity.side_effect = drift
+                    with self.assertRaises((ControlError, OSError)):
+                        self.default_upgrade()
+                    self.assertFalse((self.fixture.base / install.UPGRADE_JOURNAL).exists())
+                    self.assertEqual((self.fixture.base / install.RECEIPT).read_bytes(), self.root_bytes)
+                    self.assertEqual(self.app.stat().st_ino, self.inode)
+
+    def test_default_own_direct_installer_exemption_is_narrow(self):
+        import os
+        import sys
+        cases = ['plain', 'bytecode_flag', 'wrong_pid', 'wrong_path', 'wrong_interpreter',
+                 'argv_interpreter', 'script_argument', '-c', '-m', 'uid', 'missing_start',
+                 'nonpython_interpreter']
+        for case in cases:
+            with self.subTest(case=case):
+                self.setUp()  # independent filesystem even if a regression unexpectedly writes
+                stack, jobs, records, census, identity = self.legacy_topology()
+                with stack:
+                    own = records[os.getpid()]
+                    if case == 'plain':
+                        own['argv'].remove('-B')
+                    elif case == 'wrong_pid':
+                        records[114] = dict(records.pop(os.getpid()), pid=114)
+                    elif case == 'wrong_path':
+                        own['argv'][2] += '.other'
+                    elif case == 'wrong_interpreter':
+                        own['executable'] = '/fixture/python'
+                    elif case == 'nonpython_interpreter':
+                        own['executable'] = '/usr/bin/innocent'
+                    elif case == 'argv_interpreter':
+                        own['argv'][0] = '/fixture/python'
+                    elif case == 'script_argument':
+                        own['argv'].insert(2, '/fixture/other.py')
+                    elif case in ('-c', '-m'):
+                        own['argv'] = [sys.executable, case, str(Path(install.__file__).resolve())]
+                    elif case == 'uid':
+                        own['uid'] += 1
+                    elif case == 'missing_start':
+                        own['start_time'] = None
+                    if case in ('plain', 'bytecode_flag'):
+                        self.assertTrue(install.upgrade_dependency_check(self.fixture.base, self.fixture.manifest))
+                    else:
+                        with self.assertRaises(ControlError):
+                            self.default_upgrade()
+                        self.assertFalse((self.fixture.base / install.UPGRADE_JOURNAL).exists())
+
+    def test_default_topology_revalidated_after_each_upgrade_journal(self):
+        phases = ['copy_controls', 'copy_app', 'retain_v1', 'publish_v2',
+                  *('publish_' + name for name in self.v1), 'commit']
+        for phase in phases:
+            with self.subTest(phase=phase):
+                other = UpgradeTests()
+                other.setUp()
+                try:
+                    stack, jobs, records, census, identity = other.legacy_topology()
+                    save = install.upgrade_journal
+                    hit = []
+                    def invalidate(base, plan, actual):
+                        save(base, plan, actual)
+                        if actual == phase:
+                            hit.append(actual)
+                            records[112]['ppid'] = 50
+                    with stack:
+                        with patch.object(install, 'upgrade_journal', side_effect=invalidate):
+                            with self.assertRaisesRegex(ControlError, 'Opaque interpreter'):
+                                other.default_upgrade()
+                        self.assertEqual(hit, [phase])
+                        self.assertFalse((other.fixture.base / install.UPGRADE_RECEIPT).exists())
+                        records[112]['ppid'] = 110  # fixture only; never production repair
+                        result = install.recover_upgrade(other.fixture.base, other.fixture.home,
+                            root_sha256=other.pin, approve=True, runner=other.verifier)
+                        self.assertEqual(result['status'], 'recovered_v1_artifacts_retained')
+                        self.assertEqual(other.app.stat().st_ino, other.inode)
+                        for name, record in other.v1.items():
+                            self.assertEqual(install.snapshot(other.fixture.base / name), record)
+                finally:
+                    other.doCleanups()
+
+    def test_default_recovery_and_postreturn_recheck_job_ownership_after_journal(self):
+        recovery_phases = ['recover_retain_v2', 'recover_v1_app',
+                           *('recover_' + name for name in self.v1),
+                           'recovered_v1_artifacts_retained']
+        restore_phases = ['restore_legacy_' + name for name in self.v1]
+        for phase in recovery_phases + restore_phases:
+            with self.subTest(phase=phase):
+                other = UpgradeTests()
+                other.setUp()
+                try:
+                    f = other.fixture
+                    stack, jobs, records, census, identity = other.legacy_topology()
+                    save = install.upgrade_journal
+                    with stack:
+                        if phase in recovery_phases:
+                            def stop(base, plan, actual):
+                                save(base, plan, actual)
+                                if actual == 'commit':
+                                    raise OSError('fixture before commit')
+                            with patch.object(install, 'upgrade_journal', side_effect=stop):
+                                with self.assertRaisesRegex(OSError, 'fixture before commit'):
+                                    other.default_upgrade()
+                            def operation():
+                                return install.recover_upgrade(f.base, f.home, root_sha256=other.pin,
+                                    approve=True, runner=other.verifier)
+                        else:
+                            other.default_upgrade()
+                            pin = stage.digest((f.base / install.UPGRADE_RECEIPT).read_bytes())
+                            other.mark_returned(pin)
+                            def operation():
+                                return install.restore_upgraded_wrappers(f.base, f.home,
+                                    root_sha256=other.pin, upgrade_sha256=pin,
+                                    approve=True, runner=other.verifier)
+                        hit = []
+                        before = {}
+                        target = install.Controller(f.base).target(f.manifest, 'agent')
+                        def invalidate(base, plan, actual):
+                            save(base, plan, actual)
+                            if actual == phase:
+                                hit.append(actual)
+                                before.update({name: install.snapshot(f.base / name) for name in other.v1})
+                                # Existing live parent is no longer owned by the selected job.
+                                jobs[target]['pid'] = 113
+                                records[113] = dict(records[110], pid=113)
+                        with patch.object(install, 'upgrade_journal', side_effect=invalidate):
+                            with self.assertRaisesRegex(ControlError, 'Opaque interpreter'):
+                                operation()
+                        self.assertEqual(hit, [phase])
+                        for name, record in before.items():
+                            self.assertEqual(install.snapshot(f.base / name), record)
+                        jobs[target]['pid'] = 110
+                        records.pop(113)
+                        operation()
+                        self.assertEqual((f.base / install.RECEIPT).read_bytes(), other.root_bytes)
+                        f.preserved()
+                finally:
+                    other.doCleanups()
+
     def test_broad_default_census_rejects_independent_and_changing_process(self):
         # Only OS observations are mocked: actual default dependency algorithm runs.
         import copy

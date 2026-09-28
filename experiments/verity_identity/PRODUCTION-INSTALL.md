@@ -244,7 +244,8 @@ The upgrade/recovery/postreturn default checker supplements the existing loaded
 legacy-job/kernel-identity check with `proc_listallpids` and repeated kernel
 identities for every PID except kernel PID 0 and launchd PID 1, regardless of UID.
 It rejects installed app/control/wrapper references and opaque Python interpreters
-other than the selected legacy commands or this directly invoked installer.
+other than the verified loaded selected parents, their one supported direct gateway
+child, or this directly invoked installer.
 Unknown, inaccessible, exiting or changing processes refuse; there is no retry
 that silently discards an uninspectable process. This deliberately conservative
 check may refuse on a busy or restricted machine. It is not an OS launch barrier
@@ -378,3 +379,74 @@ Source hashes stayed unchanged, and independent changed-file Ruff and Git
 whitespace checks passed. Two focused source-only reviews are pending. Deployment,
 real process-census usability, upgraded controller return integration and all live
 gates remain outstanding.
+
+### Legacy gateway topology admission repair (offline only)
+
+The generated legacy agent command is a `hermes_cli.stderr_timestamp` parent
+which starts the exact `python -m hermes_cli.main gateway run
+--external-supervisor` direct child after `--`. The earlier broad census refused
+this healthy child as an opaque interpreter. A regression with both selected job
+parents, that child, and the installer self PID failed before the upgrade journal
+on Python 3.11.16 and 3.14.7. It composes real disposable first-install and fresh
+stage filesystem operations; kernel and signature observations remain fixtures.
+
+Admission now retains the existing loaded-job observation (controller,
+definitions, jobs and complete parent identity records) throughout each census.
+Selected argv alone grants no exemption. The sole supported child must match the
+exact generated wrapper shape and child argv, parent PPID, UID and executable,
+and cannot predate its parent. Multiple matching children, unexpected children
+of either selected parent, and gateway grandchildren refuse. Loaded-job ownership
+and all identities are rechecked against that same observation; census changes,
+unreadable identities and independent control/native references still refuse.
+No arbitrary descendants or unknown system-owned processes are silently ignored.
+
+The self exemption requires the actual installer PID, current UID and resolved
+interpreter executable, with argv beginning exactly with the current interpreter
+and absolute installer path (optionally `-B` between them). Another script merely
+mentioning that path, a different interpreter, `-c` or `-m` invocation is not an
+exemption. Other interpreter flags and relative installer paths conservatively
+refuse. This is cooperative observation, not an OS launch barrier or protection
+against same-account injected code.
+
+The expanded suite retains the default dependency checker for upgrade, recovery
+and synthetic postreturn restoration. It covers unowned/reparented children,
+parent replacement and birth drift, child UID/executable/birth drift, missing or
+unreadable records, census changes, duplicate children, unexpected descendants,
+independent interpreters/control references and narrow self invocation positives
+and negatives. Every upgrade journal boundary is followed by injected topology
+loss; recovery and postreturn journal boundaries inject selected-job ownership
+loss and prove refusal before further wrapper writes. Fixture-only repair then
+allows explicit recovery/restoration; it is not a production reconciliation.
+
+The verification runner is an unchanged copy of the previously inspected guarded
+runner: disposable HOME/HERMES_HOME/state/TMPDIR, frozen source hash checks,
+pre-import native/network/real-file tripwires and only the inspected synthetic
+launcher subprocess exception. Both ABIs run the permitted neighboring installer
+and stage cases. Real all-PID KERN_PROCARGS2 readability, system-process census
+usability, native activation, signatures and controller-return integration remain
+unverified/live gates. The postreturn completion transaction is still synthetic.
+
+### Independent topology repair verification
+
+The parent matched every delivered snapshot hash and independently froze the
+repair. Its original two-case topology probe was replayed on both Python 3.11.16
+and 3.14.7 against the unchanged `1038706243` installer: the parent-only control
+passed and the exact generated gateway child produced the expected opaque-
+interpreter exception before any journal or artifact mutation. With the repaired
+installer, both probe cases passed on both ABIs.
+
+The expanded permitted aggregate independently passed **48 tests on each ABI**:
+20 upgrade, 12 installer and 16 stage cases. The inspected guard was unchanged;
+pre-import native/network/subprocess and file-scope tripwires stayed enabled, with
+only the exact disposable synthetic-launcher check permitted. The two non-launcher
+subprocess stage cases remain deliberately excluded. Source hashes stayed stable,
+and changed-file Ruff plus `git diff --check` passed.
+
+A separate frozen overlay using the return/revocation controller from main
+checkpoint `25045eafd154af00a05b1b453f41413b63f9b12e` also passed **48 tests per ABI**.
+This establishes fixture compatibility, not an actual chained controller return.
+The parent's evidence is `verity-upgrade-topology-verified-n4g9pmeh/receipt.json`
+under configured scratch. Focused source re-review `deleg_e0c610b8` is pending;
+the topology finding is not closed from green tests alone. No compile, signing,
+real process observation, live state mutation, upgrade, activation or restart was
+performed by these verification runs.
