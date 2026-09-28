@@ -58,12 +58,33 @@ artifacts, but it is not presently a complete deployment-and-return route:
   retained-host-binary reuse path; it cannot promise identical signed executable
   bytes.
 
-Do not silently skip unreadable identities, disable watchdog, overwrite v1, rewrite
-its receipt, or request elevated privileges as a workaround. A focused source-only
-review of the smallest achievable admission contract is pending; no policy change
-or deployment is authorized by this diagnostic. This concrete repair-deployment
-problem does not reintroduce automatic continuation or the entire future-upgrade
-roadmap as trial prerequisites.
+The follow-up source review `deleg_0388c1fa` is complete. Parent inspection agrees:
+there is no currently supported install-only admission relaxation. The advisory
+lock serializes participating controllers/watchdog ticks, but wrappers import their
+versioned modules before locking; the launcher and native host do not take that
+lock. The installer performs two app renames with a gap before publishing matching
+wrappers. Retaining an old inode does not preserve the old pathname or launcher
+binding for an already-starting consumer. Repeated process snapshots, including a
+privileged snapshot, are not a launch barrier.
+
+The smallest next decision is separate approval for a bounded maintenance approach,
+not permission to ignore protected processes. That approach must establish exclusive
+control of the relevant launches/maintenance entrypoints, quiesce existing relevant
+consumers, and prevent new ones through publication and recovery. Unknown relevant
+ownership, retained old-code holders, or uncertain launch exclusion must refuse.
+A verbal maintenance declaration, arbitrary PID/UID exclusions, or an `EPERM` skip
+cannot satisfy that obligation. The existing install-only code does not implement
+this boundary; a maintenance window alone does not clear the exact-return gap.
+
+Before live use, the revised boundary needs regression evidence for an old controller
+paused after import but before locking, an unlocked launcher, native startup across
+each rename, unexpected selected descendants, dependency drift after journal intent,
+and exact retained-artifact recovery at every partial publication. No scope change,
+maintenance interruption, elevated observation, or implementation is authorized by
+these source-only reviews. Do not disable watchdog, overwrite v1, or rewrite its
+receipt to force admission. Deployment is blocked pending the operator's scope
+decision. This does not reintroduce automatic continuation or the entire future-
+upgrade roadmap as trial prerequisites.
 
 Fresh independent readback still reports healthy legacy services, exact original
 selector/plists, unchanged installed artifacts and both one-shot jobs absent. No

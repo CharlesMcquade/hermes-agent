@@ -9,9 +9,11 @@ host and actual gateway; the validator must recognize and strictly bind that exa
 chain before another trial. The narrow source repair is independently tested and
 source-reviewed, but not installed. The immutable deployment route is blocked by
 its observed protected-process census denial, missing upgrade-aware exact return,
-and absent retained-host staging path; see the current readiness summary. No
-successful-native return or live permission result is claimed. The sections below
-are retained preparation/history, not a retry cue.
+and absent retained-host staging path; see the current readiness summary. The
+follow-up review found no supported install-only relaxation: a separately approved
+maintenance approach must establish actual launch exclusion and complete exact
+return before live use. No successful-native return or live permission result is
+claimed. The sections below are retained preparation/history, not a retry cue.
 
 
 **Current scope update:** the operator accepted a supervised production trial with
