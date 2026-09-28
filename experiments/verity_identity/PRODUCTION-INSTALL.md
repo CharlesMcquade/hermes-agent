@@ -13,7 +13,11 @@ operator-owned and not group/world writable. The exact final destinations are
 `HOME/Applications/Verity.app` and `BASE/control-versions/CONTROL_ID` from the
 stage report; neither may exist. `--home` is explicit (production uses the actual
 operator home; tests use disposable homes). It does not redirect production
-state by itself.
+state by itself. `BASE/control.lock` must already exist with safe ownership/mode
+and canonical ancestors, for **both** install and restore. The installer never
+creates, replaces, or chmods that shared lock. Missing or group/world-writable
+locks are a refused prerequisite, not an invitation to repair live state.
+This is an upgrade to an established schema-2 controller, not lock provisioning.
 
 After approval only, the interface is:
 
@@ -55,8 +59,10 @@ terminal/absent activation state; and affirmative live dependency evidence.
 The default live check inspects loaded legacy job definitions and exact kernel
 PID/UID/PPID/executable/argv identities twice. It performs read-only launchctl
 **print** through the existing Host adapter; it never loads/reloads jobs. Unknown,
-unavailable, changing or native-dependent processes fail closed. Tests substitute
-an explicit fixture dependency adapter and execute no launchctl commands.
+unavailable, changing or native-dependent processes fail closed. Most fault tests
+substitute a fixture dependency adapter. The focused wiring test retains the
+default checker and actual Controller definitions/loaded logic, mocking only
+Host job/process observations; no offline test executes launchctl commands.
 
 Rollback restores **only original wrappers**. App/control directories, including
 partial copies, and the receipt are retained with status
@@ -80,8 +86,36 @@ checks. No install/restore function or launchctl mutation was called. This prove
 that observation for that current pair, not restore success or interruption/race
 coverage of the live adapter. The real production-signed stage was reverified;
 final app/control installation and final-path signature verification remain undone.
-Production hashes, PIDs and health remained unchanged. Independent installer review
-is pending. Install-only and permission-test prompts have no recorded approval.
+Production hashes, PIDs and health remained unchanged. Install-only and
+permission-test prompts have no recorded approval.
+
+Review `deleg_6f153763`, task 1, found one lock/recovery blocker: the shared helper
+can create an absent lock as 0664 under umask 0002, while subsequent restore rejects
+that mode. Both entry points now require an existing safe lock before the shared
+helper. The regression failed on the original implementation (`ControlError not
+raised`); the corrected test verifies absence refusal before receipt/copy, unsafe
+lock refusal, publication failure plus exact byte/mode restoration under umask
+0002 with a preprovisioned safe fixture lock, and no lock recreation on restore.
+The existing production lock passed read-only `safe()` with mode 0644; no mode or
+lock changes were made.
+
+Task 2 established no additional restore blocker but identified the default-checker
+test gap. A new full-restore wiring test keeps that default and verifies distinct
+cached-launcher vs selected-service identities (including the gateway stderr-wrapper
+`-m` command). Per-role wrong executable/argv/PPID/UID, changed birth record, missing
+PID, native cached argv and unavailable identity all refuse before wrapper or
+receipt writes. These are synthetic observations, not live restore evidence.
+
+After these changes, 77 experiment and 71 controller tests pass on Python 3.11;
+Python 3.14 passes 69 experiment and 71 controller tests (the same eight signer
+tests excluded). The 12 installer methods are selected once, not duplicated via
+the imported staging class. Ruff and diff checks pass. Focused re-review is pending.
+
+The reviewer also noted that replacement receipt entries are not independently
+decoded/regenerated when a wrapper already equals its validated original. No unsafe
+restore consequence was established in this scope: only validated original bytes
+are written. The checksum is corruption detection, not authentication; do not treat
+it as authorization against a malicious same-account receipt rewrite.
 
 ## Verification and limits
 

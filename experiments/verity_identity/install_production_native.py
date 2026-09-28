@@ -120,7 +120,9 @@ def copy_tree(source, destination, *, controls=False):
 def install(root, base, home, *, approve=False, runner=stage.run):
     require(approve is True, 'Explicit --approve-install required')
     root, base, home = safe(root), safe(base), safe(home)
-    safe(base / 'control.lock', missing=True)
+    # Reuse the established schema-2 lock; the shared helper creates absent locks
+    # using the caller's umask, which can make later safe recovery impossible.
+    safe(base / 'control.lock')
     with control_lock(base):
         terminal_activation(base)
         safe(base / RECEIPT, missing=True)
@@ -200,7 +202,9 @@ def no_live_native_dependency(base, old):
 def restore(base, home, *, approve=False, dependency_check=no_live_native_dependency):
     require(approve is True, 'Explicit --approve-restore required')
     base, home = safe(base), safe(home)
-    safe(base / 'control.lock', missing=True)
+    # Reuse the established schema-2 lock; the shared helper creates absent locks
+    # using the caller's umask, which can make later safe recovery impossible.
+    safe(base / 'control.lock')
     with control_lock(base):
         envelope = json.loads(safe(base / RECEIPT).read_text())
         require(envelope['schema_version'] == 1, 'Unknown receipt schema')

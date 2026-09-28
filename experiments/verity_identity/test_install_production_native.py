@@ -1,4 +1,5 @@
 """Offline install tests; no native commands, app imports or real state access."""
+import copy
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ from unittest.mock import patch
 import stage_production_native as stage
 import install_production_native as install
 from test_stage_production_native import StageTests
+from restart_production import ControlError, Host
 
 
 class InstallTests(unittest.TestCase):
@@ -18,6 +20,7 @@ class InstallTests(unittest.TestCase):
         StageTests.setUp(self)
         (self.home / 'Applications').mkdir()
         (self.base / 'control-versions').mkdir()
+        (self.base / 'control.lock').touch(mode=0o600)
         self.originals = {}
         for index, name in enumerate(stage.wrappers(self.base, self.base / 'control-versions/old')):
             (self.base / name).chmod(0o700 if index % 2 else 0o640)
@@ -35,6 +38,10 @@ class InstallTests(unittest.TestCase):
                 repo=str(source), cwd=str(source), argv=[str(runtime / 'python'), '-m', 'tiny'],
                 inventory=stage.inventory(source), runtimes=[dict(root=str(runtime), inventory=stage.inventory(runtime))],
                 env_files=[], env={'HERMES_HOME': str(self.root / 'state')}, probe_modules=[])
+        python = self.manifest['services']['agent']['argv'][0]
+        self.manifest['services']['agent']['argv'] = [
+            python, '-m', 'hermes_cli.stderr_timestamp', '--error-log', str(self.root / 'fixture.error.log'),
+            '--', python, '-m', 'hermes_cli.main', 'gateway', 'run', '--external-supervisor']
         self.save()
         self.stage()
         self.selected_before = self.selected.read_bytes()
@@ -100,6 +107,93 @@ class InstallTests(unittest.TestCase):
                         self.assertEqual(install.snapshot(fixture.base / n), record)
                 finally:
                     fixture.doCleanups()
+
+    def test_lock_prerequisite_and_recovery_under_group_writable_umask(self):
+        lock = self.base / 'control.lock'
+        lock.unlink()
+        prior = os.umask(0o002)
+        self.addCleanup(os.umask, prior)
+        # A schema-2 install must not create a lock that its restore would reject.
+        with patch.object(install, 'copy_tree', wraps=install.copy_tree) as copying:
+            with self.assertRaisesRegex(ControlError, 'Missing path'):
+                self.go()
+            copying.assert_not_called()
+        self.assertFalse(lock.exists())
+        self.assertFalse((self.base / install.RECEIPT).exists())
+        lock.touch(mode=0o666)
+        with self.assertRaisesRegex(ControlError, 'Writable-by-others'):
+            self.go()
+        lock.chmod(0o600)  # Fixture provisioning, never a production repair.
+        write = install.atomic_write
+        def fail(path, data):
+            write(path, data)
+            if Path(path) == self.base / 'production_launcher.py':
+                raise OSError('injected after publication under umask 0002')
+        with patch.object(install, 'atomic_write', side_effect=fail):
+            with self.assertRaisesRegex(OSError, 'after publication'):
+                self.go()
+        self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.restore()['status'], 'restored_artifacts_retained')
+        for name, original in self.originals.items():
+            self.assertEqual(install.snapshot(self.base / name), original)
+        receipt_before = (self.base / install.RECEIPT).read_bytes()
+        lock.unlink()
+        with self.assertRaisesRegex(ControlError, 'Missing path'):
+            self.restore()
+        self.assertFalse(lock.exists())
+        self.assertEqual((self.base / install.RECEIPT).read_bytes(), receipt_before)
+        self.preserved()
+
+    def test_default_restore_dependency_checker_uses_both_identity_layers(self):
+        self.go()
+        c = install.Controller(self.base)
+        definitions = c.definitions(self.manifest)
+        jobs = {c.target(self.manifest, role): {
+            'pid': 110 + index, 'argv': definitions[role]['ProgramArguments'],
+            'cwd': definitions[role]['WorkingDirectory']}
+            for index, role in enumerate(stage.ROLES)}
+        records = {110 + index: dict(pid=110 + index, ppid=1, uid=os.getuid(),
+            argv=self.manifest['services'][role]['argv'],
+            executable=str(Path(self.manifest['services'][role]['argv'][0]).resolve()),
+            start_time=100.0 + index) for index, role in enumerate(stage.ROLES)}
+        with patch.object(Host, 'job', side_effect=lambda target: copy.deepcopy(jobs[target])), \
+                patch.object(Host, 'process_identity', side_effect=lambda pid: copy.deepcopy(records[pid])):
+            # Do not inject dependency_check: actual default + definitions/loaded run.
+            self.assertEqual(install.restore(self.base, self.home, approve=True)['status'],
+                             'restored_artifacts_retained')
+        for role in stage.ROLES:
+            for mutation in ('executable', 'argv', 'ppid', 'uid', 'birth', 'missing_pid', 'native_cached', 'unavailable'):
+                with self.subTest(role=role, mutation=mutation):
+                    bad_jobs, bad_records = copy.deepcopy(jobs), copy.deepcopy(records)
+                    target = c.target(self.manifest, role)
+                    pid = jobs[target]['pid']
+                    if mutation in ('executable', 'argv', 'ppid', 'uid'):
+                        bad_records[pid][mutation] = {
+                            'executable': '/fixture/wrong-python', 'argv': ['/fixture/wrong-command'],
+                            'ppid': 42, 'uid': os.getuid() + 1}[mutation]
+                    elif mutation == 'missing_pid':
+                        bad_jobs[target]['pid'] = None
+                    elif mutation == 'native_cached':
+                        bad_jobs[target]['argv'] = ['/fixture/VerityServiceHost', role]
+                    calls = {}
+                    def identity(value):
+                        if mutation == 'unavailable' and value == pid:
+                            raise OSError('fixture identity unavailable')
+                        record = copy.deepcopy(bad_records[value])
+                        calls[value] = calls.get(value, 0) + 1
+                        if mutation == 'birth' and value == pid and calls[value] > 1:
+                            record['start_time'] += 1
+                        return record
+                    before = (self.base / install.RECEIPT).read_bytes()
+                    with patch.object(Host, 'job', side_effect=lambda t: copy.deepcopy(bad_jobs[t])), \
+                            patch.object(Host, 'process_identity', side_effect=identity), \
+                            patch.object(install, 'atomic_write', wraps=install.atomic_write) as writes:
+                        with self.assertRaises((ControlError, KeyError, OSError)):
+                            install.restore(self.base, self.home, approve=True)
+                        writes.assert_not_called()
+                    self.assertEqual((self.base / install.RECEIPT).read_bytes(), before)
+                    for name, original in self.originals.items():
+                        self.assertEqual(install.snapshot(self.base / name), original)
 
     def test_partial_artifact_copy_is_retained_and_wrappers_recover(self):
         copy = install.copy_tree
