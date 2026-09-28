@@ -313,7 +313,13 @@ controller `0d06d7720956b39ef2d8f086a7e37a0b5e31f4f7`. Pre-import native/network
 subprocess guards permit only inspected disposable fixture commands. The first
 parent run found two guard mistakes, not product failures; fixing only the guard
 produced green results. Code hashes matched the delivery and remained unchanged;
-changed-file Ruff passed. Focused re-review `deleg_41bf0942` is pending.
+changed-file Ruff passed. Focused source-only re-review `deleg_41bf0942` is
+complete: failure-event parsing, encoded receipt admission and pre-GO validation
+are **bounded clear**. The parent independently matched the reviewed implementation,
+tests and relevant frozen helpers to committed `3100a4f9d1` and the successful
+124-test-per-ABI snapshot, then inspected the cited decision paths. These three
+offline review findings are closed for that snapshot, not established as live OS
+behavior. The first-signal finding remains open as detailed below.
 
 The fixes accept only validated failure-only host records, latch the first signal
 through reconciliation, bound actual encoded receipt envelopes, and move full
@@ -322,16 +328,30 @@ bounded point-of-use checks replace the after-ready full traversal. Its temporal
 sealing limits are explicit in `PRODUCTION-CONTINUITY.md`; it is not an atomic
 freshness or hostile same-UID guarantee.
 
-**A new parent-reproduced reporting defect keeps the interrupt gate open.** A first
-signal while restoring caller handlers, after `ReconciliationSignals.__exit__`
-has skipped its interruption-receipt decision, leaves the returned status failed
-but the durable result completed with no companion interrupt record. A disposable
-full-run counterexample reproduced this on both ABIs. Cleanup, original restoration
-and caller-handler restoration all passed; durable invalidation did not. The new
-late-interrupt companion-report contract must cover that exit boundary before any
-live use. Earlier green totals are retained, not treated as clearance over this
-newly exposed case. No live continuity preparation or execution is cleared; frozen
-host/base probes and production artifacts remain unchanged.
+**Two teardown defects keep the first-signal gate open.** The focused review
+confirmed the parent-reproduced reporting defect: a first signal while restoring
+caller handlers, after `ReconciliationSignals.__exit__` has skipped its
+interruption-receipt decision, leaves the returned status failed but the durable
+result completed with no companion interrupt record. A disposable full-run
+counterexample reproduced this on both ABIs. In that case cleanup, original
+restoration and caller-handler restoration all passed; durable invalidation did not.
+
+The reviewer also identified a distinct partial-restoration path, which the parent
+confirmed by source inspection: after restoring the caller's SIGINT handler but
+before restoring SIGTERM, a first SIGINT can invoke a raising caller handler and
+escape the loop, leaving SIGTERM bound to the experiment handler. The durable
+success receipt can again lack an override. This second case is source-established,
+not yet independently executed by the parent. Both defects are within handler
+teardown, not repeated interrupts or post-return behavior.
+
+Repair `deleg_f2a0fb07` has both cases and the missing assertions: exercise each
+handler-restoration boundary in run and recovery; restore caller handlers; verify
+invalidator contents and exact report association, not mere file existence; and
+do not retroactively invalidate a later independent recovery. The repair remains
+confined to the three continuity files. Earlier green totals are retained, not
+treated as clearance over these newly exposed cases. No live continuity preparation
+or execution is cleared; frozen host/base probes and production artifacts remain
+unchanged.
 
 No real compilation, signing, continuity run or new permission request was
 performed for this checkpoint. The Finder implementation and its parent 98-test
