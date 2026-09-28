@@ -211,6 +211,44 @@ not an app upgrade, automatic continuation mechanism, or general installer.
 No installation, cutover, service interruption, permission grant, wrapper restore,
 artifact removal, or same-session autonomous resume is proved by offline tests.
 
+## Exact return after a one-hop immutable upgrade
+
+The optional `--return-upgrade-sha256 UPGRADE_RECEIPT_SHA256` is a distinct
+explicit deployment-provenance route. It requires
+`--return-baseline INSTALL_RECEIPT_SHA256 --restart --reload`, excludes
+`--activate`, and cannot combine with `--return-controller-sha256`. Both pins
+are independently approved digests of exact receipt bytes, never inferred from
+current files. Always supply the actual `--base` on a versioned executor.
+
+The root install receipt remains authority for the original legacy selector and
+plist bytes. The committed `native-upgrade-receipt.json` binds the currently
+installed v2 deployment: root lineage, both retained stages and candidate hashes,
+original/new reports, control inventories and exact membership, regenerated
+version-bound wrappers, current candidate, both app trees and the retained v1
+app inode. The executing controller must actually reside in that v2 immutable
+control directory; a checkout or separate return executor cannot stand in for it.
+No installer or stager module is imported by the installed controller. Both
+retained stages remain required. Existing no-upgrade behavior stays unchanged.
+
+The normal signature, native readiness, preflight, revocation and lock checks
+still apply. File/directory provenance is rechecked around preflight, journal
+intent and durable preparation before selection changes. The real return
+transaction records `upgrade_sha256` and `baseline_sha256`, then uses the existing
+exact-byte return and bounded native fallback. A failed return is not the
+verified proof required by the installer's post-return wrapper restore.
+
+`test_upgrade_return_composition.py` executes fixture first install, fresh stage,
+upgrade, native activation, exact return and original-wrapper restore through
+actual staged/installed Python modules. The resulting transaction, not a
+synthesized future receipt, supplies both pins. OS/signature/health/dependency
+observations remain adapters; this is not launchd or maintenance admission proof.
+Parent frozen aggregate replay passed 131 tests on both Python 3.11.16 and 3.14.7
+with seven subprocess/native/compiler cases explicitly excluded. The same return
+success test fails meaningfully against the old controller's
+`Wrong installed control identity` refusal on both ABIs. This is a demonstrated
+old capability boundary; the new explicit upgrade pin is an additional input,
+not an identical-input security-policy bypass. Focused source review is pending.
+
 ## Native gateway timestamp-wrapper identity
 
 Native readiness normally binds a direct service child. For the Agent only, it also

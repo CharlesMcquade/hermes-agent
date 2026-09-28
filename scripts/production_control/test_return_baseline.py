@@ -630,6 +630,24 @@ class ReturnBaselineTests(unittest.TestCase):
             self.run_return()
 
 
+    def test_upgrade_pin_requires_explicit_exclusive_return_route(self):
+        pin = 'a' * 64
+        complete = ['--restart', '--reload', '--return-baseline', self.expected]
+        with patch.object(control, 'Controller') as factory:
+            for args in ([], ['--restart'], ['--restart', '--reload'],
+                         ['--restart', '--return-baseline', self.expected],
+                         complete + ['--return-controller-sha256', pin]):
+                with self.subTest(args=args), self.assertRaises(SystemExit):
+                    control.main(args + ['--return-upgrade-sha256', pin])
+            factory.assert_not_called()
+            control.main(complete + ['--return-upgrade-sha256', pin])
+            self.assertEqual(factory.return_value.restart.call_args.kwargs['return_upgrade_sha256'], pin)
+        for kwargs in ({}, dict(return_baseline=self.expected),
+                       dict(return_baseline=self.expected, reload=True, candidate=self.f.candidate),
+                       dict(return_baseline=self.expected, reload=True, return_controller_sha256=pin)):
+            with self.subTest(kwargs=kwargs), self.assertRaises(control.ControlError):
+                self.c.restart(yes=True, return_upgrade_sha256=pin, **kwargs)
+
     def test_stage_provenance_mismatch_refuses(self):
         for key in ('selected_sha256', 'candidate_sha256', 'rollback_sha256'):
             with self.subTest(key=key):

@@ -289,12 +289,12 @@ corruption, not a malicious same-account replacement. The operator must pin exac
 **file** bytes externally: the root receipt remains baseline authority; the
 committed upgrade receipt, pinned separately, is current deployment authority.
 
-A future controller return must retain its existing explicit root-baseline pin
-and accept a separately explicit upgrade receipt digest. It must validate both,
-use the new report/candidate/controls/wrappers for current-deployment validation,
-and the original root receipt for the target legacy bytes. No recursive lineage
-or auto-latest lookup is permitted. After a successful verified return, the
-existing activation transaction must include:
+The source controller now accepts `--return-upgrade-sha256` with the existing
+explicit root-baseline pin, validating both immutable receipt lineages. It uses
+the new report/candidate/controls/wrappers for current-deployment validation and
+the original root receipt for target legacy bytes. See the exact-return contract
+in `scripts/production_control/README.md`. No recursive lineage or auto-latest
+lookup is permitted. A successful verified return produces:
 
 ```text
 phase = verified
@@ -309,10 +309,15 @@ legacy bytes/modes/owners, both explicit receipt pins, intact retained artifacts
 and repeated dependency absence. It preserves the transaction bytes during the
 operation and restores only the root's exact legacy wrapper records. Merely
 remaining legacy-selected after install-only upgrade does **not** authorize it.
-Its fixture completion record is synthetic; the current controller cannot yet
-produce the upgraded return linkage. **Chained return integration remains pending
-and was not claimed or executed.** No native activation, same-WebUI-session resume,
-permission, real signature or live upgrade gate is cleared by this patch.
+The original upgrade unit fixtures still use synthetic completion records for
+isolated installer tests. Separate `test_upgrade_return_composition.py` now
+executes the full staged/installed-module return sequence and supplies the real
+verified transaction to this operation. Parent replay passed this composition
+within a frozen 131-test aggregate on both Python 3.11.16 and 3.14.7. Signature,
+process/health and dependency-absence observations are explicit fake adapters;
+source review remains pending. This closes neither the live maintenance admission
+problem (`MAINTENANCE-CONTRACT.md`) nor native activation, same-session resume,
+permission, real signature or live upgrade gates. The installer is unchanged.
 
 ### Recovery and verification evidence
 

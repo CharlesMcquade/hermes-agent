@@ -554,7 +554,139 @@ class Controller:
         require(identity(before) == identity(after), 'Retained file changed while reading')
         return data, (identity(after), tuple(ancestors))
 
-    def return_baseline(self, expected, controller_digest=None):
+    def upgraded_return(self, expected, root_pin, receipt, read):
+        """Pinned one-hop deployment only; the root remains the baseline authority.
+
+        Read retained provenance as data, never import installer/stager code. Keep
+        filesystem observations for all prepublication edges under control.lock.
+        """
+        require(isinstance(expected, str) and re.fullmatch(r'[0-9a-f]{64}', expected),
+                'Expected upgrade receipt SHA-256 required')
+        def encoded(value):
+            return (json.dumps(value, indent=2, sort_keys=True) + '\n').encode()
+
+        def digest(value):
+            return hashlib.sha256(value).hexdigest()
+
+        def bounded(path):
+            require(Path(path).lstat().st_size <= 4 * 1024 * 1024, 'Oversized upgrade provenance')
+            return read(path)
+
+        path = self.base / 'native-upgrade-receipt.json'
+        raw = bounded(path)
+        require(digest(raw) == expected and stat.S_IMODE(path.stat().st_mode) == 0o444,
+                'Upgrade receipt pin or mode mismatch')
+        envelope = json.loads(raw)
+        require(set(envelope) == {'payload', 'sha256'}, 'Invalid upgrade envelope')
+        payload = envelope['payload']
+        require(digest(encoded(payload)) == envelope['sha256'], 'Corrupt upgrade receipt')
+        require(set(payload) == {'schema_version', 'kind', 'phase', 'plan'}
+                and type(payload['schema_version']) is int and payload['schema_version'] == 1
+                and payload['kind'] == 'one-hop-native-upgrade' and payload['phase'] == 'committed',
+                'Incomplete upgrade receipt')
+        plan = payload['plan']
+        require(set(plan) == {'root_sha256', 'original_stage', 'new_stage', 'original_report',
+                             'new_report', 'original_stage_sha256', 'new_stage_sha256',
+                             'v1_tree', 'v2_tree', 'v1_identity'}
+                and plan['root_sha256'] == root_pin and plan['original_report'] == receipt['report'],
+                'Upgrade root lineage mismatch')
+        report, original = plan['new_report'], receipt['report']
+        version = Path(report['final_control_version'])
+        app = Path.home() / 'Applications/Verity.app'
+        require(report['status'] == 'staged_not_activated' and report['activation_ready'] is False
+                and report['final_base'] == str(self.base)
+                and report['final_bundle'] == original['final_bundle'] == str(app)
+                and version.parent == self.base / 'control-versions'
+                and re.fullmatch(r'[A-Za-z0-9_-]+', version.name)
+                and str(version) != original['final_control_version'], 'Invalid upgraded deployment')
+        executor = Path(__file__)
+        require(executor.is_absolute() and executor == executor.resolve()
+                and executor == version / 'restart_production.py', 'Wrong upgraded executing controller')
+        require(all(report[k] == original[k] for k in
+                    ('selected_sha256', 'bootstrap_python', 'bootstrap_tmpdir')),
+                'Upgrade baseline/bootstrap lineage mismatch')
+        names = set(original['control_sha256'])
+        require(set(report['control_sha256']) == names, 'Incomplete upgraded controls')
+        directories = {}
+
+        def directory(path):
+            require(path.is_absolute() and path == path.resolve(), 'Unsafe upgrade directory')
+            info = path.lstat()
+            require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                    and not info.st_mode & 0o7022, 'Unsafe upgrade directory metadata')
+            value = (info.st_dev, info.st_ino, info.st_uid, info.st_mode,
+                     info.st_mtime_ns, info.st_ctime_ns, tuple(sorted(p.name for p in path.iterdir())))
+            if path in directories:
+                require(directories[path] == value, 'Upgrade directory changed')
+            else:
+                directories[path] = value
+            return info
+
+        for controls in (Path(original['final_control_version']), version):
+            require(stat.S_IMODE(directory(controls).st_mode) == 0o555
+                    and set(p.name for p in controls.iterdir()) == names | {'control-receipt.json'},
+                    'Upgraded control membership/mode drift')
+        control_receipt = version / 'control-receipt.json'
+        require(json.loads(read(control_receipt)) == report['control_sha256']
+                and stat.S_IMODE(control_receipt.stat().st_mode) == 0o444,
+                'Upgraded control receipt drift')
+        for name in names:
+            path = version / name
+            data = read(path)
+            require(stat.S_IMODE(path.stat().st_mode) == 0o444, 'Upgraded control mode drift')
+            require(digest(data) == report['control_sha256'][name], 'Upgraded control drift')
+        candidates = []
+        for key, stage_report in (('original', original), ('new', report)):
+            root = Path(plan[key + '_stage'])
+            directory(root)
+            raw = bounded(root / 'stage-report.json')
+            require(digest(raw) == plan[key + '_stage_sha256'] and json.loads(raw) == stage_report,
+                    'Upgrade retained stage lineage mismatch')
+            raw = bounded(root / 'candidate-release.json')
+            require(digest(raw) == stage_report['candidate_sha256'], 'Upgrade staged candidate drift')
+            candidates.append(json.loads(raw))
+        require(plan['original_stage'] != plan['new_stage']
+                and candidates[0]['native_host']['requirement'] == candidates[1]['native_host']['requirement']
+                and candidates[0]['services'] == candidates[1]['services'], 'Upgrade candidate lineage mismatch')
+        rollback = dict(original['rollback_sha256'])
+        replacements = {}
+        before = f"sys.path.insert(0, {original['final_control_version']!r})\n".encode()
+        after = f"sys.path.insert(0, {str(version)!r})\n".encode()
+        for name, value in receipt['replacements'].items():
+            data = base64.b64decode(value, validate=True)
+            require(data.count(before) == 1, 'Invalid original wrapper version binding')
+            replacements[name] = base64.b64encode(data.replace(before, after, 1)).decode()
+            rollback['maintenance/' + name] = dict(sha256=digest(data), executable=False)
+        require(report['rollback_sha256'] == rollback, 'Upgrade rollback lineage mismatch')
+
+        def tree(root, expected_tree):
+            actual = {}
+            # Keys in the receipt never become filesystem paths or write targets.
+            for path in (root, *root.rglob('*')):
+                info = path.lstat()
+                if stat.S_ISDIR(info.st_mode):
+                    directory(path)
+                    checksum = None
+                else:
+                    checksum = digest(read(path))
+                actual[str(path.relative_to(root))] = dict(mode=stat.S_IMODE(info.st_mode),
+                                                           uid=info.st_uid, sha256=checksum)
+            require(actual == expected_tree, 'Upgraded app tree drift')
+        retained = app.with_name('Verity.upgrade-v1.app')
+        tree(retained, plan['v1_tree'])
+        tree(app, plan['v2_tree'])
+        require([retained.stat().st_dev, retained.stat().st_ino] == plan['v1_identity'],
+                'Retained original app identity drift')
+
+        def unchanged():
+            require(not os.path.lexists(app.with_name('Verity.upgrade-v2.app')),
+                    'Pending upgrade requires separate recovery')
+            for path in tuple(directories):
+                directory(path)
+        unchanged()
+        return report, replacements, unchanged
+
+    def return_baseline(self, expected, controller_digest=None, upgrade_digest=None):
         """Caller holds control.lock; resolve the independently retained install receipt.
 
         The externally approved file digest pins provenance; its internal checksum
@@ -587,7 +719,7 @@ class Controller:
         require(report['final_base'] == str(self.base)
                 and version.parent == self.base / 'control-versions'
                 and re.fullmatch(r'[A-Za-z0-9_-]+', version.name), 'Wrong installed control identity')
-        if controller_digest is None:
+        if controller_digest is None and upgrade_digest is None:
             require(Path(__file__).resolve().parent == version, 'Wrong installed control identity')
         names = {'restart_production.py', 'approved_restart_job.py', 'production_launcher.py',
                  'native_identity.py', 'watchdog.py'}
@@ -634,13 +766,18 @@ class Controller:
                 require(hashlib.sha256(read(path)).hexdigest() == descriptor['control_sha256'][name]
                         and stat.S_IMODE(path.stat().st_mode) == 0o444,
                         'Return controller drift')
+        deployment, replacements, upgrade_unchanged = report, receipt['replacements'], None
+        if upgrade_digest is not None:
+            require(controller_digest is None, 'Upgrade and separate return executor pins are exclusive')
+            deployment, replacements, upgrade_unchanged = self.upgraded_return(
+                upgrade_digest, expected, receipt, read)
         wrappers = names - {'native_identity.py'}
         require(set(receipt['wrappers']) == set(receipt['replacements']) == wrappers,
                 'Incomplete wrapper provenance')
         for name in wrappers:
             record = receipt['wrappers'][name]
             path = self.base / name
-            require(read(path) == base64.b64decode(receipt['replacements'][name], validate=True)
+            require(read(path) == base64.b64decode(replacements[name], validate=True)
                     and type(record['uid']) is int and record['uid'] == os.getuid()
                     and type(record['mode']) is int
                     and stat.S_IMODE(path.stat().st_mode) == record['mode'], 'Installed wrapper drift')
@@ -649,10 +786,10 @@ class Controller:
         require(txn is not None and txn['phase'] in {'verified', 'rolled_back'},
                 'Return requires a terminal current transaction; use recovery separately')
         current = self.validate_manifest(json.loads(read(self.manifest_path)))
-        require('native_host' in current and current['native_host']['bundle'] == report['final_bundle'],
+        require('native_host' in current and current['native_host']['bundle'] == deployment['final_bundle'],
                 'Return requires the installed native selection')
         require(hashlib.sha256((json.dumps(current, indent=2, sort_keys=True) + '\n').encode()).hexdigest()
-                == report['candidate_sha256'], 'Current selection differs from installed stage')
+                == deployment['candidate_sha256'], 'Current selection differs from installed stage')
         records = receipt['baseline']
         record = records[str(self.manifest_path)]
         target = self.validate_manifest(json.loads(base64.b64decode(record['data'], validate=True)))
@@ -692,6 +829,8 @@ class Controller:
         policy = self.revocation_file()
 
         def unchanged(prepared=None):
+            if upgrade_unchanged is not None:
+                upgrade_unchanged()
             if executor_directory is not None:
                 require({p.name for p in executor_directory.iterdir()} == names | {'return-controller.json'},
                         'Unexpected return controller members')
@@ -712,7 +851,10 @@ class Controller:
         return target, exact, unchanged, {Path(p): r['mode'] for p, r in records.items()}
 
     def restart(self, candidate=None, reload=False, yes=False, confirm=None, return_baseline=None,
-                return_controller_sha256=None):
+                return_controller_sha256=None, return_upgrade_sha256=None):
+        require(return_upgrade_sha256 is None or (return_baseline is not None and reload
+                and candidate is None and return_controller_sha256 is None),
+                'Upgrade pin requires exclusive --return-baseline and --reload')
         require(return_controller_sha256 is None or (return_baseline is not None and reload and candidate is None),
                 'Return controller pin requires --return-baseline and --reload')
         if yes:
@@ -726,14 +868,16 @@ class Controller:
         with control_lock(self.base):
             if return_baseline is not None:
                 require(self.retained_file(self.base / 'control.lock') == lock_identity, 'Control lock changed')
-                exact = self.return_baseline(return_baseline, return_controller_sha256)
-                return self._restart(operation_id, None, True, exact, return_baseline, return_controller_sha256)
+                exact = self.return_baseline(return_baseline, return_controller_sha256, return_upgrade_sha256)
+                return self._restart(operation_id, None, True, exact, return_baseline,
+                                     return_controller_sha256, return_upgrade_sha256)
             recovery = self.recover_locked()
             if recovery is not None:
                 return recovery  # Recovery never activates the supplied candidate.
             return self._restart(operation_id, candidate, reload)
 
-    def _restart(self, operation_id, candidate, reload, exact=None, baseline_digest=None, controller_digest=None):
+    def _restart(self, operation_id, candidate, reload, exact=None, baseline_digest=None, controller_digest=None,
+                 upgrade_digest=None):
         touched = False
         old_bytes = self.manifest_path.read_bytes()
         saved_plists = {}
@@ -765,6 +909,8 @@ class Controller:
             if exact:
                 exact[2]()
                 txn.update(operation='return-retained-baseline', baseline_sha256=baseline_digest)
+                if upgrade_digest is not None:
+                    txn['upgrade_sha256'] = upgrade_digest
                 if controller_digest is not None:
                     txn['return_controller_sha256'] = controller_digest
             self.journal(operation_id, 'prepared')
@@ -820,7 +966,12 @@ def main(argv=None):
     parser.add_argument('--reload', action='store_true', help='Explicit launchd-definition migration')
     parser.add_argument('--return-controller-sha256', metavar='DESCRIPTOR_SHA256',
                         help='Explicit separately retained return-controller descriptor pin')
+    parser.add_argument('--return-upgrade-sha256', metavar='UPGRADE_RECEIPT_SHA256',
+                        help='Explicit committed one-hop upgrade deployment pin')
     args = parser.parse_args(argv)
+    if args.return_upgrade_sha256 is not None and not (args.return_baseline is not None
+            and args.restart and args.reload and args.return_controller_sha256 is None):
+        parser.error('--return-upgrade-sha256 requires exclusive --return-baseline --restart --reload')
     if args.return_controller_sha256 is not None and not (args.return_baseline is not None and args.restart and args.reload):
         parser.error('--return-controller-sha256 requires --return-baseline --restart --reload')
     if args.return_baseline is not None and not args.reload:
@@ -836,7 +987,8 @@ def main(argv=None):
         return {'status': 'checked', 'changed': False}
     return controller.restart(args.activate, args.reload, args.yes,
                               lambda: sys.stdin.isatty() and input('Type restart to interrupt both services: ') == 'restart',
-                              return_baseline=args.return_baseline, return_controller_sha256=args.return_controller_sha256)
+                              return_baseline=args.return_baseline, return_controller_sha256=args.return_controller_sha256,
+                              return_upgrade_sha256=args.return_upgrade_sha256)
 
 
 if __name__ == '__main__':
