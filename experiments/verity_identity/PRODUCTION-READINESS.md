@@ -392,7 +392,8 @@ are **bounded clear**. The parent independently matched the reviewed implementat
 tests and relevant frozen helpers to committed `3100a4f9d1` and the successful
 124-test-per-ABI snapshot, then inspected the cited decision paths. These three
 offline review findings are closed for that snapshot, not established as live OS
-behavior. The first-signal finding remains open as detailed below.
+behavior. The first-signal finding is closed offline by the later bounded
+repair and review detailed below; live acceptance remains open.
 
 The fixes accept only validated failure-only host records, latch the first signal
 through reconciliation, bound actual encoded receipt envelopes, and move full
@@ -401,7 +402,7 @@ bounded point-of-use checks replace the after-ready full traversal. Its temporal
 sealing limits are explicit in `PRODUCTION-CONTINUITY.md`; it is not an atomic
 freshness or hostile same-UID guarantee.
 
-**The two teardown repairs are parent-tested; focused re-review remains open.**
+**Both teardown findings are closed offline within the documented signal bound.**
 The original defects were a first signal during caller-handler restoration leaving
 a failed return but durable success without an invalidator, and a raising SIGINT
 caller escaping partial restoration with SIGTERM still bound to the transaction.
@@ -425,11 +426,24 @@ The parent's frozen repaired snapshot passed **131 tests on Python 3.11.16 and
 Delivered hashes matched; source/snapshot bytes stayed stable; changed-file Ruff
 and diff checks passed. Receipt: `verity-continuity-settlement-parent-f7nwdsbm/receipt.json`
 under configured scratch. Native/network/subprocess tripwires stayed active with
-only inspected disposable fixture child commands allowed. Focused source-only
-re-review `deleg_318e8c97` covers signal ownership and durable report semantics.
-Passing tests alone do not close these two findings. No live continuity preparation
-or execution is cleared; frozen host/base probes and production artifacts remain
-unchanged.
+only inspected disposable fixture child commands allowed. Both source-only
+reviewers in `deleg_318e8c97` found no supported blocker in signal ownership,
+handler/mask restoration, or durable report semantics. The parent independently
+inspected the cited reader, exit, run/recover/CLI and regression paths, and
+hash-matched reviewed/tested inputs to repair commit
+`25045eafd154af00a05b1b453f41413b63f9b12e` and the current checkout. These findings
+are closed for that bounded offline implementation, not for live OS acceptance.
+
+The closeout only qualifies documentation: caller-blocked signals are not
+transaction-consumed, but restoring caller `SIG_IGN` may discard them. No runtime
+or test bytes changed, and no additional test execution is claimed. The terminal
+reader is not a full matrix validator; the CLI uses the settled in-memory return
+value, while real durable-consumer/controller integration remains absent.
+Concurrent signal consumers, repeated interrupts, failing signal syscalls, fatal
+signals, hard filesystem timeouts and post-decision caller behavior stay outside
+the contract. No live continuity preparation or execution was performed or
+authorized by this source-review closeout; frozen host/base probes and production
+artifacts remain unchanged.
 
 No real compilation, signing, continuity run or new permission request was
 performed for this checkpoint. The Finder implementation and its parent 98-test

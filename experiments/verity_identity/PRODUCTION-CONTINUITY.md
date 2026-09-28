@@ -221,8 +221,11 @@ caller handlers while blocked, then takes **one `sigpending()` snapshot**. This
 snapshot is the exact first-interrupt settlement boundary. Pending signals that
 were not already blocked by the caller are consumed once per signal number and
 latched before the durable decision. There is no polling/reconciliation loop or
-matrix replay. Already caller-blocked signals remain pending under the unchanged
-caller mask. POSIX can coalesce repeated signals; this does not count arrivals.
+matrix replay. Already caller-blocked signals are not consumed by the transaction;
+the caller mask is restored unchanged. Restoring a caller's `SIG_IGN` disposition
+may discard pending signals, as POSIX specifies. Otherwise they remain subject
+to the caller's mask and disposition. POSIX can coalesce repeated signals; this
+does not count arrivals.
 
 A caller's SIG_IGN disposition is restored only after the snapshot: installing it
 earlier would discard blocked pending evidence. It is never newly imposed on a
@@ -393,10 +396,25 @@ Only inspected constant fixture child commands with disposable HOME/state were
 allowed; compiler, signing, kernel identity and permission behavior stayed fake.
 The run/recover filesystem transactions and self-directed POSIX signals were
 real. No production app, service, permissions or selected release was touched.
-Focused source-only re-review `deleg_318e8c97` is pending; these passing tests do
-not alone close the two reviewed teardown findings or establish live readiness.
+Focused source-only re-review `deleg_318e8c97` found no supported blocker in
+either signal ownership/restoration or durable terminal evidence. The parent
+independently inspected the cited paths and matched all reviewed executable/test
+inputs to the previously tested snapshot, committed repair
+`25045eafd154af00a05b1b453f41413b63f9b12e`, and current checkout. Together with the
+retained red/green evidence, this closes both teardown findings **offline within
+the documented synchronous main-thread POSIX bound**. It is not live acceptance,
+crash-durability proof, repeated-interrupt coverage, or controller integration.
 
-Real final-path execution remains for the parent after focused review and explicit
-bounded-live approval. No compile, signing, permission API, launchctl, service
+`report_status()` validates terminal status, not the complete matrix schema.
+The CLI uses the shared run/recover return value after context-manager exit; it
+does not reread durable evidence. No production durable consumer is integrated
+yet. A later consumer must use the terminal reader rather than an isolated
+provisional success report. Post-decision exceptions may prevent return without
+changing the recorded decision. The caller-blocked/`SIG_IGN` wording above was
+qualified during closeout; runtime and test bytes were not changed or rerun.
+
+Real final-path execution remains a separate parent-run gate requiring explicit
+bounded-live authority; source-review closure does not exercise it. No compile,
+signing, permission API, launchctl, service
 operation, network connection, installed-artifact inspection, commit or push was
 performed by this implementation task.
