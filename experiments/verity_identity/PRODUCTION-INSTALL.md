@@ -457,13 +457,12 @@ real process observation, live state mutation, upgrade, activation or restart wa
 performed by these verification runs or this source-review closeout.
 
 The review identified evidence gaps, not demonstrated runtime failures. The
-upgrade journal tests establish eventual refusal and successful recovery, but
-lack immediate no-copy/no-rename/no-write assertions before recovery. Recovery
-checks wrapper bytes at refusal but not app arrangement/inodes at its two rename
-boundaries. Some malformed self identity shapes and self reobservation drift also
-lack focused cases. A separate test-only follow-up `deleg_8384638f` is strengthening
-those three existing invariant methods; its result is pending. The existing
-48-test passes must not be described as proving those missing assertions.
+then-current journal tests established eventual refusal/recovery but lacked
+immediate no-copy/no-rename/no-write assertions, app arrangement/inode snapshots
+at the recovery rename boundaries, and several malformed-self/drift cases.
+Test-only follow-up `deleg_8384638f` now strengthens those three existing invariant
+methods without changing production source. The earlier 48-test passes remain
+historical evidence; the independent strengthened-test results follow below.
 
 The new success fixture covers self PID, while the older broad-census fixture
 still does not. Both use synthetic kernel argv; neither launches the real
@@ -471,3 +470,37 @@ installer CLI. Actual all-PID readability and invocation compatibility, real
 controller-return composition, matched deployment and final-identity live
 acceptance remain separate gates. Source review is not permission to relax
 unknown-process refusal or claim an atomic launch barrier.
+
+### Independent test-only evidence strengthening
+
+The parent inspected the three changed methods and two shared test helpers,
+verified unchanged production installer bytes and the original offline guard,
+and froze the current inputs. Assertions now run immediately at refusal before
+fixture ownership is restored or recovery is attempted. They compare the entire
+disposable artifact tree (existence, bytes, modes, owners, inode/device and app
+arrangement), preserve root/commit/ready receipts, and record existing
+copy/rename/write entry points so calls remain detectable even if later reversed.
+Only the selected journal publication is allowed. The default dependency checker
+remains real; malformed self birth/argv/token/UID/PPID observations and five
+self-identity reobservation drifts are exercised with synthetic OS adapters.
+
+Independent runs passed **48 tests on Python 3.11.16 and 48 on Python 3.14.7**
+(20 upgrade, 12 installer, 16 permitted stage methods), with the same two staging
+subprocess exclusions. Source hashes remained unchanged; changed-file Ruff and
+`git diff --check` passed. All existing test methods were retained.
+
+A controlled disposable mutant delayed refusal until after one forbidden app
+rename at `retain_v1` or `recover_retain_v2`. On each ABI, both original methods
+passed against that mutant, while both strengthened methods failed at the new
+immediate-state assertion, before fixture repair, with **two assertion failures
+and zero errors**. This is mutation-test evidence of stronger assertions, **not
+an actual product defect**; the mutant never entered the repository.
+
+Parent evidence is `verity-upgrade-evidence-parent-sdpxsr4y/{freeze.json,
+receipt.json,parent-inspection.json}` under configured scratch. An initial parent
+freeze stopped on the existing documentation-only review closeout; the exact diff
+was reconciled before running. An initial result parser double-counted repeated
+traceback text; only that orchestration parser changed before all six verification
+runs were repeated. Original logs remain retained. No guard was weakened and no
+production source, native API, live census, signing or service state was changed.
+This closes the assigned test-only evidence gaps, not the live/integration gates.

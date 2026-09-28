@@ -1,6 +1,9 @@
 """One-hop real filesystem composition; native/signature observations are fixtures."""
+from contextlib import contextmanager, ExitStack
+import copy
 import json
 from pathlib import Path
+import stat
 import unittest
 from unittest.mock import patch
 
@@ -354,7 +357,10 @@ class UpgradeTests(unittest.TestCase):
         import sys
         cases = ['plain', 'bytecode_flag', 'wrong_pid', 'wrong_path', 'wrong_interpreter',
                  'argv_interpreter', 'script_argument', '-c', '-m', 'uid', 'missing_start',
-                 'nonpython_interpreter']
+                 'nonpython_interpreter', 'nan_birth', 'infinite_birth', 'bool_birth',
+                 'argv_string', 'argv_tuple', 'argv_empty', 'token_none', 'token_int',
+                 'executable_type', 'missing_uid', 'missing_ppid',
+                 *('drift_' + field for field in ('start_time', 'uid', 'ppid', 'argv', 'executable'))]
         for case in cases:
             with self.subTest(case=case):
                 self.setUp()  # independent filesystem even if a regression unexpectedly writes
@@ -381,12 +387,104 @@ class UpgradeTests(unittest.TestCase):
                         own['uid'] += 1
                     elif case == 'missing_start':
                         own['start_time'] = None
+                    elif case.endswith('_birth'):
+                        own['start_time'] = {'nan_birth': float('nan'),
+                            'infinite_birth': float('inf'), 'bool_birth': True}[case]
+                    elif case in ('missing_uid', 'missing_ppid'):
+                        own.pop(case[8:])
+                    elif case in ('argv_string', 'argv_tuple', 'argv_empty'):
+                        own['argv'] = {'argv_string': ' '.join(own['argv']),
+                            'argv_tuple': tuple(own['argv']), 'argv_empty': []}[case]
+                    elif case in ('token_none', 'token_int'):
+                        own['argv'].append(None if case == 'token_none' else 7)
+                    elif case == 'executable_type':
+                        own['executable'] = 7
+                    elif case.startswith('drift_'):
+                        observations = []
+                        def drift(pid):
+                            result = copy.deepcopy(records[pid])
+                            if pid == os.getpid():
+                                observations.append(result)
+                                if len(observations) > 1:
+                                    field = case[6:]
+                                    result[field] = {'start_time': 13.0, 'uid': os.getuid() + 1,
+                                        'ppid': 51, 'argv': [*own['argv'], '--changed'],
+                                        'executable': own['executable'] + '.changed'}[field]
+                            return result
+                        identity.side_effect = drift
+                    before = self.boundary_state()
                     if case in ('plain', 'bytecode_flag'):
                         self.assertTrue(install.upgrade_dependency_check(self.fixture.base, self.fixture.manifest))
                     else:
                         with self.assertRaises(ControlError):
                             self.default_upgrade()
                         self.assertFalse((self.fixture.base / install.UPGRADE_JOURNAL).exists())
+                        if case.startswith('drift_'):
+                            self.assertEqual(len(observations), 2)
+                    self.assertEqual(self.boundary_state(), before)
+
+    def boundary_state(self, *, journal=True):
+        """Disposable artifacts: existence, bytes, modes, owners and inode/device.
+
+        Include both stages, controls, all app slots, wrappers, selection and all
+        receipts (including an absent ready/commit becoming present). Ignore only
+        timestamps: reading a fixture must not itself change the expectation.
+        """
+        f = self.fixture
+        result = {}
+        for path in sorted(f.root.rglob('*')):
+            if not journal and path == f.base / install.UPGRADE_JOURNAL:
+                continue
+            info = path.lstat()
+            data = path.readlink() if path.is_symlink() else path.read_bytes() if path.is_file() else None
+            result[str(path.relative_to(f.root))] = (
+                info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+                info.st_uid, info.st_gid, data)
+        return result
+
+    @contextmanager
+    def refused_journal(self, phase, invalidate, expected=None):
+        """Assert at refusal, before ownership repair, not after recovery hides writes."""
+        save, opening = install.upgrade_journal, Path.open
+        hit, writes = [], []
+        before = {}
+        armed = False
+        def open_spy(path, mode='r', *args, **kwargs):
+            if armed and any(flag in mode for flag in 'wax+'):
+                writes.append((str(path), mode))
+            return opening(path, mode, *args, **kwargs)
+        def journal(base, plan, actual):
+            nonlocal armed
+            if actual == phase:
+                if expected is not None:
+                    expected(plan)
+                preserved = self.boundary_state(journal=False)
+                save(base, plan, actual)
+                self.assertEqual(self.boundary_state(journal=False), preserved)
+                before.update(self.boundary_state())
+                self.fixture.preserved()
+                hit.append(actual)
+                invalidate()
+                for spy in spies:
+                    spy.reset_mock()
+                writes.clear()
+                armed = True
+            else:
+                save(base, plan, actual)
+        with ExitStack() as stack:
+            spies = [stack.enter_context(patch.object(owner, name, wraps=getattr(owner, name)))
+                     for owner, name in [(install, 'copy_tree'), (install, 'rename_artifact'),
+                                         (install, 'atomic_write'), (install.os, 'rename'),
+                                         (install.os, 'replace')]]
+            stack.enter_context(patch.object(Path, 'open', new=open_spy))
+            stack.enter_context(patch.object(install, 'upgrade_journal', side_effect=journal))
+            yield
+            self.assertEqual(hit, [phase])
+            self.assertEqual(self.boundary_state(), before, 'mutation after refused journal')
+            for spy in spies:
+                spy.assert_not_called()  # also detect mutation followed by reversal
+            self.assertEqual(writes, [], 'write opened after refused journal')
+            self.fixture.preserved()
 
     def test_default_topology_revalidated_after_each_upgrade_journal(self):
         phases = ['copy_controls', 'copy_app', 'retain_v1', 'publish_v2',
@@ -397,18 +495,35 @@ class UpgradeTests(unittest.TestCase):
                 other.setUp()
                 try:
                     stack, jobs, records, census, identity = other.legacy_topology()
-                    save = install.upgrade_journal
-                    hit = []
-                    def invalidate(base, plan, actual):
-                        save(base, plan, actual)
-                        if actual == phase:
-                            hit.append(actual)
-                            records[112]['ppid'] = 50
+                    def expected(plan):
+                        f = other.fixture
+                        index = phases.index(phase)
+                        arrangement = [('v1', None, None), ('v1', None, None),
+                                       ('v1', None, 'v2'), (None, 'v1', 'v2')]
+                        pair = arrangement[index] if index < 4 else ('v2', 'v1', None)
+                        self.assertEqual(install.observe_pair(f.base, f.home, plan),
+                                         dict(zip(('app', 'retained', 'pending'), pair)))
+                        version = f.base / 'control-versions/native-v2'
+                        self.assertEqual(version.exists(), index > 0)
+                        if index > 0:
+                            controls = install.tree(other.fresh / 'control-versions/native-v2')
+                            controls = {name: dict(record, mode=0o555 if name == '.' else 0o444)
+                                        for name, record in controls.items()}
+                            self.assertEqual(install.tree(version), controls)
+                        replacements = stage.wrappers(f.base, version)
+                        for name, record in other.v1.items():
+                            if index > phases.index('publish_' + name):
+                                record = dict(record, data=install.base64.b64encode(replacements[name].encode()).decode())
+                            self.assertEqual(install.snapshot(f.base / name), record)
+                        self.assertEqual((f.base / install.RECEIPT).read_bytes(), other.root_bytes)
+                        for name in (install.UPGRADE_RECEIPT, 'native-upgrade-commit.ready.json'):
+                            self.assertFalse((f.base / name).exists())
+                    def invalidate():
+                        records[112]['ppid'] = 50
                     with stack:
-                        with patch.object(install, 'upgrade_journal', side_effect=invalidate):
+                        with other.refused_journal(phase, invalidate, expected):
                             with self.assertRaisesRegex(ControlError, 'Opaque interpreter'):
                                 other.default_upgrade()
-                        self.assertEqual(hit, [phase])
                         self.assertFalse((other.fixture.base / install.UPGRADE_RECEIPT).exists())
                         records[112]['ppid'] = 110  # fixture only; never production repair
                         result = install.recover_upgrade(other.fixture.base, other.fixture.home,
@@ -453,23 +568,25 @@ class UpgradeTests(unittest.TestCase):
                                 return install.restore_upgraded_wrappers(f.base, f.home,
                                     root_sha256=other.pin, upgrade_sha256=pin,
                                     approve=True, runner=other.verifier)
-                        hit = []
-                        before = {}
                         target = install.Controller(f.base).target(f.manifest, 'agent')
-                        def invalidate(base, plan, actual):
-                            save(base, plan, actual)
-                            if actual == phase:
-                                hit.append(actual)
-                                before.update({name: install.snapshot(f.base / name) for name in other.v1})
-                                # Existing live parent is no longer owned by the selected job.
-                                jobs[target]['pid'] = 113
-                                records[113] = dict(records[110], pid=113)
-                        with patch.object(install, 'upgrade_journal', side_effect=invalidate):
+                        def expected(plan):
+                            pair = ('v2', 'v1', None)
+                            if phase == 'recover_v1_app':
+                                pair = (None, 'v1', 'v2')
+                            elif phase in recovery_phases[2:]:
+                                pair = ('v1', None, 'v2')
+                            self.assertEqual(install.observe_pair(f.base, f.home, plan),
+                                             dict(zip(('app', 'retained', 'pending'), pair)))
+                            self.assertEqual((f.base / install.RECEIPT).read_bytes(), other.root_bytes)
+                            self.assertEqual(install.tree(f.root / 'stage'), other.original_stage_tree)
+                            self.assertEqual(install.tree(f.base / 'control-versions/native-v1'), other.v1_controls)
+                        def invalidate():
+                            # Existing parent is no longer owned by the selected fixture job.
+                            jobs[target]['pid'] = 113
+                            records[113] = dict(records[110], pid=113)
+                        with other.refused_journal(phase, invalidate, expected):
                             with self.assertRaisesRegex(ControlError, 'Opaque interpreter'):
                                 operation()
-                        self.assertEqual(hit, [phase])
-                        for name, record in before.items():
-                            self.assertEqual(install.snapshot(f.base / name), record)
                         jobs[target]['pid'] = 110
                         records.pop(113)
                         operation()
