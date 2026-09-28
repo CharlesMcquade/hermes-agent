@@ -421,14 +421,43 @@ ordinary admission orderings, process-reinstantiated claims and the extracted
 server startup helper. Disposable state and an explicit offline guard were used;
 the unrelated autouse HTTP-server fixture was disabled. **Full server startup,
 controller integration and live same-session continuation were not exercised.**
-Two focused reviews inspect the frozen delivered source; their clearance remains
-open. Parent evidence is retained under
+The two focused reviews (`deleg_98cbabad`) found **three supported-scope
+blockers**. The parent independently inspected the cited paths and matched the
+reviewed consumer, routes, server, streaming and test bytes to committed
+`f7fd6ed7dc7f0faf45fa1c7e66363009a19e609d`. This is source confirmation;
+the new interleavings have not yet been parent-executed.
+
+- Receipt failure after Stop can strand cancellation settlement. The executing
+  receipt wrapper calls launch cleanup and returns without entering the worker
+  (`api/post_restart_continuation.py:272–279`). Stop registers a `worker`
+  participant when it sees the published stream (`api/streaming.py:16189–16192`),
+  but launch cleanup (`api/routes.py:24183–24228`) does not retire it. The ordinary
+  worker's pre-start retirement is bypassed. Test both retirement orderings with
+  actual cancellation bookkeeping, including pending/owner/fence cleanup.
+- `/goal` kickoff is not guarded at its entry (`api/routes.py:25465`). It can
+  observe idle, then mutate model signature and goal state after continuation
+  validation but before reaching the guarded stream-start helper. Cover both
+  winners with real entrypoints/fake workers and preserve control-only commands.
+- The startup consumer is not owned by server shutdown (`server.py:603,660–702`).
+  A request waiting for terminal proof can claim and launch while graceful
+  shutdown is already cleaning up. Merely checking an event between polls is
+  insufficient: fence the claim against shutdown and settle an admission that
+  wins first before owner teardown. Do not block on locks/joins in signal handlers.
+
+Repair `deleg_6c664622` owns the narrow consumer/routes/server/test/doc changes in
+the isolated WebUI worktree. Require deterministic failing regressions before
+repair, passing affected and neighboring tests, parent reproduction and focused
+re-review. The existing **101-test pass does not close these blockers**. Consumer
+startup tests extracted a helper rather than exercising `server.main()` lifecycle;
+full startup/controller integration and actual restart execution remain separate
+gates. Original parent evidence remains under
 `~/.hermes/cache/scratch/verity-resume-parent-38oo_s91/`, including
 `parent-final-head-receipt.json` and baseline/lint comparisons.
 
 Gateway, runner, non-WebUI and unknown ownership refuse. Capture is permitted only
-after settlement; persisted pending/active work refuses. The new shared local
-admission edge precedes mutation, and ambiguous durable claims never authorize
+after settlement; persisted pending/active work refuses. The reviewed HTTP and
+server-wakeup paths share pre-mutation admission, but the `/goal` gap above blocks
+a general ordinary-start guarantee. Ambiguous durable claims never authorize
 replay. Unsupported external writers remain outside the contract. No source-only
 audit, unconsumed request or standalone mocked state machine satisfies the cutover
 condition.
