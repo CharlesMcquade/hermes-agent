@@ -54,6 +54,11 @@ and each-role sibling-preserving restart were exercised, not mocked.
 
 Earlier roots remain failed/inconclusive. The first run attempted a snapshot before
 listeners were ready; the parent reused the controller's bounded `wait_ready()`.
+Delayed review `deleg_449f4914` independently identified that original transient-
+readiness failure in the earlier `until(c.snapshot)` implementation. It is not a
+new current-source finding: current initial/restored snapshots use `wait_ready`,
+which catches transient `ControlError` and retries within its deadline. The later
+current-source review and successful fresh live canary above cover that correction.
 The second reached successful exact-byte rollback but detected four surviving
 legacy TERM-ignoring test workers. The parent matched each worker's kernel birth,
 UID, executable, exact fixed argv and recorded group before removing it, then
