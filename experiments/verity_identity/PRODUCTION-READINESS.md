@@ -1,11 +1,26 @@
-# Production readiness: blocked before final identity provisioning
+# Production readiness: blocked on 1Password sign-in
 
 The reviewed isolated gates are complete; see `COMBINED-CANARY.md`. They do
 not constitute a production cutover-ready artifact. The operator requested
 completion through readiness, with notification only at readiness or a genuine
 blocker. Production selection, service restarts and reboot remain unapproved.
 
-## Blocking dependency: production signing and recovery authorization
+## Current blocker: 1Password authentication
+
+The operator approved a dedicated production signing identity and chose 1Password
+for its recovery copy. 1Password for Mac 8.12.36 is now installed at the explicitly
+requested `/Applications/1Password.app`, and CLI 2.39.0 at `/opt/homebrew/bin/op`.
+Both code signatures verified. The temporary user-Applications installation was
+removed; its remaining empty directory was also removed.
+
+`op account list` reports zero configured accounts; `op vault list` fails with
+a sign-in/integration requirement. No account secrets were read or printed.
+The user must sign into their personal account and enable Developer → Integrate
+with 1Password CLI. After authentication, resolve the explicit personal vault,
+save recovery material, and read it back before relying on the new signer.
+No production key or certificate has been generated yet.
+
+## Previously identified signing prerequisite
 
 Read-only discovery returned exactly one valid code-signing identity:
 `Verity Lab Code Signing`, SHA-1
