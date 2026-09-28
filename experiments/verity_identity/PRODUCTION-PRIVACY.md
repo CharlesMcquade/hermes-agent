@@ -89,7 +89,11 @@ The parent replayed the finished two tests against original builder commit
 parent clean/disposable-state runs passed 65 experiment and 71 controller tests
 on Python 3.11; Python 3.14 passed 57 experiment and 71 controller tests, excluding
 the eight cryptography-dependent signer tests. Changed-file Ruff/diff checks passed.
-Independent metadata review remains pending.
+Independent metadata review (`deleg_0ef76b0e`, task 1) found no blockers in the
+scoped production-purpose, macOS-key, sealed-metadata and preserved-stage-contract
+checks. It was source-only, not an independent test or signing run. Parent matched
+the reviewed builder/tests to `bf1d45dd0ef4e3f087358018ffa3b6967abc043f` and reverified
+the real production-signed stage without installing or executing it.
 
 Run from the repository with Python 3.11 or 3.14, a disposable HOME/HERMES_HOME and
 TMPDIR under private scratch, a clean environment, and no credentials:

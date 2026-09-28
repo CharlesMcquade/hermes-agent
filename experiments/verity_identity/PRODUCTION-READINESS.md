@@ -98,8 +98,9 @@ installation and permissions are not covered by that clearance.
 1. The production-signed host/control stage now exists at
    `~/.hermes/experiments/verity-production-stage-v1`, with strict signature,
    metadata/settings, source/control and original rollback bytes reverified.
-   It is not installed or selected. Metadata review and install-only implementation/
-   review remain pending; see `PRODUCTION-STAGING.md`. The frozen application pair
+   It is not installed or selected. Metadata review is clear; the new install-only
+   implementation passes offline tests and its safety review remains pending. See
+   `PRODUCTION-STAGING.md` and `PRODUCTION-INSTALL.md`. The frozen application pair
    and bootstrap runtime are unchanged.
 2. Adapt staging for the currently installed schema-2 controller. The inherited
    `install_controls.py` is a schema-1 migration only and its `FILES` list omits

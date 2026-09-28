@@ -220,7 +220,9 @@ usage descriptions, exact signed settings, unchanged ServiceHost source and five
 control modules, candidate/rollback inventories, and exact saved manifest/plist/
 wrapper bytes against the live originals. The final app and final control version
 were still absent; baseline hashes/PIDs/health remained unchanged (`health:ok`).
-Neither service role was executed. Metadata source review remains pending.
+Neither service role was executed. Metadata source review (`deleg_0ef76b0e`,
+task 1) found no blockers within scope. Parent matched its builder/tests to the
+staging commit above and repeated successful stage signature/inventory verification.
 
 The final signed settings point to real maintenance and cannot be redirected by
 an isolated label/environment. Executing either production role is not a safe
@@ -256,7 +258,7 @@ final-identity consent, select, load/reload, or restart on the basis of staging.
 3. **Metadata implemented; final identity grants remain unresolved.** The unchanged
    ServiceHost has no consent APIs. The stager now seals and verifies the complete
    production Info.plist, including 11 usage descriptions; see `PRODUCTION-PRIVACY.md`
-   for Apple key mapping, red/green tests and pending source review. Production
+   for Apple key mapping, red/green tests and cleared source review. Production
    permission workflow, final-identity consent,
    compatible worker runtimes, rebuild/rollback continuity, and Local Network /
    Location limitations need explicit treatment and operator involvement.
