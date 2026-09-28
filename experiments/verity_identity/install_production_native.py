@@ -264,12 +264,12 @@ UPGRADE_PHASES = {'copy_controls', 'copy_app', 'retain_v1', 'publish_v2', 'commi
     for name in stage.wrappers(Path('/base'), Path('/version'))}
 
 
-def bounded_json(path):
+def bounded_json(path, max_bytes=MAX_RECEIPT):
     path = safe(path)
-    require(path.is_file() and path.stat().st_size <= MAX_RECEIPT, 'Oversized/nonfile receipt')
+    require(path.is_file() and path.stat().st_size <= max_bytes, 'Oversized/nonfile receipt')
     with path.open('rb') as stream:
-        data = stream.read(MAX_RECEIPT + 1)
-    require(len(data) <= MAX_RECEIPT, 'Oversized receipt')
+        data = stream.read(max_bytes + 1)
+    require(len(data) <= max_bytes, 'Oversized receipt')
     return json.loads(data)
 
 
@@ -393,10 +393,13 @@ def upgrade_dependency_check(base, old):
     return True
 
 
-def root_install(base, home, pin):
+def root_install(base, home, pin, max_receipt_bytes=MAX_RECEIPT):
     require(isinstance(pin, str) and re.fullmatch('[0-9a-f]{64}', pin), 'Explicit root SHA256 required')
-    envelope = bounded_json(base / RECEIPT)
-    require(stage.digest((base / RECEIPT).read_bytes()) == pin, 'Root receipt pin mismatch')
+    envelope = bounded_json(base / RECEIPT, max_bytes=max_receipt_bytes)
+    with (base / RECEIPT).open('rb') as stream:
+        data = stream.read(max_receipt_bytes + 1)
+    require(len(data) <= max_receipt_bytes, 'Oversized receipt')
+    require(stage.digest(data) == pin, 'Root receipt pin mismatch')
     require(set(envelope) == {'schema_version', 'receipt', 'sha256'}
             and envelope['schema_version'] == 1, 'Unknown root schema')
     receipt = envelope['receipt']

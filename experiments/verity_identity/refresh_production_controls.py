@@ -17,14 +17,14 @@ import tempfile
 import install_production_native as original
 import stage_production_native as native_stage
 from restart_production import atomic_write, control_lock, require
-from control_refresh import CONTROL_FILES, MANAGEMENT, RECEIPT, JOURNAL, READY, STAGE_REPORT, new_wrappers
+from control_refresh import (CONTROL_FILES, MANAGEMENT, RECEIPT, JOURNAL, READY, STAGE_REPORT,
+                             MAX_REFRESH_BYTES, new_wrappers, validate_transaction)
 
 CONTROL = native_stage.CONTROL
 TRANSACTION = 'activation-transaction.json'
 encoded = native_stage.encoded
 digest = native_stage.digest
 safe = original.safe
-snapshot = original.snapshot
 decode = original.decode
 
 
@@ -35,14 +35,22 @@ def pin(value):
 
 def raw(path):
     path = safe(path)
-    require(path.is_file() and path.stat().st_size <= original.MAX_RECEIPT, 'Oversized/nonfile input')
-    data = path.read_bytes()
-    require(len(data) <= original.MAX_RECEIPT, 'Oversized input')
+    require(path.is_file() and path.stat().st_size <= MAX_REFRESH_BYTES, 'Oversized/nonfile input')
+    with path.open('rb') as stream:
+        data = stream.read(MAX_REFRESH_BYTES + 1)
+    require(len(data) <= MAX_REFRESH_BYTES, 'Oversized input')
     return data
+
+
+def snapshot(path):
+    data = raw(path)
+    return dict(data=base64.b64encode(data).decode(),
+                mode=stat.S_IMODE(path.stat().st_mode), uid=path.stat().st_uid)
 
 
 def sealed_write(path, data):
     """Publish mode 0444 at rename, never a briefly writable authority record."""
+    require(len(data) <= MAX_REFRESH_BYTES, 'Oversized publication')
     safe(path, missing=True)
     require(not path.exists(), 'Sealed publication already exists')
     fd, name = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
@@ -69,7 +77,8 @@ def v1_records(receipt):
 
 
 def immutable_baseline(base, home, root_sha256, original_stage):
-    receipt, old, app, version = original.root_install(base, home, pin(root_sha256))
+    receipt, old, app, version = original.root_install(
+        base, home, pin(root_sha256), max_receipt_bytes=MAX_REFRESH_BYTES)
     source = safe(original_stage)
     report = json.loads(raw(source / 'stage-report.json'))
     require(report == receipt['report'] and report['status'] == 'staged_not_activated', 'Original stage lineage mismatch')
@@ -167,29 +176,27 @@ def inspect(root, base, home, stage_sha256, root_sha256):
     return report, receipt, old
 
 
-def transaction(data, schema, refresh_pin=None):
+def transaction(data, schema, refresh_pin=None, *, base=None):
     envelope = json.loads(data)
     fields = {'schema_version', 'transaction', 'sha256'} | ({'control_refresh_sha256'} if schema == 2 else set())
     require(set(envelope) == fields and type(envelope['schema_version']) is int and envelope['schema_version'] == schema, 'Wrong transaction schema')
     txn = envelope['transaction']
     require(digest(json.dumps(txn, sort_keys=True, separators=(',', ':')).encode()) == envelope['sha256'], 'Corrupt transaction')
-    require(txn['phase'] in {'prepared', 'verified', 'rollback_started', 'rolled_back', 'rollback_failed'}
-            and type(txn['reload']) is bool and isinstance(txn['operation_id'], str)
-            and txn['authorization'] in {'verified-live-fallback', 'same-release-restart'}, 'Invalid transaction')
+    validate_transaction(txn, base=base)
     if schema == 2:
         require(envelope['control_refresh_sha256'] == pin(refresh_pin), 'Transaction refresh mismatch')
     return envelope
 
 
 def fence(receipt):
-    original_txn = transaction(decode(receipt['original_transaction']), 1)
+    original_txn = transaction(decode(receipt['original_transaction']), 1, base=receipt['stage']['base'])
     return dict(original_txn, schema_version=2, control_refresh_sha256=digest(encoded(receipt)))
 
 
 def journal(base, receipt, phase, proof=None):
     payload = dict(schema_version=1, receipt=receipt, phase=phase, return_proof=proof)
     data = encoded(dict(payload=payload, sha256=digest(encoded(payload))))
-    require(len(data) <= original.MAX_RECEIPT, 'Journal too large')
+    require(len(data) <= MAX_REFRESH_BYTES, 'Journal too large')
     safe(base / JOURNAL, missing=True)
     atomic_write(base / JOURNAL, data)
 
@@ -207,7 +214,7 @@ def retained(root, base, home, stage_sha256, root_sha256):
             and receipt['schema_version'] == 1 and receipt['kind'] == 'native-control-refresh'
             and receipt['stage'] == report and receipt['stage_sha256'] == stage_sha256, 'Refresh receipt lineage mismatch')
     require(original.app_identity(base / 'control.lock') == receipt['lock_identity'], 'Control lock changed')
-    require(transaction(decode(receipt['original_transaction']), 1)['transaction']['phase'] in {'verified', 'rolled_back'}, 'Original transaction not terminal')
+    require(transaction(decode(receipt['original_transaction']), 1, base=base)['transaction']['phase'] in {'verified', 'rolled_back'}, 'Original transaction not terminal')
     for name in (READY, RECEIPT):
         safe(base / name, missing=True)
         if (base / name).exists():
@@ -259,7 +266,7 @@ def install(root, base, home, *, stage_sha256, root_sha256, approve=False):
         require(not version.exists(), 'Version already exists')
         require(all(snapshot(base / n) == r for n, r in v1_records(baseline).items()), 'Installed wrapper drift')
         before = snapshot(base / TRANSACTION)
-        require(transaction(decode(before), 1)['transaction']['phase'] in {'verified', 'rolled_back'}, 'Terminal activation required')
+        require(transaction(decode(before), 1, base=base)['transaction']['phase'] in {'verified', 'rolled_back'}, 'Terminal activation required')
         receipt = dict(schema_version=1, kind='native-control-refresh', stage=report,
                        stage_sha256=stage_sha256, original_transaction=before, lock_identity=lock)
         journal(base, receipt, 'prepared')
@@ -321,7 +328,7 @@ def undo(root, base, home, *, stage_sha256, root_sha256, approve, refresh_sha256
             require(raw(base / RECEIPT) == encoded(receipt) and digest(encoded(receipt)) == refresh_sha256, 'Refresh pin mismatch')
             if proof is None:
                 proof = snapshot(base / TRANSACTION)
-            txn = transaction(decode(proof), 2, refresh_sha256)['transaction']
+            txn = transaction(decode(proof), 2, refresh_sha256, base=base)['transaction']
             require(txn['phase'] == 'verified' and txn['reload'] is True
                     and txn.get('operation') == 'return-retained-baseline'
                     and txn.get('baseline_sha256') == root_sha256

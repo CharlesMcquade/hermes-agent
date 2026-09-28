@@ -20,6 +20,9 @@ RECEIPT = 'native-control-refresh-receipt.json'
 JOURNAL = 'native-control-refresh-journal.json'
 READY = 'native-control-refresh-commit.ready.json'
 STAGE_REPORT = 'control-refresh-stage.json'
+# Fixed refresh-only capacity for original backups plus nested return proof.
+# Ordinary native upgrade receipts retain their independent 4 MiB default.
+MAX_REFRESH_BYTES = 64 * 1024 * 1024
 
 
 def require(value, message):
@@ -39,6 +42,70 @@ def pin(value):
     require(isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value),
             'Explicit control refresh SHA-256 required')
     return value
+
+
+def validate_transaction(txn, *, base=None):
+    """Validate emitted backup data without consulting paths or live services.
+
+    Refresh retains and later restores these bytes; a valid checksum alone must
+    not admit an incomplete backup. Ordinary schema-1 Controller behavior stays
+    separate. Live availability, revocation and native identity remain its job.
+    """
+    require(isinstance(txn, dict)
+            and txn.get('phase') in ('prepared', 'verified', 'rollback_started', 'rolled_back', 'rollback_failed')
+            and type(txn.get('reload')) is bool and isinstance(txn.get('operation_id'), str)
+            and txn.get('authorization') in ('verified-live-fallback', 'same-release-restart'),
+            'Invalid transaction')
+    services = {'agent', 'webui'}
+    def decode(value):
+        require(isinstance(value, str) and value, 'Invalid transaction backup encoding')
+        return base64.b64decode(value, validate=True)
+    try:
+        manifest = json.loads(decode(txn.get('manifest')))
+        require(isinstance(manifest, dict) and type(manifest.get('schema_version')) is int
+                and manifest['schema_version'] == 2, 'Invalid transaction manifest backup')
+        for field in ('services', 'labels'):
+            require(isinstance(manifest.get(field), dict) and set(manifest[field]) == services,
+                    'Incomplete transaction manifest backup')
+        require(all(isinstance(v, dict) for v in manifest['services'].values())
+                and all(isinstance(v, str) and re.fullmatch(r'[A-Za-z0-9_.-]+', v)
+                        for v in manifest['labels'].values())
+                and len(set(manifest['labels'].values())) == 2, 'Invalid transaction manifest backup')
+        require(isinstance(txn.get('plists'), dict) and set(txn['plists']) == services,
+                'Incomplete transaction plist backup')
+        for service in services:
+            definition = plistlib.loads(decode(txn['plists'][service]))
+            require(isinstance(definition, dict), 'Invalid transaction plist backup')
+            argv = definition.get('ProgramArguments')
+            if 'native_host' in manifest:
+                native = manifest['native_host']
+                require(isinstance(native, dict)
+                        and isinstance(native.get('executable'), str)
+                        and isinstance(native.get('bundle_id'), str)
+                        and bool(native['bundle_id'])
+                        and argv == [native['executable'], service]
+                        and definition.get('AssociatedBundleIdentifiers') == [native['bundle_id']],
+                        'Invalid transaction native plist backup')
+            else:
+                launcher = manifest.get('launcher_path')
+                if 'launcher_path' not in manifest:
+                    require(base is not None and Path(base).is_absolute(),
+                            'Transaction backup base required')
+                    launcher = str(Path(base) / 'production_launcher.py')
+                require(isinstance(launcher, str) and Path(launcher).is_absolute()
+                        and isinstance(argv, list) and len(argv) == 3
+                        and argv[1:] == [launcher, service],
+                        'Invalid transaction launcher plist backup')
+            require(definition.get('Label') == manifest['labels'][service]
+                    and isinstance(argv, list) and len(argv) >= 2
+                    and all(isinstance(v, str) and v and '\x00' not in v for v in argv)
+                    and argv[0].startswith('/') and argv[-1] == service
+                    and definition.get('Program', argv[0]) == argv[0]
+                    and definition.get('RunAtLoad') is True and definition.get('KeepAlive') is True
+                    and isinstance(definition.get('WorkingDirectory'), str)
+                    and definition['WorkingDirectory'].startswith('/'), 'Invalid transaction plist backup')
+    except (ValueError, TypeError, OverflowError, plistlib.InvalidFileException) as exc:
+        raise ValueError('Invalid transaction backup: ' + str(exc)) from exc
 
 
 def new_wrappers(base, version, pin):
@@ -95,12 +162,17 @@ def load(base, pin, executor, *, read=None):
     base, executor = Path(base), Path(executor)
     _safe(base, True)
     observations, directories = {}, {}
-    reader = read or (lambda path: path.read_bytes())
+    def default_read(path):
+        with path.open('rb') as stream:
+            return stream.read(MAX_REFRESH_BYTES + 1)
+    reader = read or default_read
 
     def observe(path):
         path = Path(path)
         before = (_safe(path), _identity(path))
+        require(path.stat().st_size <= MAX_REFRESH_BYTES, 'Oversized refresh provenance')
         raw = reader(path)
+        require(len(raw) <= MAX_REFRESH_BYTES, 'Oversized refresh provenance')
         require(before == (_safe(path), _identity(path)), 'Refresh input changed while reading')
         value = (raw, before)
         if path in observations:
@@ -110,7 +182,7 @@ def load(base, pin, executor, *, read=None):
 
     def bounded(path):
         _safe(path)
-        require(path.stat().st_size <= 4 * 1024 * 1024, 'Oversized refresh provenance')
+        require(path.stat().st_size <= MAX_REFRESH_BYTES, 'Oversized refresh provenance')
         return observe(path)
 
     def directory(path):
@@ -155,11 +227,9 @@ def load(base, pin, executor, *, read=None):
             and type(original_txn['schema_version']) is int and original_txn['schema_version'] == 1
             and digest(json.dumps(original_txn['transaction'], sort_keys=True,
                                   separators=(',', ':')).encode()) == original_txn['sha256']
-            and original_txn['transaction']['phase'] in {'verified', 'rolled_back'}
-            and type(original_txn['transaction']['reload']) is bool
-            and isinstance(original_txn['transaction']['operation_id'], str)
-            and original_txn['transaction']['authorization'] in {'verified-live-fallback', 'same-release-restart'},
+            and original_txn['transaction']['phase'] in {'verified', 'rolled_back'},
             'Invalid original refresh transaction')
+    validate_transaction(original_txn['transaction'], base=base)
     root_raw = bounded(base / 'native-install-receipt.json')
     require(isinstance(stage['root_sha256'], str)
             and re.fullmatch('[0-9a-f]{64}', stage['root_sha256'])

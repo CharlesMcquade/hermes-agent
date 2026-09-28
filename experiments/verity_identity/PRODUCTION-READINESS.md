@@ -5,7 +5,7 @@
 `CONTROL-REFRESH.md` describes the separately implemented controls-only route:
 preserve the signed app, stable launcher and original v1 directory, and publish
 only three management wrappers after a durable transaction-schema fence. The
-parent frozen replay passed **161 tests / 835 subtests on each ABI** with seven
+parent frozen replay passed **163 tests / 865 subtests on each ABI** with seven
 explicit exclusions and no unexpected guard violations; the real fixture chain
 uses copied actual installed-v1 consumers and the timestamp-wrapper topology.
 A removed-lock regression fails twice per ABI against the prior implementation.
@@ -17,10 +17,15 @@ successful service restart or launchd-owned approved-job execution.
 Install-only refresh and isolated signed native rehearsal are explicitly approved;
 production cutover is not. The first real staging attempt refused an existing root
 receipt larger than the helper's 4 MiB cap. No installed wrappers, selector or
-services changed. A bounded refresh-specific capacity fix and representative-size
-fixture are being prepared; do not bypass the limit through runtime monkeypatches.
-Focused review, successful staging, installed readback and resolved unarmed
-activation/return artifacts remain open. The approved isolated signed native
+services changed. The repair now uses a fixed refresh-only 64 MiB bound while
+leaving original 4 MiB defaults intact. A genuine large fixture traverses first
+install, refresh, activation, exact return and restore; its root/transaction exceed
+8 MB and its retained return journal exceeds 22 MB. Against prior code, the capacity
+regression fails twice per ABI with zero errors. Exact legacy/native backup argv
+and associated native bundle identity are validated before refresh mutation.
+Real staging and bounded preinstall inspection now pass. Focused source closure,
+installation/readback and resolved unarmed activation/return artifacts remain open.
+The approved isolated signed native
 rehearsal now passes: actual host-to-timestamp-wrapper-to-child identity,
 direct WebUI, independent launchd restart, and exact selector/plist rollback
 after an induced failed start. Parent readback verifies all three lab jobs absent,

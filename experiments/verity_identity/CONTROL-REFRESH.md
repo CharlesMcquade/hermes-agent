@@ -1,15 +1,13 @@
 # Controls-only native refresh
 
-Status: implemented and independently replayed **offline**; install-only refresh
-and an isolated native rehearsal are now explicitly approved. Preparation found a
-real receipt-capacity incompatibility before any installed control changes.
-Focused review confirmed the lock fix, but also found that the backup validator
-accepts a two-argument legacy plist lacking its launcher. Both-role regression
-cases reproduce that refusal gap on each ABI; argv-shape and capacity remediation
-remain in progress, alongside installed readback. The parent has now completed
-the approved isolated signed native rehearsal, including restart and bounded exact
-rollback; this is not production activation. Production cutover still requires
-separate approval.
+Status: implemented and independently replayed; install-only refresh and isolated
+native rehearsal are explicitly approved, but production cutover is not. The
+receipt-capacity and malformed-backup argv fixes pass the parent frozen replay
+(**163 tests / 865 subtests per ABI**) and 50 fresh-process probes. Real staging
+and guarded preinstall inspection now succeed without installed changes. Focused
+source closure, installation/readback and resolved unarmed cutover artifacts remain
+open. The approved isolated signed native rehearsal passed restart, bounded exact
+rollback and cleanup; it is not production activation.
 
 ## Why this is different from an app upgrade
 
@@ -173,10 +171,16 @@ successful native CLI restart are not claimed.
 
 The first approved real staging attempt exposed a separate size mismatch: valid
 root and activation records exceed the helper's 4 MiB cap. Staging stopped before
-installed control mutation. Capacity remediation must preserve a fixed bounded
-refresh limit, leave the original upgrade default unchanged, and exercise nested
-receipts and actual return proof at representative size. Small fixture passes do
-not establish that production provenance fits.
+installed control mutation. The fix uses a fixed 64 MiB refresh-only cap for
+provenance readers, snapshots, sealed publication and journals. Original helper
+readers still default to 4 MiB. The large real fixture produces original records
+above 8 MB, a refresh receipt above 11 MB and a retained return journal above 22 MB.
+The parent replay now passes 163 tests / 865 subtests per ABI; prior code fails the
+two capacity regressions per ABI with zero errors. Over-limit inputs refuse before
+publication, including through an injected reader. Both-role missing/wrong/relative
+launcher and extra-argument cases reject, as do malformed native host argv/bundle
+associations. A new, disjoint actual stage and guarded preinstall inspection pass;
+no installed control or service changed during preparation.
 
 ## Parent isolated native evidence
 

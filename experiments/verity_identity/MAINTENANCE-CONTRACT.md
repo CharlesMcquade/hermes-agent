@@ -1,7 +1,9 @@
 # Native one-hop maintenance: refused boundary
 
 **Decision: do not implement a maintenance bypass for the current v1.**
-`install_production_native.py` is unchanged. No `maintenance_native.py` is
+`install_production_native.py` retains its original upgrade admission/census and
+4 MiB default readers; only an explicit refresh-only capacity parameter was added.
+No `maintenance_native.py` is
 provided: an adapter that returns permission without a production exclusion
 mechanism would conceal the missing prerequisite. The existing default remains
 fail-closed, including unreadable PID identities. This artifact is not live-go

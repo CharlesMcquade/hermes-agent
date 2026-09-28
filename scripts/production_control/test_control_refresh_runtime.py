@@ -40,6 +40,64 @@ def module_at(name, path):
     return module
 
 
+def malformed_backups(raw):
+    """Checksum-correct records: envelope integrity must not mask bad backups."""
+    import copy
+    import plistlib
+    body = json.loads(raw)['transaction']
+    cases: list[tuple[str, str | None, object]] = [('both-missing', None, None)]
+    for field in ('manifest', 'plists'):
+        cases.extend((field + '-' + name, field, value) for name, value in (
+            ('missing', None), ('type', 17), ('empty', '' if field == 'manifest' else {})))
+    b64 = lambda value: base64.b64encode(value).decode()
+    cases.extend([
+        ('manifest-base64', 'manifest', '!'),
+        ('manifest-json', 'manifest', b64(b'not json')),
+        ('manifest-object', 'manifest', b64(b'[]')),
+        ('manifest-shape', 'manifest', b64(b'{}')),
+        ('plists-services', 'plists', {'agent': body['plists']['agent']}),
+        ('plist-type', 'plists', dict(body['plists'], agent=17)),
+        ('plist-base64', 'plists', dict(body['plists'], agent='!')),
+        ('plist-bytes', 'plists', dict(body['plists'], agent=b64(b'not plist'))),
+        ('plist-object', 'plists', dict(body['plists'], agent=b64(plistlib.dumps([])))),
+        ('plist-shape', 'plists', dict(body['plists'], agent=b64(plistlib.dumps({})))),
+    ])
+    # These remain checksum-correct and change only one backed-up plist. The
+    # original terminal transaction came from a real fixture legacy restart.
+    for service in ('agent', 'webui'):
+        definition = plistlib.loads(base64.b64decode(body['plists'][service], validate=True))
+        argv = definition['ProgramArguments']
+        assert len(argv) == 3 and argv[-1] == service
+        for name, replacement in (
+            ('missing-launcher', [argv[0], service]),
+            ('wrong-launcher', [argv[0], '/wrong/production_launcher.py', service]),
+            ('relative-launcher', [argv[0], 'production_launcher.py', service]),
+            ('extra-argument', [argv[0], argv[1], '--extra', service]),
+        ):
+            changed = dict(definition, ProgramArguments=replacement)
+            cases.append((service + '-' + name, 'plists',
+                          dict(body['plists'], **{service: b64(plistlib.dumps(changed))})))
+    for name, field, value in cases:
+        txn = copy.deepcopy(body)
+        if field is None:
+            txn.pop('manifest')
+            txn.pop('plists')
+        elif value is None:
+            txn.pop(field)
+        else:
+            txn[field] = value
+        envelope = dict(schema_version=1, transaction=txn,
+                        sha256=refresh.digest(json.dumps(txn, sort_keys=True, separators=(',', ':')).encode()))
+        yield name, refresh.encoded(envelope)
+
+
+def filesystem_state(root):
+    """Membership, bytes and identities at refusal, before any fixture repair."""
+    return {str(p.relative_to(root)): (p.stat().st_dev, p.stat().st_ino,
+            p.stat().st_mode, p.stat().st_uid, None if p.is_dir() else p.read_bytes())
+            for p in (root, *root.rglob('*'))}
+
+
 class RefreshRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.f = fixtures.NativeMigrationTests()
@@ -145,6 +203,30 @@ class RefreshRuntimeTests(unittest.TestCase):
     def exact_return(self):
         return self.c.restart(reload=True, yes=True, return_baseline=self.root_pin,
                               return_control_refresh_sha256=self.pin)
+
+    def test_malformed_original_backups_refuse_runtime_before_writes(self):
+        for name, raw in malformed_backups(self.old_txn):
+            with self.subTest(case=name):
+                self.receipt['original_transaction']['data'] = base64.b64encode(raw).decode()
+                self.pin = refresh.digest(refresh.encoded(self.receipt))
+                put(self.base / refresh.RECEIPT, refresh.encoded(self.receipt), 0o444)
+                for wrapper, text in refresh.new_wrappers(self.base, self.version, self.pin).items():
+                    put(self.base / wrapper, text.encode(), self.root['wrappers'][wrapper]['mode'])
+                put(self.c.transaction_path, refresh.encoded(dict(json.loads(raw),
+                    schema_version=2, control_refresh_sha256=self.pin)))
+                # Rebind a retained object: admission, not a stale pin, must reject.
+                self.c.control_refresh_sha256 = self.pin
+                for run in (lambda: refresh.load(self.base, self.pin, self.version / 'restart_production.py'),
+                            lambda: self.c.restart(yes=True), self.c.recover_locked):
+                    before, calls = filesystem_state(self.base), list(self.host.calls)
+                    with patch.object(self.module, 'atomic_write', wraps=self.module.atomic_write) as writes:
+                        try:
+                            with self.assertRaisesRegex((ValueError, self.module.ControlError), 'transaction|backup'):
+                                run()
+                        finally:
+                            writes.assert_not_called()
+                            self.assertEqual(filesystem_state(self.base), before)
+                            self.assertEqual(self.host.calls, calls)
 
     def test_activation_exact_return_and_old_runtime_fence(self):
         self.assertEqual(self.activate()['status'], 'verified')

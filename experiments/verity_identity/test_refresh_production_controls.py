@@ -82,6 +82,38 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(self.immutable(f), f.immutable)
         f.preserved()
 
+    def test_malformed_original_backups_refuse_install_and_recover_before_writes(self):
+        from test_control_refresh_runtime import malformed_backups, filesystem_state
+        original, refresh = modules()
+        for operation in ('install', 'recover'):
+            f = self.fixture()
+            valid = (f.base / refresh.TRANSACTION).read_bytes()
+            for index, (name, raw) in enumerate(malformed_backups(valid)):
+                with self.subTest(operation=operation, case=name):
+                    if index:
+                        f = self.fixture()
+                    # A prepared-only journal is sufficient recovery evidence on
+                    # old code: no unrelated wrapper/pin drift may cause refusal.
+                    (f.base / refresh.TRANSACTION).write_bytes(raw)
+                    if operation == 'recover':
+                        receipt = dict(schema_version=1, kind='native-control-refresh',
+                            stage=json.loads((f.fresh / refresh.STAGE_REPORT).read_bytes()),
+                            stage_sha256=f.stage_pin, original_transaction=original.snapshot(f.base / refresh.TRANSACTION),
+                            lock_identity=original.app_identity(f.base / 'control.lock'))
+                        refresh.journal(f.base, receipt, 'prepared')
+                    before = filesystem_state(f.root)
+                    with patch.object(refresh, 'atomic_write', wraps=refresh.atomic_write) as writes, \
+                         patch.object(refresh, 'sealed_write', wraps=refresh.sealed_write) as sealed, \
+                         patch.object(original, 'copy_tree', wraps=original.copy_tree) as copies:
+                        try:
+                            with self.assertRaisesRegex(ValueError, 'transaction|backup'):
+                                (self.go if operation == 'install' else self.recover)(f)
+                        finally:
+                            writes.assert_not_called()
+                            sealed.assert_not_called()
+                            copies.assert_not_called()
+                            self.assertEqual(filesystem_state(f.root), before)
+
     def test_complete_install_runtime_provenance_and_preactivation_undo(self):
         import control_refresh
         f = self.fixture()
