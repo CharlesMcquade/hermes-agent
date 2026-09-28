@@ -201,7 +201,9 @@ finding against its older snapshot and no other blockers. That duplicate is clos
 by the already-tested fix and re-review above. The synthetic migration harness now
 has a six-case live pass, independently verified process/group/job cleanup and
 unchanged production baseline; see `../../NATIVE-MIGRATION-CANARY.md`. Current-source
-migration harness review remains pending; final installation and grants are not done.
+migration harness review (`deleg_4d2e07e8`) found no blockers in scope. The parent
+matched both reviewed files to pushed commit
+`12917ba0f24b86f9ff306b20a019fefe95338e66`. Final installation and grants are not done.
 
 ## Concrete remaining gates / blockers
 

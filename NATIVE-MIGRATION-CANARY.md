@@ -66,7 +66,13 @@ per-command faults in addition to the initial nine. Parent regression runs passe
 63 experiment and 71 controller tests on Python 3.11; Python 3.14 passed 55
 experiment and 71 controller tests (eight cryptography-dependent signer tests
 excluded). Changed-file Ruff and Git diff checks passed. Focused current-source
-review is pending; a live happy-path result does not override a concrete review finding.
+review (`deleg_4d2e07e8`) found no blockers within its stated scope: synthetic input
+containment, exact rollback, native process/group accounting, cleanup continuation
+and post-cleanup success publication. It confirmed the readiness/controller-cleanup
+concerns were historical, not findings against the current source. This was a
+read-only source review, not an independent rerun of the live or offline tests.
+The parent matched both reviewed files to pushed commit
+`12917ba0f24b86f9ff306b20a019fefe95338e66`; final production gates remain separate.
 
 ## Offline verification
 

@@ -88,7 +88,10 @@ These are not final production identity, installation, messaging or cutover test
 Environment/staging integration review reported only the already-fixed cleanup
 finding and no other blockers. The new synthetic migration harness passed six live
 cases with independent cleanup verification and unchanged production baseline;
-see `../../NATIVE-MIGRATION-CANARY.md`. Its current-source review remains pending.
+see `../../NATIVE-MIGRATION-CANARY.md`. Focused current-source review
+(`deleg_4d2e07e8`) found no blockers in the synthetic containment, rollback,
+process/group evidence or cleanup/publication scope. Final production artifact
+installation and permissions are not covered by that clearance.
 
 ## Unfinished implementation and verification after that dependency
 
