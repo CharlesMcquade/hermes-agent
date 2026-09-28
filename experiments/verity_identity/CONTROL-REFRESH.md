@@ -1,8 +1,15 @@
 # Controls-only native refresh
 
-Status: implemented and independently replayed **offline**; focused source review,
-installed readback, and separately authorized native rehearsal remain open. This
-is not a cutover-ready declaration or permission to change installed state.
+Status: implemented and independently replayed **offline**; install-only refresh
+and an isolated native rehearsal are now explicitly approved. Preparation found a
+real receipt-capacity incompatibility before any installed control changes.
+Focused review confirmed the lock fix, but also found that the backup validator
+accepts a two-argument legacy plist lacking its launcher. Both-role regression
+cases reproduce that refusal gap on each ABI; argv-shape and capacity remediation
+remain in progress, alongside installed readback. The parent has now completed
+the approved isolated signed native rehearsal, including restart and bounded exact
+rollback; this is not production activation. Production cutover still requires
+separate approval.
 
 ## Why this is different from an app upgrade
 
@@ -129,8 +136,11 @@ A disappeared lock at the open boundary is not recreated.
 
 ## Parent offline evidence
 
-The frozen parent replay passed **159 tests on each of Python 3.11.16 and 3.14.7**,
-with 784 subtests per run and no failures/errors or unexpected guard violations.
+The corrected frozen parent replay passed **161 tests on each of Python 3.11.16
+and 3.14.7**, with 835 subtests per run and no failures/errors or unexpected guard
+violations. Checksummed malformed manifest/plist backups now refuse at install,
+recovery and runtime admission; the new tests fail with 51 assertion failures and
+zero errors per ABI against the prior code.
 Seven neighboring cases requiring native APIs, subprocesses, compiler or selected
 application imports were explicitly excluded. One expected denied default native
 observer call per full run proves refusal under the offline guard; it is not a
@@ -153,7 +163,43 @@ prior installer implementation: **two assertion failures per ABI, zero errors**;
 the corrected implementation passes. Original app/launcher/v1/root and selection
 invariants are checked independently, not rebaselined after writes.
 
-These results do not establish real launchd topology, signature execution,
-production restart, successful-native production return, or capabilities inherited
-by production tools. No second production activation has occurred. Native rehearsal,
-install-only changes and final cutover remain separately scoped approvals.
+Fifty independent fresh-process probes (25 per ABI) also pass against these corrected
+files. Actual fixture-installed wrappers and versioned CLIs use normal sibling
+imports with native/network/application calls forbidden. Help, argument rejection,
+committed/missing-commit admission, actual CLI preactivation recovery and post-undo
+refusal are exercised. Parent checked both expected text and exit status. Genuine
+non-launchd ownership blocks approved-job execution; forwarding past that gate and
+successful native CLI restart are not claimed.
+
+The first approved real staging attempt exposed a separate size mismatch: valid
+root and activation records exceed the helper's 4 MiB cap. Staging stopped before
+installed control mutation. Capacity remediation must preserve a fixed bounded
+refresh limit, leave the original upgrade default unchanged, and exercise nested
+receipts and actual return proof at representative size. Small fixture passes do
+not establish that production provenance fits.
+
+## Parent isolated native evidence
+
+`verify_control_refresh_live.py` and `test_control_refresh_lab.py` keep filesystem
+build/preflight separate from explicit `--live`. Eleven guarded offline tests pass
+on each approved ABI. The live parent run copies the retained ServiceHost executable
+without compilation, signs only the disposable lab bundle with the existing identity,
+and verifies its executable-section digest stayed unchanged. Signing explicitly
+selects the existing keychain while keeping the synthetic HOME: the first attempt
+could not find the signer through isolated-HOME defaults and stopped before launch.
+No private key is exported, and trust settings are not modified.
+
+The successful run observed real signature/process identities for the exact
+host -> timestamp wrapper -> gateway-state child chain and direct WebUI child;
+then performed an independently launchd-owned restart and one induced failed-start
+rollback. The controller returned `verified` for restart and `rolled_back` for the
+fault. Lab selector and both plist bytes were restored exactly. Cleanup and a
+separate parent readback verified all three lab jobs absent, all 15 observed PIDs
+absent, no lab-port listener, and the disposable bundle signature still valid.
+Production readback independently verified unchanged installed artifacts, exact
+healthy legacy baseline and service PIDs, and both production one-shot jobs absent.
+
+This closes the isolated native topology/readiness/bounded-rollback gate, not the
+refresh publication gate, production restart, successful-native production return,
+or capability inheritance by production tools. No second production activation has
+occurred. Install-only refresh is approved; final cutover is not.

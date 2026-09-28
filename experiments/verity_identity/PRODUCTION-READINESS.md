@@ -1,23 +1,41 @@
-# Production readiness: controls-only refresh under final review
+# Production readiness: controls-only preparation and native rehearsal
 
 ## Current no-app-replacement route
 
 `CONTROL-REFRESH.md` describes the separately implemented controls-only route:
 preserve the signed app, stable launcher and original v1 directory, and publish
 only three management wrappers after a durable transaction-schema fence. The
-parent frozen replay passed **159 tests / 784 subtests on each ABI** with seven
+parent frozen replay passed **161 tests / 835 subtests on each ABI** with seven
 explicit exclusions and no unexpected guard violations; the real fixture chain
 uses copied actual installed-v1 consumers and the timestamp-wrapper topology.
-A removed-lock regression fails twice per ABI against the prior implementation
-and passes after the fix. This is offline behavioral evidence, not live acceptance.
+A removed-lock regression fails twice per ABI against the prior implementation.
+The checksum-correct malformed-backup cases fail 51 assertions per ABI against
+old validation and pass with the fix. Fifty parent fresh-process probes pass on
+the corrected files; they prove imports/arguments and data-only admission, not a
+successful service restart or launchd-owned approved-job execution.
 
-Focused source review, approval for install-only changes/native rehearsal, exact
-installed provenance readback, and resolved unarmed activation/return artifacts
-remain open. Production is untouched. The full-app maintenance exclusion described
-below remains valid for that older route, but is not a prerequisite for a route
-that never replaces the app or launcher. No census bypass was added.
+Install-only refresh and isolated signed native rehearsal are explicitly approved;
+production cutover is not. The first real staging attempt refused an existing root
+receipt larger than the helper's 4 MiB cap. No installed wrappers, selector or
+services changed. A bounded refresh-specific capacity fix and representative-size
+fixture are being prepared; do not bypass the limit through runtime monkeypatches.
+Focused review, successful staging, installed readback and resolved unarmed
+activation/return artifacts remain open. The approved isolated signed native
+rehearsal now passes: actual host-to-timestamp-wrapper-to-child identity,
+direct WebUI, independent launchd restart, and exact selector/plist rollback
+after an induced failed start. Parent readback verifies all three lab jobs absent,
+all 15 observed lab PIDs absent, no listener on the lab port, and the disposable
+signature valid. Production readback still reports the exact healthy legacy
+baseline, unchanged installed artifacts and service PIDs, with both cutover jobs
+absent. The full-app maintenance exclusion below does not apply to the
+unchanged-app/launcher route. No census bypass was added.
 
-## Current authorization and integrated baseline
+## Earlier maintenance authorization and integrated baseline
+
+The following records the earlier, narrower offline-only authority. The explicit
+install-only refresh and isolated-rehearsal approvals above supersede it only for
+those bounded actions; production interruption, reboot and other privilege changes
+remain separately gated.
 
 The operator approved expanding **offline implementation and testing** to a
 controlled maintenance approach. This is not approval for live downtime, installed
