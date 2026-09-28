@@ -208,11 +208,40 @@ both ABIs also passed after extending fault coverage to explicitly distinguish
 A signing, B compilation and B signing failures. Ruff passed; frozen host/probe
 sources remain unchanged. Concurrent rollback-controller edits were excluded.
 
-Focused cleanup/recovery and execution-contract reviews (`deleg_818692a8`) remain
-pending. No real compilation, signing, continuity run or new permission request
-was performed for this checkpoint. The Finder implementation and its parent
-98-test evidence were already committed at `b0065100b9`; receiving the same
-implementation report again does not establish a new live Finder result.
+Focused cleanup/recovery and execution-contract reviews (`deleg_818692a8`) are
+complete and found **four unresolved issues**, not clearance. The parent compared
+the reviewed harness to `4233d2fdc5` and independently inspected all cited paths:
+
+1. The frozen host emits `host-refused` and `spawn-error` before its ordinary
+   process event. The continuity parser rejects both; cleanup/recovery parses
+   these retained outputs before its independent census and cannot restore even
+   after all experiment processes are absent. Accepting their bounded failure
+   schemas must not allow a failed host to satisfy execution/continuity checks.
+2. A first SIGINT/SIGTERM during final cleanup/restoration can interrupt that
+   reconciliation and leave the original retained away from its final path.
+   The current first-interrupt promise is therefore not established. Test the
+   finalization and recovery phases, not just interruption during a worker run.
+3. Admitted dependency inventories can make the serialized plan exceed its own
+   4 MiB reader limit after preparation/signing. Bound compatible serialized
+   records before signing/publication, including the larger swap-receipt envelope
+   before moving the installed app.
+4. Rehashing all runtime/bridge inputs after worker readiness runs within the
+   frozen worker's 30-second GO deadline without a time bound. Slow admitted
+   inputs can expire the worker before any check. Expensive validation must not
+   consume that handshake; retain point-of-use and fresh identity checks rather
+   than treating a stale ready event as a live worker.
+
+The last two are source-established conditional failures, not measurements that
+the actual installed runtime exceeds those limits. Remediation `deleg_9392746c`
+is restricted to the three continuity files with offline regression-first tests;
+no live continuity preparation or execution is cleared. Frozen host/base-probe
+sources and production artifacts stay unchanged. Earlier passing fixture totals
+remain valid within their tested scope, but do not cover these missing cases.
+
+No real compilation, signing, continuity run or new permission request was
+performed for this checkpoint. The Finder implementation and its parent 98-test
+evidence were already committed at `b0065100b9`; receiving the same implementation
+report again does not establish a new live Finder result.
 
 ## Same-session autonomous resume audit
 
