@@ -4,6 +4,7 @@ Not a cutover tool. Prepare/sign and run/recover require separate opt-ins.
 """
 import argparse
 import ast
+import hashlib
 import inspect
 import json
 import math
@@ -28,6 +29,8 @@ MATRIX = tuple((build, role, abi) for build in ('A', 'B', 'A')
 check = base.check
 base_sha = base.sha
 SOURCE = Path(__file__).resolve().parent
+RECEIPT_LIMIT = 4 * 1024 * 1024
+SIGNING_RECEIPT_RESERVE = 512 * 1024
 
 
 def text_section(data):
@@ -120,20 +123,69 @@ def verify_inputs(root, p):
     install, _ = base.helpers()
     python = install.safe(Path(p['bootstrap']))
     check(base.sha(python.read_bytes()) == p['bootstrap_sha256'], 'Bootstrap drift')
+    roots = {}
     for path, expected in p['dependencies'].items():
+        roots[path] = Path(path).stat()
         check(dependency_inventory(Path(path)) == expected, 'Runtime/bridge dependency drift')
+        check(Path(path).stat() == roots[path], 'Dependency root changed during validation')
     for name, digest in p['sealed'].items():
         path = root / name
         check(not Path(name).is_absolute() and '..' not in Path(name).parts, 'Foreign seal path')
         install.safe(path)
         check(base.sha(path.read_bytes()) == digest, 'Sealed input drift')
+    return roots
+
+
+def verify_gate_inputs(root, p, i, roots, deadline):
+    """Fixed point-of-use set; no transitive traversal while the worker waits.
+
+    Deadline checks cannot preempt a stuck filesystem syscall, but prevent GO
+    after it returns late. The full inventory is checked before bootstrap.
+    """
+    install, _ = base.helpers()
+    check(len(roots) <= 4, 'Unexpected dependency roots')
+    for path, stamp in roots.items():
+        check(install.safe(Path(path)).stat() == stamp, 'Dependency root drift')
+    case = case_dir(root, i)
+    files = [(Path(p['bootstrap']), p['bootstrap_sha256'])]
+    for path in [root / 'production_launcher.py', root / 'production-release.json',
+                 *[case / n for n in ('permission-python', 'production_launcher.py',
+                                      'permissions_probe.py', 'agent.plist')]]:
+        files.append((path, p['sealed'][str(path.relative_to(root))]))
+    budget = 64 * 1024 * 1024
+    for path, digest in files:
+        check(time.monotonic() < deadline, 'Identity gate deadline')
+        install.safe(path)
+        size = path.stat().st_size
+        check(0 <= size <= budget, 'Oversized point-of-use input')
+        value = hashlib.sha256()
+        with path.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                budget -= len(chunk)
+                check(budget >= 0 and time.monotonic() < deadline, 'Identity gate budget')
+                value.update(chunk)
+        check(value.hexdigest() == digest, 'Point-of-use input drift')
+    check(time.monotonic() < deadline, 'Identity gate deadline')
+
+
+def receipt_size(value):
+    # Use the exact durable writer's encoding (including indentation/escaping).
+    _, stage = base.helpers()
+    return len(stage.encoded(value))
+
+
+def durable(root, name, value):
+    check(receipt_size(value) <= RECEIPT_LIMIT, 'Oversized receipt')
+    base.durable(root, name, value)
 
 
 def read_json(path):
     install, _ = base.helpers()
     install.safe(path)
-    check(path.stat().st_size <= 4 * 1024 * 1024, 'Oversized receipt')
-    return json.loads(path.read_bytes())
+    with path.open('rb') as stream:
+        data = stream.read(RECEIPT_LIMIT + 1)
+    check(len(data) <= RECEIPT_LIMIT, 'Oversized receipt')
+    return json.loads(data)
 
 
 def case_dir(root, index):
@@ -249,7 +301,7 @@ def prepare(root, maintenance, home, python, runtimes, bridges, name, *, approve
                 label='com.charles.verity.continuity.' + uuid.uuid4().hex,
                 bootstrap=str(python), bootstrap_sha256=base.sha(python.read_bytes()), inputs=inputs,
                 dependencies=dependencies)
-    base.durable(root, 'prepare-start.json', plan)
+    durable(root, 'prepare-start.json', plan)
     for directory in ('home', 'state', 'tmp', 'cases', 'builds'):
         (root / directory).mkdir(mode=0o700)
     configs = []
@@ -278,6 +330,18 @@ def prepare(root, maintenance, home, python, runtimes, bridges, name, *, approve
     stage.put(root / 'requirements.txt', ('designated => ' + base.REQUIREMENT + '\n').encode())
     swift = (SOURCE / 'ServiceHost.swift').read_bytes()
     stage.put(root / 'ServiceHost.swift', swift)
+    # All variable input sizes are known before the first signing/compilation.
+    # Reserve additional signature-inventory space, then enforce the exact final
+    # encoding too: an unexpectedly expansive signer may fail, never publish.
+    sealed = {str(p.relative_to(root)): base.sha(p.read_bytes()) for p in root.rglob('*')
+              if p.is_file() and ('cases' in p.relative_to(root).parts
+                                 or p.name in ('production_launcher.py', 'production-release.json',
+                                               'ServiceHost.swift', 'requirements.txt'))}
+    projected = dict(plan, configs=configs, sealed=sealed, builds={'A': original, 'B': original},
+                     text_sha256={'A': '0' * 64, 'B': '0' * 64},
+                     source_sha256=base.sha(swift), launcher_sha256=base.sha(launcher))
+    check(receipt_size(projected) + SIGNING_RECEIPT_RESERVE <= RECEIPT_LIMIT,
+          'Insufficient final receipt budget before signing')
     inventories, text_hashes = {}, {}
     for build in ('A', 'B'):
         target = root / 'builds' / (build + '.app')
@@ -305,11 +369,8 @@ def prepare(root, maintenance, home, python, runtimes, bridges, name, *, approve
     plan.update(configs=configs, builds=inventories, text_sha256=text_hashes,
                 source_sha256=base.sha(swift), launcher_sha256=base.sha(launcher))
     # Seal immutable per-case inputs; mutable outputs never enter this inventory.
-    plan['sealed'] = {str(p.relative_to(root)): base.sha(p.read_bytes()) for p in root.rglob('*')
-                      if p.is_file() and ('cases' in p.relative_to(root).parts
-                                         or p.name in ('production_launcher.py', 'production-release.json',
-                                                       'ServiceHost.swift', 'requirements.txt'))}
-    base.durable(root, 'prepared.json', plan)
+    plan['sealed'] = sealed
+    durable(root, 'prepared.json', plan)
     return plan
 
 
@@ -371,9 +432,16 @@ def events(case):
         'worker-complete': {'event', 'exit_code', 'results'},
         'supervisor-exit': {'event', 'exit_code'},
         'service-exit': {'event', 'child_pid', 'status'},
+        'host-refused': {'event', 'error_type'},
+        'spawn-error': {'event', 'errno'},
     }
     for r in rows:
         check(r.get('event') in schemas and set(r) == schemas[r['event']], 'Unknown event/schema')
+        if r['event'] == 'host-refused':
+            check(type(r['error_type']) is str and
+                  re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]{0,127}', r['error_type']), 'Invalid error type')
+        if r['event'] == 'spawn-error':
+            check(type(r['errno']) is int and 0 < r['errno'] <= 2147483647, 'Invalid spawn errno')
     check(len({r['event'] for r in rows}) == len(rows), 'Repeated event')
     return rows
 
@@ -390,6 +458,7 @@ def target(p, i):
 
 def identity(case, root, p, i, adapter, since):
     rows = events(case)
+    check(not any(r['event'] in ('host-refused', 'spawn-error') for r in rows), 'Host failed')
     h, s, w = [unique(rows, e) for e in ('service-host', 'supervisor-ready', 'worker-ready')]
     if any(r is None for r in (h, s, w)):
         return False
@@ -549,6 +618,47 @@ def strict_results(rows, name):
     return result, allowed
 
 
+class ReconciliationSignals:
+    """Latch the first signal; execution checkpoints cancel, cleanup keeps going.
+
+    Never raise the first signal asynchronously: it can land at any finally
+    entry or rename boundary. Scope is the synchronous main-thread transaction.
+    A late interrupt is retained separately because result receipts are immutable.
+    """
+    def __init__(self, root):
+        self.root = root
+        self.interrupted = False
+        self.report: dict | None = None
+        self.report_name = None
+        self.previous = {}
+
+    def __enter__(self):
+        try:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                self.previous[sig] = signal.signal(sig, self.handle)
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self
+
+    def handle(self, *_):
+        if self.interrupted:
+            raise KeyboardInterrupt()
+        self.interrupted = True
+        if self.report is not None:
+            self.report['status'] = 'failed'
+
+    def __exit__(self, *_):
+        try:
+            if self.interrupted and self.report is not None:
+                self.report['status'] = 'failed'
+                durable(self.root, 'interrupt-' + uuid.uuid4().hex + '.json',
+                        dict(status='failed', interrupted=True, report=self.report_name))
+        finally:
+            for sig, handler in self.previous.items():
+                signal.signal(sig, handler)
+
+
 def run(root, *, live=False, runner=None, adapter=None, dependency=None):
     check(live is True, 'Explicit --live required')
     root = Path(root)
@@ -558,7 +668,7 @@ def run(root, *, live=False, runner=None, adapter=None, dependency=None):
     install.safe(maintenance / 'control.lock')
     adapter = adapter or Live()
     dependency = dependency or install.no_live_native_dependency
-    with install.control_lock(maintenance):
+    with install.control_lock(maintenance), ReconciliationSignals(root) as interrupts:
         old, saved = base.baseline(maintenance)
         base.unchanged(maintenance, old, saved, dependency)
         app = Path(p['home']) / 'Applications/Verity.app'
@@ -570,15 +680,18 @@ def run(root, *, live=False, runner=None, adapter=None, dependency=None):
             check(not any((case_dir(root, i) / n).exists() for n in ('intent.json', 'GO', 'agent.out', 'result.json')),
                   'Previously used case')
         check(artifact_absent(root, p, adapter) is True, 'Existing artifact users or unknown identity')
-        base.durable(root, 'swap-receipt.json', dict(plan=p, old=old, baseline=saved))
+        durable(root, 'swap-receipt.json', dict(plan=p, old=old, baseline=saved))
         report = dict(status='failed', cases=[], cleanup_verified=False, restored=False,
                       synthetic_roles_only=True, permission_authorization_is_not_task_authorization=True)
+        interrupts.report = report
         try:
+            check(not interrupts.interrupted, 'Interrupted admission')
             base.move(app, root / 'original.app')
             active = None
             for i, (build, _, _) in enumerate(MATRIX):
+                check(not interrupts.interrupted, 'Interrupted execution')
                 if build != active:
-                    base.durable(root, f'swap-{i:02d}.json', {'from': active, 'to': build})
+                    durable(root, f'swap-{i:02d}.json', {'from': active, 'to': build})
                     if active is not None:
                         check(base.tree(app) == p['builds'][active], 'Active build drift')
                         base.move(app, root / 'builds' / (active + '.app'))
@@ -587,14 +700,24 @@ def run(root, *, live=False, runner=None, adapter=None, dependency=None):
                 check(base.tree(app) == p['builds'][build], 'Final-path build drift')
                 base.verify_signature(app, runner)
                 base.unchanged(maintenance, old, saved, dependency)
-                verify_inputs(root, p)
+                roots = verify_inputs(root, p)
+                deadline = time.monotonic() + 20  # Worker waits 30s; supervisor waits 50s.
                 case = case_dir(root, i)
                 since = time.time() - 1
-                base.durable(case, 'intent.json', dict(target=target(p, i), index=i, since=since))
+                durable(case, 'intent.json', dict(target=target(p, i), index=i, since=since))
+                check(not interrupts.interrupted, 'Interrupted before bootstrap')
+                check(time.monotonic() < deadline, 'Identity gate deadline')
                 adapter.bootstrap(target(p, i), case)
-                ready = base.wait(lambda: identity(case, root, p, i, adapter, since), 20)
-                verify_inputs(root, p)
-                base.durable(case, 'GO', ready)
+                ready = base.wait(lambda: identity(case, root, p, i, adapter, since),
+                                  max(0, deadline - time.monotonic()))
+                verify_gate_inputs(root, p, i, roots, deadline)
+                check({r['event'] for r in events(case)} ==
+                      {'service-host', 'supervisor-ready', 'worker-ready'}, 'Premature completion')
+                check(identity(case, root, p, i, adapter, since) == ready, 'Worker changed before GO')
+                check(time.monotonic() < deadline, 'Identity gate deadline')
+                check(not interrupts.interrupted, 'Interrupted before GO')
+                durable(case, 'GO', ready)
+                check(not interrupts.interrupted, 'Interrupted GO publication')
                 complete = base.wait(lambda: unique(events(case), 'worker-complete'), 20)
                 check(set(complete) == {'event', 'exit_code', 'results'} and type(complete['exit_code']) is int
                       and complete['exit_code'] == 0, 'Worker failed')
@@ -606,19 +729,22 @@ def run(root, *, live=False, runner=None, adapter=None, dependency=None):
                       and host['child_pid'] == unique(events(case), 'service-host')['child_pid'], 'Unclean child exit')
                 exited = base.wait(lambda: adapter.exited(dict(label=p['label'] + f'.{i:02d}')), 10)
                 check(type(exited['exit_code']) is int and exited['exit_code'] == 0, 'Unclean host exit')
+                check(not any(r['event'] in ('host-refused', 'spawn-error') for r in events(case)),
+                      'Host failed after GO')
                 cleanup(root, p, adapter)
+                check(not interrupts.interrupted, 'Interrupted case cleanup')
                 result = dict(index=i, build=build, role=MATRIX[i][1], abi=MATRIX[i][2], results=results,
                               status='allowed' if allowed else 'not_allowed', cleanup_verified=True)
-                base.durable(case, 'result.json', result)
+                durable(case, 'result.json', result)
                 report['cases'].append(result)
                 check(allowed, 'Authorization continuity failed')
-            report['status'] = 'completed'
+            report['status'] = 'failed' if interrupts.interrupted else 'completed'
         except BaseException:
             report['status'] = 'failed'
             for j in range(len(MATRIX)):
                 failed_case = case_dir(root, j)
                 if (failed_case / 'intent.json').exists() and not (failed_case / 'result.json').exists():
-                    base.durable(failed_case, 'result.json', dict(index=j, status='failed'))
+                    durable(failed_case, 'result.json', dict(index=j, status='failed'))
         finally:
             try:
                 cleanup(root, p, adapter)
@@ -629,7 +755,8 @@ def run(root, *, live=False, runner=None, adapter=None, dependency=None):
                 base.unchanged(maintenance, old, saved)
             except BaseException:
                 report['status'] = 'failed'
-            base.durable(root, 'result.json', report)
+            interrupts.report_name = 'result.json'
+            durable(root, interrupts.report_name, report)
         return report
 
 
@@ -643,14 +770,16 @@ def recover(root, *, live=False, runner=None, adapter=None):
     maintenance = Path(p['base'])
     install.safe(maintenance / 'control.lock')
     adapter = adapter or Live()
-    with install.control_lock(maintenance):
+    with install.control_lock(maintenance), ReconciliationSignals(root) as interrupts:
         cleanup(root, p, adapter)
         check(base.baseline(maintenance) == (receipt['old'], receipt['baseline']), 'Recovery baseline drift')
         base.unchanged(maintenance, receipt['old'], receipt['baseline'])
         restore(root, p, runner)
         base.unchanged(maintenance, receipt['old'], receipt['baseline'])
-        report = dict(status='restored', cleanup_verified=True, restored=True)
-        base.durable(root, 'recovery-' + uuid.uuid4().hex + '.json', report)
+        report = dict(status='failed' if interrupts.interrupted else 'restored', cleanup_verified=True, restored=True)
+        interrupts.report = report
+        interrupts.report_name = 'recovery-' + uuid.uuid4().hex + '.json'
+        durable(root, interrupts.report_name, report)
         return report
 
 
@@ -677,10 +806,6 @@ def main(argv=None):
         preflight(args.root)
         report = {'status': 'preflight_not_run'}
     else:
-        def interrupted(*_):
-            raise KeyboardInterrupt()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            signal.signal(sig, interrupted)
         report = (run if args.phase == 'run' else recover)(args.root, live=args.live)
     print(json.dumps(report, sort_keys=True))
     return 0 if report['status'] in ('prepared_not_run', 'preflight_not_run', 'completed', 'restored') else 1

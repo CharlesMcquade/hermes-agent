@@ -90,9 +90,32 @@ prove the absence of equivalent-code OS grants. Explicit runtime homes and bridg
 trees are inventoried without executing/importing them. Contents, owners, modes,
 and internal file-link targets are pinned, along with copied worker/launcher/probe
 hashes and the bootstrap executable hash. Directory links and escaping links
-refuse. Runtime/bridge dependencies and sealed inputs are checked in preflight,
-before each bootstrap, and again before GO. The bootstrap's transitive standard
-library and platform dynamic libraries are not a hermetic runtime seal. An explicit
+refuse. Runtime/bridge dependencies and all sealed inputs are fully checked in
+preflight and before each bootstrap, **not** while the worker waits for GO.
+After full validation returns, one 20-second monotonic admission deadline covers
+intent publication, bootstrap, readiness, point-of-use validation, and a fresh
+kernel identity check immediately before GO. This leaves margin within the frozen
+worker's 30-second GO wait and supervisor's 50-second lifetime. Late, dead,
+identity-changed, or already-completing workers cannot pass admission.
+
+Point-of-use validation checks the at-most-four dependency root stat snapshots
+and hashes exactly seven inputs: bootstrap executable, root launcher/manifest,
+and the current case's copied executable, launcher, probe, and job plist. Total
+reads are capped at 64 MiB, in 1 MiB chunks, with deadline checks during hashing
+and again after the fresh kernel check. No complete dependency traversal occurs
+inside the handshake. Output must contain only the three readiness events before
+GO; the fixture now withholds all completion/permission results until matching GO.
+
+The precise temporal bound is **20 seconds from completion of the full traversal
+to the final GO admission check**, not 20 seconds since every transitive file was
+hashed. Traversal is non-atomic and its oldest file observation can be arbitrarily
+older. Root stat checks do not detect every in-place nested-file change. This is
+cooperative operational sealing, not hostile same-UID containment. A process can
+still die immediately after its last kernel observation. Filesystem/OS stalls
+cannot be preempted by these checks; a late return refuses admission, but a stall
+inside final publication is not a hard-real-time guarantee. The bootstrap's
+transitive standard library and platform dynamic libraries are not a hermetic
+runtime seal. An explicit
 input distribution incompatible with these constraints must be reviewed/repackaged
 separately; do not bypass refusal by weakening the inventory.
 
@@ -131,6 +154,19 @@ preparations retain partial artifacts, never publish `prepared.json`, and never
 move the original. Preflight verifies sealed artifacts/signatures but performs no
 launchd or permission operation.
 
+All receipts share the unchanged 4 MiB limit, measured using the durable writer's
+actual UTF-8 JSON encoding (including escaping, indentation, and trailing newline).
+The reader consumes at most limit+1 bytes rather than trusting a prior file size.
+`prepare-start.json` is bounded before writing. Before the first compile/sign,
+the complete projected final plan includes configs, input seals, both original-
+shaped build inventories and digests, plus 512 KiB reserved for signature inventory
+growth. Oversized admitted inputs refuse without compilation/signing. Actual
+`prepared.json` is checked again before publication: unexpectedly expansive signer
+output can fail after signing, but can never produce an unreadable success receipt.
+At run admission the **entire** swap envelope (plan, old selector, and baseline
+snapshots) is measured before its receipt or any app rename. A large baseline can
+therefore refuse an otherwise valid prepared plan without moving the original.
+
 ## Ownership, cleanup and recovery
 
 Run holds the shared nonblocking production lock through admission, swapping,
@@ -151,7 +187,12 @@ host's certificate-pinned signature and repeats kernel identity observations.
 Only then can the per-case GO echo that worker's fresh nonce and identity. Clean
 worker, supervisor, host-child and launchd-host exits are required. Output has a
 closed event schema, unique events, a small record/byte bound, and the base's
-sanitized permission scalar schema.
+sanitized permission scalar schema. The frozen host's failure-only records are
+also recognized: `host-refused` with exactly one bounded identifier-like string
+`error_type`, and `spawn-error` with exactly one positive Int32 `errno` (not a
+boolean). These records permit absence reconciliation, never execution success.
+Extra fields, malformed types and exception-message-like strings still refuse;
+no raw failure content is copied into the public report.
 
 Cleanup addresses only recorded exact experiment targets. Neither bootout success
 nor a FakeLive boolean is enough: target absence, disappearance of recorded PIDs
@@ -161,7 +202,24 @@ live identities, census failure, malformed output or drift refuse restoration;
 this version conservatively refuses unreadable zombies as well. No raw process
 argv/environment or exception text is published.
 
-Ordinary errors and a first SIGINT/SIGTERM enter cleanup and restoration. If cleanup
+Ordinary errors and a first SIGINT/SIGTERM enter cleanup and restoration. The
+transaction temporarily installs handlers that **latch** the first signal instead
+of raising asynchronously across a cleanup/rename/finally boundary. Execution
+checkpoints stop further matrix work; an in-flight operation may finish before
+its next checkpoint. Cleanup/recovery complete one bounded reconciliation pass,
+never rerun the matrix, and preserve the same exact-intent ownership. The deferral
+is scoped to that pass, not a permanent ignore policy or a hard wall-time limit
+on filesystem I/O. Repeated signals may raise; caller handlers are restored on
+exit, including ordinary failures. An interrupted run/recovery returns non-success
+even when restoration succeeds.
+
+Reports remain append-only. An interrupt during/after final report publication
+also produces `interrupt-*.json`, naming the affected `report` receipt. **That
+interrupt receipt overrides any completed/restored status in the named report**;
+consumers must inspect both, rather than treating an isolated `result.json` as
+success. It does not invalidate a later independent recovery report.
+
+If cleanup
 is unknown, the original stays separately retained rather than moving a bundle
 under an unaccounted process. Recovery cleans intended targets **before** checking
 legacy snapshot drift, and requires no legacy service uptime/dependency check.
@@ -211,9 +269,49 @@ were excluded from that snapshot. The parent then extended preparation fault
 coverage to explicitly reach and identify A signing, B compilation, and B signing;
 all three injection points preserve the original and withhold prepared publication.
 The 113-test aggregate also passed on each ABI after that fault-coverage
-extension, in a fresh frozen snapshot. Focused independent execution-contract
-and cleanup/recovery reviews are pending;
-no live preparation or permission run is authorized by these unit results.
+extension, in a fresh frozen snapshot. Subsequent focused reviews found four
+regressions: frozen host failure schemas, first interrupts during reconciliation,
+receipt size admission, and unbounded rehashing inside the live handshake.
+
+Each finding received a failing regression run against committed baseline
+`4233d2fdc5a4a74d6f22a02d766554926ebd85e0` before implementation, on both ABIs.
+The updated offline aggregate passed **124 tests on Python 3.11 and Python 3.14**,
+with changed-file Ruff checks. Verification uses an immutable archive of that
+same commit, overlays only these three continuity files, retains committed
+`pyproject.toml`, and hashes the whole snapshot before/after. Concurrent controller
+and cutover-recipe work is excluded. Raw red/green logs, commands, per-file hashes
+and exit codes are retained in the offline review receipts supplied with the
+implementation handoff.
+
+New coverage includes real failure-event shapes through run/recover, closed
+malformed schemas, both signals during body/case cleanup/final cleanup/both
+restoration renames/report publication (including after-write) and recovery,
+caller-handler restoration and exact cleanup ownership. Receipt tests cover
+pre-sign start/final envelope refusals, exact encoded byte boundary (including
+Unicode escaping), near-limit admission, excessive signer output, and oversized
+swap baselines before mutation. Handshake tests model slow full validation outside
+worker lifetime, expiry/death/identity drift/premature completion, point-of-use
+input/root drift and budgets. The generated frozen worker itself is also executed
+without GO: it emits readiness then times out **before loading the mocked probe**.
+These tests do not replace real OS attribution evidence or authorize live work.
+
+The parent independently replayed all four original red groups on both ABIs and
+then passed the **124-test aggregate per ABI** over committed controller
+`0d06d7720956b39ef2d8f086a7e37a0b5e31f4f7`, with pre-import native/network/
+subprocess guards and only inspected disposable fixture subprocesses allowed.
+The first parent run exposed two mistakes in those guards (a bytes/string
+comparison and two missing compiler-environment keys); correcting only the guard
+produced green results. Delivered source and frozen snapshot hashes stayed unchanged;
+changed-file Ruff passed. Focused re-review `deleg_41bf0942` remains pending.
+
+**A further parent counterexample remains open:** a first signal during caller-
+handler restoration, after the exit method has already skipped its interruption
+receipt decision, changes the returned report to failed but leaves `result.json`
+completed with no companion interrupt receipt. Both ABIs reproduced this using
+real `run()` and disposable filesystem fixtures. The original app and signal
+handlers were restored and jobs were absent; the failure is durable report
+invalidation, not restoration. Do not consume this implementation as live evidence
+until that exit boundary and the focused review are resolved.
 
 Real final-path execution remains for the parent after focused review and explicit
 bounded-live approval. No compile, signing, permission API, launchctl, service

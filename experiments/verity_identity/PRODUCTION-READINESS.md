@@ -281,7 +281,7 @@ A signing, B compilation and B signing failures. Ruff passed; frozen host/probe
 sources remain unchanged. Concurrent rollback-controller edits were excluded.
 
 Focused cleanup/recovery and execution-contract reviews (`deleg_818692a8`) are
-complete and found **four unresolved issues**, not clearance. The parent compared
+complete and found **four issues in the original implementation**, not clearance. The parent compared
 the reviewed harness to `4233d2fdc5` and independently inspected all cited paths:
 
 1. The frozen host emits `host-refused` and `spawn-error` before its ordinary
@@ -303,12 +303,35 @@ the reviewed harness to `4233d2fdc5` and independently inspected all cited paths
    consume that handshake; retain point-of-use and fresh identity checks rather
    than treating a stale ready event as a live worker.
 
-The last two are source-established conditional failures, not measurements that
+The last two were source-established conditional failures, not measurements that
 the actual installed runtime exceeds those limits. Remediation `deleg_9392746c`
-is restricted to the three continuity files with offline regression-first tests;
-no live continuity preparation or execution is cleared. Frozen host/base-probe
-sources and production artifacts stay unchanged. Earlier passing fixture totals
-remain valid within their tested scope, but do not cover these missing cases.
+delivered changes confined to the three continuity files. The parent independently
+replayed the four historical red groups against `4233d2fdc5` on Python 3.11 and
+3.14, observing the expected restoration, interruption, receipt-admission and GO
+failures. The delivered code then passed **124 tests per ABI** over committed
+controller `0d06d7720956b39ef2d8f086a7e37a0b5e31f4f7`. Pre-import native/network/
+subprocess guards permit only inspected disposable fixture commands. The first
+parent run found two guard mistakes, not product failures; fixing only the guard
+produced green results. Code hashes matched the delivery and remained unchanged;
+changed-file Ruff passed. Focused re-review `deleg_41bf0942` is pending.
+
+The fixes accept only validated failure-only host records, latch the first signal
+through reconciliation, bound actual encoded receipt envelopes, and move full
+inventory validation before bootstrap. A 20-second admission interval and fixed
+bounded point-of-use checks replace the after-ready full traversal. Its temporal
+sealing limits are explicit in `PRODUCTION-CONTINUITY.md`; it is not an atomic
+freshness or hostile same-UID guarantee.
+
+**A new parent-reproduced reporting defect keeps the interrupt gate open.** A first
+signal while restoring caller handlers, after `ReconciliationSignals.__exit__`
+has skipped its interruption-receipt decision, leaves the returned status failed
+but the durable result completed with no companion interrupt record. A disposable
+full-run counterexample reproduced this on both ABIs. Cleanup, original restoration
+and caller-handler restoration all passed; durable invalidation did not. The new
+late-interrupt companion-report contract must cover that exit boundary before any
+live use. Earlier green totals are retained, not treated as clearance over this
+newly exposed case. No live continuity preparation or execution is cleared; frozen
+host/base probes and production artifacts remain unchanged.
 
 No real compilation, signing, continuity run or new permission request was
 performed for this checkpoint. The Finder implementation and its parent 98-test

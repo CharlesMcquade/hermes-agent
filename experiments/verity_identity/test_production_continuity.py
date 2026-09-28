@@ -5,6 +5,7 @@ from pathlib import Path
 import struct
 import time
 import unittest
+import weakref
 from unittest.mock import patch
 
 import verify_production_continuity as h
@@ -23,9 +24,26 @@ def macho(text=b'AAAA', uuid=b'U' * 16):
             + struct.pack('<4I', 0x1d, 16, offset + len(text), 16) + text + b'S' * 16)
 
 
+def inventory_fixture(per_root_bytes):
+    """Real inventory-shaped rows and short paths, without any on-disk tree."""
+    _, stage = h.base.helpers()
+    row = [0o100600, os.getuid(), None, 'a' * 64]
+    def encoded(inventory):
+        return len(stage.encoded({'dependencies': {k: inventory for k in ('a', 'b', 'c')}}))
+    overhead = encoded({})
+    unit = encoded({'00000000.py': row, '00000001.py': row}) - encoded({'00000000.py': row})
+    count = (per_root_bytes * 3 - overhead) // unit
+    assert 0 < count < 100000
+    return {f'{i:08d}.py': row for i in range(count)}
+
+
 class KernelFixture(h.Live):
     """Only OS observation/command seam is fake; never override identity/cleanup."""
+    instances = weakref.WeakSet()
+
     def __init__(self, root, plan, failure=None):
+        self.instances.add(self)
+        self.pending = {}
         self.root, self.plan, self.failure = root, plan, failure
         self.loaded, self.processes, self.groups = {}, {}, {}
         self.calls, self.n = [], 0
@@ -71,7 +89,21 @@ class KernelFixture(h.Live):
                    dict(event='service-exit', status=0, child_pid=supervisor)]
         if self.failure == 'supervisor':
             records[-2]['exit_code'] = 7
-        (case / 'agent.out').write_text('\n'.join(json.dumps(r) for r in records))
+        (case / 'agent.out').write_text('\n'.join(json.dumps(r) for r in records[:3]))
+        self.pending[case] = (time.monotonic(), records[3:])
+
+    def tick(self):
+        # Model the frozen worker: no permission result without matching GO;
+        # lifetime starts at ready, not when the harness finishes its validation.
+        for case, (started, completion) in list(self.pending.items()):
+            if time.monotonic() - started >= 30:
+                raise TimeoutError('fixture worker lifetime expired')
+            if (case / 'GO').exists():
+                rows = [json.loads(s) for s in (case / 'agent.out').read_text().splitlines()]
+                assert h.read_json(case / 'GO') == rows[2]
+                with (case / 'agent.out').open('a') as stream:
+                    stream.write('\n' + '\n'.join(json.dumps(r) for r in completion))
+                del self.pending[case]
 
     def job_pid(self, name):
         return self.loaded[name]
@@ -95,6 +127,7 @@ class KernelFixture(h.Live):
         self.loaded.pop(name, None)
         self.processes.clear()
         self.groups.clear()
+        self.pending.clear()
 
     def exited(self, p):
         return {'exit_code': 0}
@@ -114,6 +147,17 @@ class ContinuityTests(unittest.TestCase):
         (self.runtime314 / 'bin/python3.14').write_bytes(b'offline314')
         (self.runtime314 / 'bin/python3.14').chmod(0o700)
         self.compilers, self.signs = [], []
+        wait = h.base.wait
+        def scheduled(predicate, seconds):
+            def step():
+                for adapter in list(KernelFixture.instances):
+                    if adapter.root.is_relative_to(self.f.top):
+                        adapter.tick()
+                return predicate()
+            return wait(step, seconds)
+        scheduler = patch.object(h.base, 'wait', side_effect=scheduled)
+        scheduler.start()
+        self.addCleanup(scheduler.stop)
 
     def runner(self, argv, **kwargs):
         if argv[0] == '/usr/bin/xcrun':
@@ -139,6 +183,337 @@ class ContinuityTests(unittest.TestCase):
         adapter = KernelFixture(self.root, plan, failure)
         report = h.run(self.root, live=True, runner=self.runner, adapter=adapter, dependency=lambda *_: True)
         return plan, adapter, report
+
+    def test_frozen_host_failures_restore_and_recover(self):
+        for event in (dict(event='host-refused', error_type='DecodingError'),
+                      dict(event='spawn-error', errno=2)):
+            for recovery in (False, True):
+                with self.subTest(event=event, recovery=recovery):
+                    self.root = self.home / '.hermes/experiments' / (event['event'] + str(recovery))
+                    p = self.prepare()
+                    adapter = KernelFixture(self.root, p, 'cleanup' if recovery else None)
+                    def failed_bootstrap(name, case):
+                        adapter.loaded[name] = 800000
+                        (case / 'agent.out').write_text(json.dumps(event))
+                        raise OSError('frozen host exited')
+                    with patch.object(adapter, 'bootstrap', side_effect=failed_bootstrap):
+                        result = h.run(self.root, live=True, runner=self.runner, adapter=adapter,
+                                       dependency=lambda *_: True)
+                    self.assertEqual(result['status'], 'failed')
+                    if recovery:
+                        self.assertFalse(result['restored'])
+                        adapter.failure = None
+                        result = h.recover(self.root, live=True, runner=self.runner, adapter=adapter)
+                    self.assertTrue(result['restored'])
+                    self.assertEqual(h.base.tree(self.app), self.original)
+                    self.assertFalse(adapter.loaded or adapter.processes)
+                    self.assertFalse((h.case_dir(self.root, 0) / 'GO').exists())
+
+    def test_failure_event_schema_is_closed_and_never_success(self):
+        p = self.prepare()
+        case = h.case_dir(self.root, 0)
+        for row in (dict(event='host-refused', error_type=7),
+                    dict(event='host-refused', error_type='private exception content'),
+                    dict(event='host-refused', error_type='DecodingError', message='private'),
+                    dict(event='spawn-error', errno=True), dict(event='spawn-error', errno='2'),
+                    dict(event='spawn-error', errno=0), dict(event='spawn-error', errno=2, extra=0)):
+            (case / 'agent.out').write_text(json.dumps(row))
+            with self.subTest(row=row), self.assertRaises(ValueError):
+                h.events(case)
+        adapter = KernelFixture(self.root, p)
+        h.base.durable(self.root, 'swap-receipt.json', {})
+        since = time.time() - 1
+        h.base.durable(case, 'intent.json', dict(index=0, target=h.target(p, 0), since=since))
+        adapter.bootstrap(h.target(p, 0), case)
+        with (case / 'agent.out').open('a') as stream:
+            stream.write('\n' + json.dumps(dict(event='spawn-error', errno=2)))
+        with self.assertRaises(ValueError):
+            h.identity(case, self.root, p, 0, adapter, since)
+
+    def test_first_interrupt_reconciles_every_phase_and_restores_handlers(self):
+        import signal
+        phases = ('body', 'case-clean', 'final-clean', 'restore-build', 'restore-original', 'report', 'report-after')
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            for phase in phases:
+                with self.subTest(signal=sig, phase=phase):
+                    self.root = self.home / '.hermes/experiments' / f'interrupt-{sig}-{phase}'
+                    p = self.prepare()
+                    adapter = KernelFixture(self.root, p)
+                    hit = []
+                    clean, move, durable = adapter.clean, h.base.move, h.base.durable
+                    def fire():
+                        if not hit:
+                            hit.append(phase)
+                            signal.raise_signal(sig)
+                    def cleaning(name):
+                        if phase == 'case-clean' or (phase == 'final-clean' and
+                                (h.case_dir(self.root, 11) / 'result.json').exists()):
+                            fire()
+                        return clean(name)
+                    def moving(source, dest):
+                        if (h.case_dir(self.root, 11) / 'result.json').exists():
+                            if phase == 'restore-build' and source == self.app:
+                                fire()
+                            if phase == 'restore-original' and source == self.root / 'original.app':
+                                fire()
+                        return move(source, dest)
+                    def writing(root, name, value):
+                        if phase == 'body' and name == 'GO':
+                            fire()
+                        if phase == 'report' and root == self.root and name == 'result.json':
+                            fire()
+                        result = durable(root, name, value)
+                        if phase == 'report-after' and root == self.root and name == 'result.json':
+                            fire()
+                        return result
+                    def caller_handler(*_):
+                        raise KeyboardInterrupt()
+                    previous = {s: signal.signal(s, caller_handler) for s in (signal.SIGINT, signal.SIGTERM)}
+                    try:
+                        with patch.object(adapter, 'clean', side_effect=cleaning), \
+                                patch.object(h.base, 'move', side_effect=moving), \
+                                patch.object(h.base, 'durable', side_effect=writing):
+                            try:
+                                result = h.run(self.root, live=True, runner=self.runner, adapter=adapter,
+                                               dependency=lambda *_: True)
+                            except KeyboardInterrupt:
+                                self.fail('First interrupt escaped reconciliation')
+                        self.assertEqual(hit, [phase])
+                        self.assertTrue(list(self.root.glob('interrupt-*.json')))
+                        self.assertEqual(result['status'], 'failed')
+                        self.assertTrue(result['restored'])
+                        self.assertEqual(h.base.tree(self.app), self.original)
+                        self.assertFalse(adapter.loaded or adapter.processes)
+                        self.assertTrue(all(signal.getsignal(s) is caller_handler for s in previous))
+                        intended = {h.target(p, i) for i in range(len(h.MATRIX))
+                                    if (h.case_dir(self.root, i) / 'intent.json').exists()}
+                        self.assertTrue({n for op, n in adapter.calls if op == 'clean'} <= intended)
+                        self.assertEqual(adapter.n, 1 if phase in ('body', 'case-clean') else 12)
+                    finally:
+                        for s, handler in previous.items():
+                            signal.signal(s, handler)
+                        # Permit independent subtests on the unfixed baseline.
+                        if (self.root / 'original.app').exists():
+                            adapter.failure = None
+                            h.cleanup(self.root, p, adapter)
+                            h.restore(self.root, p, self.runner)
+
+    def test_first_interrupt_during_recover_is_deferred(self):
+        import signal
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            for phase in ('clean', 'restore-build', 'restore-original', 'report', 'report-after'):
+                with self.subTest(signal=sig, phase=phase):
+                    self.root = self.home / '.hermes/experiments' / f'recover-{sig}-{phase}'
+                    p, adapter, result = self.run_it('cleanup')
+                    self.assertFalse(result['restored'])
+                    adapter.failure = None
+                    clean, move, durable = adapter.clean, h.base.move, h.base.durable
+                    hit = []
+                    def fire():
+                        if not hit:
+                            hit.append(phase)
+                            signal.raise_signal(sig)
+                    def cleaning(name):
+                        if phase == 'clean':
+                            fire()
+                        return clean(name)
+                    def moving(source, dest):
+                        if phase == 'restore-build' and source == self.app:
+                            fire()
+                        if phase == 'restore-original' and source == self.root / 'original.app':
+                            fire()
+                        return move(source, dest)
+                    def writing(root, name, value):
+                        if phase == 'report' and name.startswith('recovery-'):
+                            fire()
+                        result = durable(root, name, value)
+                        if phase == 'report-after' and name.startswith('recovery-'):
+                            fire()
+                        return result
+                    def caller_handler(*_):
+                        raise KeyboardInterrupt()
+                    previous = {s: signal.signal(s, caller_handler) for s in (signal.SIGINT, signal.SIGTERM)}
+                    try:
+                        with patch.object(adapter, 'clean', side_effect=cleaning), \
+                                patch.object(h.base, 'move', side_effect=moving), \
+                                patch.object(h.base, 'durable', side_effect=writing):
+                            try:
+                                result = h.recover(self.root, live=True, runner=self.runner, adapter=adapter)
+                            except KeyboardInterrupt:
+                                self.fail('First recovery interrupt escaped reconciliation')
+                        self.assertEqual(hit, [phase])
+                        self.assertTrue(result['restored'])
+                        self.assertEqual(result['status'], 'failed')
+                        self.assertEqual(h.base.tree(self.app), self.original)
+                        self.assertFalse(adapter.loaded or adapter.processes)
+                        self.assertEqual(adapter.n, 1)  # Recovery never resumes execution.
+                        self.assertTrue(all(signal.getsignal(s) is caller_handler for s in previous))
+                    finally:
+                        for s, handler in previous.items():
+                            signal.signal(s, handler)
+                        if (self.root / 'original.app').exists():
+                            h.cleanup(self.root, p, adapter)
+                            h.restore(self.root, p, self.runner)
+
+    def test_oversized_inputs_refuse_before_compile_or_sign(self):
+        # Three distinct inventory roots, without allocating a large file tree.
+        for size in (1_500_000, 1_240_000):
+            with self.subTest(size=size):
+                self.root = self.home / '.hermes/experiments' / f'oversize-{size}'
+                self.compilers.clear()
+                self.signs.clear()
+                inventory = inventory_fixture(size)
+                with patch.object(h, 'dependency_inventory', return_value=inventory):
+                    with self.assertRaisesRegex(ValueError, 'receipt|Receipt'):
+                        self.prepare()
+                self.assertFalse(self.compilers or self.signs)
+                self.assertFalse((self.root / 'prepared.json').exists())
+                self.assertEqual(h.base.tree(self.app), self.original)
+
+    def test_swap_receipt_bound_precedes_all_app_mutation(self):
+        p = self.prepare()
+        adapter = KernelFixture(self.root, p)
+        old, saved = h.base.baseline(self.base)
+        saved = dict(saved, oversized='x' * (4 * 1024 * 1024))
+        with patch.object(h.base, 'baseline', return_value=(old, saved)), \
+                patch.object(h.base, 'unchanged'), patch.object(h.base, 'move', wraps=h.base.move) as move:
+            with self.assertRaisesRegex(ValueError, 'receipt|Receipt'):
+                h.run(self.root, live=True, runner=self.runner, adapter=adapter, dependency=lambda *_: True)
+            move.assert_not_called()
+        self.assertFalse((self.root / 'swap-receipt.json').exists())
+        self.assertEqual(h.base.tree(self.app), self.original)
+
+    def test_receipt_encoding_boundary_and_near_limit_preparation(self):
+        self.root.mkdir(mode=0o700)
+        value = {'padding': '\u2603'}
+        value['padding'] += 'x' * (h.RECEIPT_LIMIT - h.receipt_size(value))
+        self.assertEqual(h.receipt_size(value), h.RECEIPT_LIMIT)
+        h.durable(self.root, 'exact.json', value)
+        self.assertEqual((self.root / 'exact.json').stat().st_size, h.RECEIPT_LIMIT)
+        self.assertEqual(h.read_json(self.root / 'exact.json'), value)
+        value['padding'] += 'x'
+        with self.assertRaises(ValueError):
+            h.durable(self.root, 'over.json', value)
+        self.assertFalse((self.root / 'over.json').exists())
+        # The same inventory representation that refused above still admits
+        # substantial inputs below the conservative pre-sign envelope.
+        self.root = self.home / '.hermes/experiments/near-limit'
+        inventory = inventory_fixture(1_210_000)
+        with patch.object(h, 'dependency_inventory', return_value=inventory):
+            p = self.prepare()
+            self.assertEqual(h.load_plan(self.root), p)
+        self.assertGreater(h.receipt_size(p), h.RECEIPT_LIMIT - h.SIGNING_RECEIPT_RESERVE - 100_000)
+        self.assertLessEqual(h.receipt_size(p), h.RECEIPT_LIMIT)
+        self.assertEqual(h.base.tree(self.app), self.original)
+
+    def test_unexpected_signer_inventory_never_publishes_oversized_plan(self):
+        tree = h.base.tree
+        def expansive(path):
+            value = tree(path)
+            if path == self.root / 'builds/B.app':
+                value['unexpected-signer-output'] = 'x' * h.RECEIPT_LIMIT
+            return value
+        with patch.object(h.base, 'tree', side_effect=expansive), self.assertRaises(ValueError):
+            self.prepare()
+        self.assertEqual(len(self.signs), 2)
+        self.assertFalse((self.root / 'prepared.json').exists())
+        self.assertEqual(h.base.tree(self.app), self.original)
+
+    def test_slow_validation_is_outside_worker_lifetime(self):
+        p = self.prepare()
+        adapter = KernelFixture(self.root, p)
+        clock = [1000.0]
+        verify = h.verify_inputs
+        observations = []
+        def slow(root, plan):
+            observations.append(bool(adapter.pending))
+            clock[0] += 31
+            return verify(root, plan)
+        with patch.object(h.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(h, 'verify_inputs', side_effect=slow):
+            result = h.run(self.root, live=True, runner=self.runner, adapter=adapter,
+                           dependency=lambda *_: True)
+        self.assertEqual(result['status'], 'completed')
+        self.assertFalse(any(observations), 'Full inventory executed with worker waiting')
+        self.assertTrue(result['restored'])
+        self.assertEqual(adapter.n, len(h.MATRIX))
+
+    def test_expired_or_changed_worker_never_receives_go(self):
+        for failure in ('expired', 'dead', 'changed', 'premature'):
+            with self.subTest(failure=failure):
+                self.root = self.home / '.hermes/experiments' / ('gate-' + failure)
+                p = self.prepare()
+                adapter = KernelFixture(self.root, p)
+                clock = [1000.0]
+                identity = h.identity
+                hit = []
+                def observed(*args):
+                    ready = identity(*args)
+                    if ready and not hit:
+                        hit.append(failure)
+                        if failure == 'expired':
+                            clock[0] += 31
+                        elif failure == 'dead':
+                            del adapter.processes[ready['pid']]
+                        elif failure == 'changed':
+                            adapter.processes[ready['pid']]['argv'] = ['foreign']
+                        else:
+                            case = args[0]
+                            _, completion = adapter.pending[case]
+                            with (case / 'agent.out').open('a') as stream:
+                                stream.write('\n' + json.dumps(completion[0]))
+                    return ready
+                with patch.object(h.time, 'monotonic', side_effect=lambda: clock[0]), \
+                        patch.object(h, 'identity', side_effect=observed):
+                    result = h.run(self.root, live=True, runner=self.runner, adapter=adapter,
+                                   dependency=lambda *_: True)
+                self.assertEqual(hit, [failure])
+                self.assertEqual(result['status'], 'failed')
+                self.assertTrue(result['restored'])
+                self.assertFalse((h.case_dir(self.root, 0) / 'GO').exists())
+                self.assertFalse(adapter.loaded or adapter.processes)
+
+    def test_point_of_use_drift_and_budget_never_publish_go(self):
+        for failure in ('slow-gate', 'copied-worker', 'dependency-root', 'oversized-worker', 'slow-intent'):
+            with self.subTest(failure=failure):
+                self.root = self.home / '.hermes/experiments' / failure
+                p = self.prepare()
+                adapter = KernelFixture(self.root, p)
+                clock = [1000.0]
+                gate, durable = h.verify_gate_inputs, h.base.durable
+                hit = []
+                def checking(root, plan, i, roots, deadline):
+                    hit.append(failure)
+                    worker = h.case_dir(root, i) / 'permission-python'
+                    if failure == 'copied-worker':
+                        worker.write_bytes(b'drift')
+                    elif failure == 'dependency-root':
+                        self.bridge.chmod(0o500)
+                    elif failure == 'oversized-worker':
+                        with worker.open('wb') as stream:
+                            stream.truncate(65 * 1024 * 1024)
+                    result = gate(root, plan, i, roots, deadline)
+                    if failure == 'slow-gate':
+                        clock[0] += 31
+                    return result
+                def writing(root, name, value):
+                    if failure == 'slow-intent' and name == 'intent.json':
+                        hit.append(failure)
+                        clock[0] += 31
+                    return durable(root, name, value)
+                try:
+                    with patch.object(h.time, 'monotonic', side_effect=lambda: clock[0]), \
+                            patch.object(h, 'verify_gate_inputs', side_effect=checking), \
+                            patch.object(h.base, 'durable', side_effect=writing):
+                        result = h.run(self.root, live=True, runner=self.runner, adapter=adapter,
+                                       dependency=lambda *_: True)
+                    self.assertEqual(hit, [failure])
+                    self.assertEqual(result['status'], 'failed')
+                    self.assertTrue(result['restored'])
+                    self.assertFalse((h.case_dir(self.root, 0) / 'GO').exists())
+                    self.assertEqual(adapter.n, 0 if failure == 'slow-intent' else 1)
+                finally:
+                    self.bridge.chmod(0o700)
 
     def test_text_change_not_uuid_or_signature(self):
         self.assertEqual(h.text_section(macho()), b'AAAA')
@@ -398,6 +773,20 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(calls, [('Camera', False)])
         self.assertEqual(json.loads(out.getvalue().splitlines()[0]), ready)
         self.assertTrue(h.strict_results(json.loads(out.getvalue().splitlines()[1])['results'], 'Camera')[1])
+        # Execute the actual generated frozen worker with NO GO. Its timeout
+        # must precede loading even the mocked permission module.
+        (case / 'GO').unlink()
+        calls.clear()
+        with patch.object(h.base.importlib.util, 'spec_from_file_location') as load_probe, \
+                patch.object(h.sys, 'argv', ['fixture', '--worker']), \
+                patch.dict(os.environ, HOME=str(case / 'home'), HERMES_HOME=str(case / 'state')), \
+                patch.object(h.time, 'monotonic', side_effect=[0, 31]), \
+                contextlib.redirect_stdout(io.StringIO()) as waiting:
+            with self.assertRaisesRegex(ValueError, 'Identity gate timeout'):
+                exec(compile(h.worker_source(c), 'sealed-worker-no-go', 'exec'), {})
+        load_probe.assert_not_called()
+        self.assertFalse(calls)
+        self.assertEqual([json.loads(line)['event'] for line in waiting.getvalue().splitlines()], ['worker-ready'])
 
     def test_dependency_and_finder_contracts(self):
         p = self.prepare()
