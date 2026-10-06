@@ -165,7 +165,8 @@ class Host:
 class Controller:
     def __init__(self, base=BASE, host=None, preflight_fn=None, clock=time.time,
                  monotonic=time.monotonic, sleep=time.sleep, owner=os.getppid,
-                 timeout=90, stable_seconds=2, control_refresh_sha256=None):
+                 timeout=90, stable_seconds=2, control_refresh_sha256=None, pending_restart_sha256=None):
+        self.pending_restart_sha256 = pending_restart_sha256
         self.base = Path(base)
         self.control_refresh_sha256 = control_refresh_sha256
         self.refresh_executor = Path(__file__).parent.parent.name == 'control-refresh-versions'
@@ -526,6 +527,10 @@ class Controller:
                 'Invalid transaction identity')
         require(txn['authorization'] in {'verified-live-fallback', 'same-release-restart'},
                 'Missing fallback authorization')
+        if 'pending_restart_sha256' in txn:
+            require(isinstance(txn['pending_restart_sha256'], str)
+                    and re.fullmatch('[0-9a-f]{64}', txn['pending_restart_sha256']),
+                    'Invalid pending transaction pin')
         return txn
 
     def recover_locked(self):
@@ -534,8 +539,12 @@ class Controller:
         The backup is transaction-scoped authorization, not an expiring canary
         receipt or a global blessing. A consumed rollback is never attempted twice.
         """
+        require(not os.path.lexists(self.base / 'pending-user-restart.json'),
+                'Pending user restart requires pointer-only recovery, not process rollback')
         refresh_unchanged = self.refresh_admission()
         txn = self.read_transaction()
+        require(txn is None or 'pending_restart_sha256' not in txn,
+                'Pending user restart transaction requires pointer-only recovery')
         if txn is None or txn['phase'] in {'verified', 'rolled_back'}:
             return None
         if txn['phase'] == 'rollback_started':
@@ -927,6 +936,10 @@ class Controller:
             lock_identity = self.retained_file(self.base / 'control.lock')
         with self.locked():
             self.refresh_admission()
+            pending_txn = self.read_transaction()
+            require(not os.path.lexists(self.base / 'pending-user-restart.json')
+                    and (pending_txn is None or 'pending_restart_sha256' not in pending_txn),
+                    'Pending user restart excludes generic restart/return; use supported UI controls')
             if return_baseline is not None:
                 require(self.retained_file(self.base / 'control.lock') == lock_identity, 'Control lock changed')
                 exact = self.return_baseline(return_baseline, return_controller_sha256, return_upgrade_sha256,
