@@ -71,7 +71,7 @@ def test_cli_no_start_now_loads_only_a_gateway_launchd_already_runs(
     launchd already runs is reloaded as before, not stopped."""
     if stale_plist:
         launchd.plist.parent.mkdir(parents=True)
-        launchd.plist.write_text("<plist>old</plist>", encoding="utf-8")
+        launchd.plist.write_bytes(plistlib.dumps({"ProgramArguments": ["hermes", "gateway", "run"]}))
     launchd.supervised_pid = supervised_pid
 
     gateway_cli.gateway_command(_parse("install", "--no-start-now"))
