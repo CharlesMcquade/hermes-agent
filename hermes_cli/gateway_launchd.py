@@ -527,6 +527,14 @@ def _restart_external_launchd(snapshot: tuple[Path, bytes, dict]) -> None:
                 return found[0] if len(found) == 1 else None
             arguments = re.findall(r"^\targuments = \{\n(.*?)^\t\}", output, re.MULTILINE | re.DOTALL)
             live_argv = [line.strip() for line in arguments[0].splitlines()] if len(arguments) == 1 else None
+            # The disk plist can have been edited without reloading the job.
+            # Admit the loaded profile home, not just the installer's current file;
+            # inherited/default environment sections are not the job definition.
+            environments = re.findall(r"^\tenvironment = \{\n(.*?)^\t\}", output, re.MULTILINE | re.DOTALL)
+            live_homes = (re.findall(r"^\t\tHERMES_HOME => (.+)$", environments[0], re.MULTILINE)
+                          if len(environments) == 1 else [])
+            if live_homes != [home]:
+                _external_launchd_refusal("loaded profile home does not match the installed definition")
             pid = _gw()._parse_launchd_pid_from_print_output(output)
             if (field("path") != str(path) or field("program") != definition.get("Program", argv[0])
                     or live_argv != argv or pid is None):
