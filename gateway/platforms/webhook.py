@@ -656,12 +656,26 @@ class WebhookAdapter(BasePlatformAdapter):
             "deliver": route_config.get("deliver", "log"), "profile": profile,
             "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
             "route": route_name,
-            "mirror": route_config.get("mirror_to_session") is True}
+            "mirror": route_config.get("mirror_to_session") is True,
+            "persistent_session": route_config.get("persistent_session") is True}
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
-        source = self.build_source(chat_id=session_chat_id, chat_name=f"webhook/{route_name}", chat_type="webhook",
-                                   user_id=f"webhook:{route_name}", user_name=route_name)
+        persistent_session = route_config.get("persistent_session") is True
+        sender = payload.get("sender") if isinstance(payload, dict) else None
+        if persistent_session:
+            # One durable session per conversation (chat_id from the caller's payload,
+            # e.g. an iMessage chat GUID). Group chats isolate per sender so members
+            # don't share a thread; 1:1 routes pass sender == chat peer.
+            chat_id = str(payload.get("chat_guid") or payload.get("chat_identifier") or route_name) \
+                if isinstance(payload, dict) else session_chat_id
+            user_id = str(sender) if sender else f"webhook:{route_name}"
+            chat_type = "group" if payload.get("is_group") else "dm" if isinstance(payload, dict) else "webhook"
+            source = self.build_source(chat_id=chat_id, chat_name=f"webhook/{route_name}", chat_type=chat_type,
+                                       user_id=user_id, user_name=str(sender or route_name))
+        else:
+            source = self.build_source(chat_id=session_chat_id, chat_name=f"webhook/{route_name}", chat_type="webhook",
+                                       user_id=f"webhook:{route_name}", user_name=route_name)
         if profile and isinstance(profile, str):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
@@ -676,7 +690,12 @@ class WebhookAdapter(BasePlatformAdapter):
     async def on_processing_complete(self, event: "MessageEvent", outcome: Any) -> None:
         """Close the one-shot per-delivery session: ``prune_sessions`` only reaps rows with ``ended_at`` set, so
         unclosed webhook sessions leak unbounded. Fires at the true end of the run; ``end_session()`` is
-        first-reason-wins."""
+        first-reason-wins. Routes with ``persistent_session: true`` keep the conversation session open
+        across turns; the session ends only via /new, /reset, or the operator's own cleanup."""
+        delivery = self._delivery_info.get(event.source.chat_id, {})
+        if delivery.get("persistent_session"):
+            logger.debug("[webhook] Keeping persistent session open for %s", event.source.chat_id)
+            return
         await self._end_webhook_session(event, event.source.chat_id)
 
     async def _end_webhook_session(self, event: "MessageEvent", session_chat_id: str) -> None:
