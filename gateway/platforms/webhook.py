@@ -10,6 +10,7 @@ idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds 
 replay protection; body-only V1 is deprecated but accepted with a warning."""
 
 import asyncio
+from pathlib import Path
 import base64
 import binascii
 import hashlib
@@ -645,6 +646,32 @@ class WebhookAdapter(BasePlatformAdapter):
         return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
                                   "delivery_id": delivery_id}, status=202)
 
+    @staticmethod
+    def _resolve_attachments(raw: Any) -> list:
+        """Validate proxy attachment entries -> [(resolved_path, mime), ...].
+
+        Images only, max 4, paths must exist and live under the Messages
+        Attachments store (containment against arbitrary file reads)."""
+        if not isinstance(raw, list):
+            return []
+        root = str(Path.home() / 'Library/Messages/Attachments/')
+        out = []
+        for item in raw[:4]:
+            if not isinstance(item, dict):
+                continue
+            path, mime = item.get('path'), str(item.get('mime') or '')
+            if not isinstance(path, str) or not mime.startswith('image/'):
+                continue
+            try:
+                resolved = Path(path).expanduser().resolve(strict=True)
+            except OSError:
+                continue
+            if not str(resolved).startswith(root):
+                logger.warning('[webhook] Rejected attachment outside Messages store: %s', path)
+                continue
+            out.append((str(resolved), mime))
+        return out
+
     def _extract_slash_command(self, payload: Any) -> Optional[str]:
         """Raw message text when it is a bare gateway slash command (e.g. '/new', '/new some task').
 
@@ -706,6 +733,13 @@ class WebhookAdapter(BasePlatformAdapter):
                              message_id=delivery_id)
         if slash_text is not None:
             event.allow_gateway_control = True
+        # Inbound media from the proxy: local file paths (vision tool access). Images only —
+        # the proxy filters to image/* and bounds the count; the adapter re-verifies both.
+        media = self._resolve_attachments(payload.get('attachments') if isinstance(payload, dict) else None)
+        if media:
+            event.media_urls = [m[0] for m in media]
+            event.media_types = [m[1] for m in media]
+            event.message_type = MessageType.PHOTO
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))
