@@ -40,7 +40,8 @@ refreshable. An opaque legacy wrapper is treated conservatively as external.
 
 For external definitions, `gateway restart` requires the expected label and
 absolute profile `HERMES_HOME`, exactly one loaded GUI/user domain, and matching
-loaded plist path, executable and complete arguments. It rechecks the on-disk
+loaded plist path, executable, complete arguments and explicit job `HERMES_HOME`
+(the inherited/default environment is not sufficient). It rechecks the on-disk
 bytes before `launchctl kickstart -k` and verifies a fresh supervised PID in that
 same domain. This is a supervisor-level restart, not the CLI's in-band gateway
 turn-drain flow. Failure, an unloaded job, ambiguous identity, or a missing
