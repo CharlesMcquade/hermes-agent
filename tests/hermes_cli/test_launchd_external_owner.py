@@ -39,6 +39,8 @@ def external(monkeypatch, tmp_path):
                 f"{cmd[2]} = {{\n\tpath = {path}\n"
                 f"\tprogram = {data['ProgramArguments'][0]}\n"
                 "\targuments = {\n\t\t" + "\n\t\t".join(data['ProgramArguments']) +
+                "\n\t}\n\tenvironment = {\n\t\tHERMES_HOME => " +
+                data['EnvironmentVariables']['HERMES_HOME'] +
                 "\n\t}\n\tpid = 123\n}\n"), stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     monkeypatch.setattr(ld.subprocess, "run", run)
@@ -55,6 +57,31 @@ def test_restart_preserves_external_definition_and_domain(external):
         ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]]
     gw._wait_for_launchd_service_pid.assert_called_once_with(
         "ai.hermes.gateway", 123, timeout=15.0, domain="gui/501")
+
+
+@pytest.mark.parametrize("fault", ["mismatch", "missing", "duplicate", "inherited_only"])
+def test_loaded_profile_home_must_match_before_restart(external, monkeypatch, fault):
+    path, data, calls, original = external
+    home = data["EnvironmentVariables"]["HERMES_HOME"]
+    def run(cmd, **kwargs):
+        result = original(cmd, **kwargs)
+        if cmd[1] == "print" and result.returncode == 0:
+            if fault == "mismatch":
+                result.stdout = result.stdout.replace("HERMES_HOME => " + home, "HERMES_HOME => /other/home")
+            elif fault == "missing":
+                result.stdout = result.stdout.replace("HERMES_HOME =>", "OTHER_HOME =>")
+            elif fault == "duplicate":
+                result.stdout = result.stdout.replace("HERMES_HOME => " + home,
+                    "HERMES_HOME => " + home + "\n\t\tHERMES_HOME => /other/home")
+            else:
+                result.stdout = result.stdout.replace("\tenvironment = {", "\tinherited environment = {")
+        return result
+    monkeypatch.setattr(ld.subprocess, "run", run)
+    before = path.read_bytes()
+    with pytest.raises(SystemExit):
+        gw.launchd_restart()
+    assert path.read_bytes() == before
+    assert all(c[1] == "print" for c in calls)
 
 
 def test_refresh_is_read_only_for_external_definition(external):

@@ -36,7 +36,7 @@ def test_script_mode_gateway_restart_private_interpreter(tmp_path):
     calls = tmp_path / "calls.jsonl"
     restarted = tmp_path / "restarted"
     fake = bindir / "launchctl"
-    fake.write_text(f'''#!{sys.executable}
+    fake.write_text(f'''#!{sys.executable} -B
 import json, pathlib, sys
 args = sys.argv[1:]
 with open({str(calls)!r}, "a") as out:
@@ -49,6 +49,7 @@ if args[0] == "print":
     print("\\tpath = " + {str(plist)!r})
     print("\\tprogram = " + {program!r})
     print("\\targuments = {{\\n\\t\\t" + {program!r} + "\\n\\t\\tagent\\n\\t}}")
+    print("\\tenvironment = {{\\n\\t\\tHERMES_HOME => " + {str(state)!r} + "\\n\\t}}")
     print("\\tpid = " + str(pid) + "\\n}}")
 elif args == ["kickstart", "-k", "gui/{os.getuid()}/ai.hermes.gateway"]:
     flag.touch()
