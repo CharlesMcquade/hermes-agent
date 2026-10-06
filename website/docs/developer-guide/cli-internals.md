@@ -112,6 +112,7 @@ weeks, months and years. The combined timeout is capped below the native signed
 unit limits cannot overflow subprocess polling. Zero/unknown/infinite phase
 limits use the bounded fallback. This does not change active-turn drain settings.
 
+<<<<<<< HEAD
 ## Nous free tier sign-in
 
 Sign-in completion is one function, `settle_after_upgrade`, called by every caller that persists an
@@ -140,6 +141,38 @@ contextvars. `upgrade_guest` (`hermes auth upgrade`), the CLI `/login` handler a
 promotion poller are renderers over it; a surface that needs the cancel check and the save to be
 atomic passes `persist_guard`. The desktop's plain "connect another Nous account" device-code login
 is a separate path (`_nous_plain_poller`) and must stay one.
+=======
+## Externally owned macOS services
+
+A canonical launchd label does not make its plist CLI-owned. App-associated or
+unrecognized service commands are preserved byte-for-byte. New CLI-generated
+plists carry `HermesServiceOwner: cli`; recognized legacy CLI entrypoints remain
+refreshable. An opaque legacy wrapper is treated conservatively as external.
+
+For external definitions, `gateway restart` requires the expected label and
+absolute profile `HERMES_HOME`, exactly one loaded GUI/user domain, and matching
+loaded plist path, executable and complete arguments. It rechecks the on-disk
+bytes before `launchctl kickstart -k` and verifies a fresh supervised PID in that
+same domain. This is a supervisor-level restart, not the CLI's in-band gateway
+turn-drain flow. Failure, an unloaded job, ambiguous identity, or a missing
+replacement exits nonzero. It never rewrites, bootouts, bootstraps, reinstalls, or
+starts a detached replacement. Start, stop, uninstall and force-install defer to
+the external bootstrap owner; automatic refresh is a read-only no-op.
+
+Script-mode consumers may invoke their private Python with
+`<agent-root>/hermes_cli/main.py gateway restart`. The CLI inserts its own root
+before bootstrap imports, so no editable installation or ambient `PYTHONPATH` is
+needed. This does not select a new release: a long-lived UI must first reload
+with its new agent-root/interpreter configuration. Source-installed
+`.hermes/bin/hermes` launchers are a different entry path; do not substitute a
+store interpreter lacking committed dependencies for an externally owned venv.
+
+Tests exercise real script-mode imports and command dispatch with an isolated
+account lookup, home and disposable `launchctl` executable. They do not establish
+live macOS restart success or application health; deployment verification must
+still check the new processes and the owning application's health after the
+user initiates the restart.
+>>>>>>> e13341dcd2 (fix: preserve external launchd ownership on gateway restart)
 
 ## Process identity: never infer it from argv substrings
 
