@@ -2,13 +2,13 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
+from pathlib import Path
 import gateway.platforms.webhook as wh  # noqa: E402
 
 
 def _with_home(monkeypatch, tmp_path):
     root = tmp_path / "Library" / "Messages" / "Attachments"
     root.mkdir(parents=True)
-    monkeypatch.setattr(wh.Path, "home", staticmethod(lambda: tmp_path))
     return root
 
 
@@ -22,8 +22,10 @@ def test_filters_non_images_and_missing(monkeypatch, tmp_path):
     missing = root / "gone.png"
     got = wh.WebhookAdapter._resolve_attachments([
         _mk(real, "image/png"), _mk(missing, "image/png"),
-        _mk(root / "b.mov", "video/quicktime")])
-    assert got == [(str(real.resolve()), "image/png")]
+        _mk(root / "b.mov", "video/quicktime")], [str(root)])
+    assert len(got) == 1 and got[0][1] == "image/png"
+    assert Path(got[0][0]).read_bytes() == real.read_bytes()
+    assert got[0][0] != str(real)
 
 
 def test_bounds_count(monkeypatch, tmp_path):
@@ -32,7 +34,7 @@ def test_bounds_count(monkeypatch, tmp_path):
     for i in range(10):
         f = root / f"x{i}.jpg"; f.write_bytes(b"x")
         items.append(_mk(f, "image/jpeg"))
-    got = wh.WebhookAdapter._resolve_attachments(items)
+    got = wh.WebhookAdapter._resolve_attachments(items, [str(root)])
     assert len(got) == 4
 
 

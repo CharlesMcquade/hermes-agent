@@ -10,7 +10,9 @@ idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds 
 replay protection; body-only V1 is deprecated but accepted with a warning."""
 
 import asyncio
-from pathlib import Path
+from contextvars import ContextVar
+from copy import deepcopy
+from uuid import uuid4
 import base64
 import binascii
 import hashlib
@@ -177,11 +179,12 @@ class WebhookAdapter(BasePlatformAdapter):
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
         self._v1_signature_warned: set[str] = set()  # routes already warned about legacy V1 (once per route)
-        # Keyed by session chat_id; read by EVERY send() (interim status messages AND the final
-        # response) so never pop on send(). TTL-pruned on each POST.
+        # One-shot delivery lookup (not a conversation-global latest destination).
+        # Persistent turns pin their own record on the event and task context.
         self._delivery_info: Dict[str, dict] = {}
         self._delivery_info_created: Dict[str, float] = {}
         self._delivery_info_order: Deque[tuple[float, str]] = deque()
+        self._turn_delivery: ContextVar[Optional[tuple[str, Optional[dict]]]] = ContextVar("webhook_turn_delivery", default=None)
         self.gateway_runner = None  # set externally; needed for cross-platform delivery
         # Idempotency: TTL cache of recently processed delivery IDs.
         self._seen_deliveries: Dict[str, float] = {}
@@ -267,7 +270,10 @@ class WebhookAdapter(BasePlatformAdapter):
         if is_autonomous_silence_response(content):
             logger.info("[webhook] Response for %s is a silence marker — not delivering", chat_id)
             return SendResult(success=True)
-        delivery = self._delivery_info.get(chat_id, {})
+        bound = self._turn_delivery.get()
+        delivery = bound[1] if bound and bound[0] == chat_id else self._delivery_info.get(chat_id)
+        if delivery is None:
+            return SendResult(success=False, error="No correlated webhook delivery")
         deliver_type = delivery.get("deliver", "log")
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
@@ -338,7 +344,8 @@ class WebhookAdapter(BasePlatformAdapter):
         if not user_id.startswith("webhook:"):
             return None
         route_config = self._routes.get(user_id[len("webhook:"):])
-        toolsets = route_config.get("toolsets") if isinstance(route_config, dict) else None
+        toolsets = getattr(source, "_webhook_toolsets",
+                           route_config.get("toolsets") if isinstance(route_config, dict) else None)
         if not isinstance(toolsets, list):
             return None
         return [str(t).strip() for t in toolsets if str(t).strip()] or None
@@ -556,6 +563,23 @@ class WebhookAdapter(BasePlatformAdapter):
         return route_name, route_config, profile, None
 
     @staticmethod
+    def _validate_conversation_payload(payload, route_config):
+        if not isinstance(payload, dict):
+            raise ValueError("Webhook body must be an object")
+        if route_config.get("persistent_session") is not True:
+            return
+        conversation = payload.get("chat_guid") or payload.get("chat_identifier")
+        if not isinstance(conversation, str) or not conversation or "\x00" in conversation:
+            raise ValueError("Persistent webhook requires a conversation identifier")
+        if "is_group" in payload and not isinstance(payload["is_group"], bool):
+            raise ValueError("is_group must be a boolean")
+        sender = payload.get("sender")
+        if sender is not None and (not isinstance(sender, str) or "\x00" in sender):
+            raise ValueError("sender must be a string")
+        if payload.get("is_group") and not sender:
+            raise ValueError("Group webhook requires a participant identifier")
+
+    @staticmethod
     def _apply_skills(prompt: str, skills: list) -> str:
         """Inject the first matching skill via build_skill_invocation_message() directly — /skill-name slash
         commands would be intercepted by the command parser."""
@@ -585,8 +609,12 @@ class WebhookAdapter(BasePlatformAdapter):
         if not self._record_rate_limit_hit(route_name, time.time()):
             return _json_error("Rate limit exceeded", 429)
         payload = self._parse_body(raw_body)
-        if payload is _UNPARSEABLE:
-            return _json_error("Cannot parse body", 400)
+        if payload is _UNPARSEABLE or not isinstance(payload, dict):
+            return _json_error("Webhook body must be an object", 400)
+        try:
+            self._validate_conversation_payload(payload, route_config)
+        except ValueError as exc:
+            return _json_error(str(exc), 400)
         headers = request.headers
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
@@ -617,9 +645,10 @@ class WebhookAdapter(BasePlatformAdapter):
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-            "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
+            "webhook-id", headers.get("X-Request-ID", uuid4().hex))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
-        if not self._record_delivery_id(delivery_id, now):
+        dedupe_key = json.dumps([profile, route_name, delivery_id])
+        if not self._record_delivery_id(dedupe_key, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         if route_config.get("cron_job"):
@@ -647,30 +676,27 @@ class WebhookAdapter(BasePlatformAdapter):
                                   "delivery_id": delivery_id}, status=202)
 
     @staticmethod
-    def _resolve_attachments(raw: Any) -> list:
-        """Validate proxy attachment entries -> [(resolved_path, mime), ...].
+    def _resolve_attachments(raw: Any, roots=None) -> list:
+        from gateway.platforms.webhook_attachments import resolve_attachments
+        return resolve_attachments(raw, roots)
 
-        Images only, max 4, paths must exist and live under the Messages
-        Attachments store (containment against arbitrary file reads)."""
-        if not isinstance(raw, list):
-            return []
-        root = str(Path.home() / 'Library/Messages/Attachments/')
-        out = []
-        for item in raw[:4]:
-            if not isinstance(item, dict):
-                continue
-            path, mime = item.get('path'), str(item.get('mime') or '')
-            if not isinstance(path, str) or not mime.startswith('image/'):
-                continue
-            try:
-                resolved = Path(path).expanduser().resolve(strict=True)
-            except OSError:
-                continue
-            if not str(resolved).startswith(root):
-                logger.warning('[webhook] Rejected attachment outside Messages store: %s', path)
-                continue
-            out.append((str(resolved), mime))
-        return out
+    async def handle_message(self, event):
+        # Covers inline busy/control responses. Background/drain tasks rebind to
+        # THEIR event below, not the previous turn's inherited context.
+        delivery = getattr(event, "_webhook_delivery", self._delivery_info.get(event.source.chat_id))
+        token = self._turn_delivery.set((event.source.chat_id, delivery))
+        try:
+            return await super().handle_message(event)
+        finally:
+            self._turn_delivery.reset(token)
+
+    async def _process_message_background(self, event, session_key):
+        delivery = getattr(event, "_webhook_delivery", self._delivery_info.get(event.source.chat_id))
+        token = self._turn_delivery.set((event.source.chat_id, delivery))
+        try:
+            return await super()._process_message_background(event, session_key)
+        finally:
+            self._turn_delivery.reset(token)
 
     def _extract_slash_command(self, payload: Any) -> Optional[str]:
         """Raw message text when it is a bare gateway slash command (e.g. '/new', '/new some task').
@@ -681,7 +707,7 @@ class WebhookAdapter(BasePlatformAdapter):
         create nor hide commands."""
         if not isinstance(payload, dict):
             return None
-        raw = payload.get("text") or payload.get("message") or payload.get("body")
+        raw = payload.get("prompt", payload.get("text") or payload.get("message") or payload.get("body"))
         if not isinstance(raw, str):
             return None
         stripped = raw.strip()
@@ -693,6 +719,8 @@ class WebhookAdapter(BasePlatformAdapter):
     def _spawn_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
                          route_name: str, profile, event_type: str) -> "asyncio.Task":
         """Record delivery info and fire the agent run (shared by the immediate and coalesced paths)."""
+        self._validate_conversation_payload(payload, route_config)
+        route_config = deepcopy(route_config)  # policy is pinned for this delivery
         # delivery_id in the session key → concurrent webhooks on one route get independent runs.
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
         # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
@@ -709,15 +737,16 @@ class WebhookAdapter(BasePlatformAdapter):
         persistent_session = route_config.get("persistent_session") is True
         sender = payload.get("sender") if isinstance(payload, dict) else None
         if persistent_session:
-            # One durable session per conversation (chat_id from the caller's payload,
-            # e.g. an iMessage chat GUID). Group chats isolate per sender so members
-            # don't share a thread; 1:1 routes pass sender == chat peer.
-            chat_id = str(payload.get("chat_guid") or payload.get("chat_identifier") or route_name) \
-                if isinstance(payload, dict) else session_chat_id
-            user_id = str(sender) if sender else f"webhook:{route_name}"
-            chat_type = "group" if payload.get("is_group") else "dm" if isinstance(payload, dict) else "webhook"
-            source = self.build_source(chat_id=chat_id, chat_name=f"webhook/{route_name}", chat_type=chat_type,
-                                       user_id=user_id, user_name=str(sender or route_name))
+            # Encode the full route/conversation/participant tuple, never delimit
+            # attacker-controlled identifiers with ':' (ambiguous keys collide).
+            conversation = payload.get("chat_guid") or payload.get("chat_identifier")
+            group = payload.get("is_group") is True
+            identity = json.dumps([profile, route_name, conversation, sender if group else None],
+                                  ensure_ascii=True, separators=(",", ":"))
+            chat_id = "webhook:conversation:" + hashlib.sha256(identity.encode()).hexdigest()
+            source = self.build_source(chat_id=chat_id, chat_name=f"webhook/{route_name}",
+                                       chat_type="group" if group else "dm",
+                                       user_id=f"webhook:{route_name}", user_name=str(sender or route_name))
         else:
             source = self.build_source(chat_id=session_chat_id, chat_name=f"webhook/{route_name}", chat_type="webhook",
                                        user_id=f"webhook:{route_name}", user_name=route_name)
@@ -729,13 +758,16 @@ class WebhookAdapter(BasePlatformAdapter):
         slash_text = self._extract_slash_command(payload)
         if slash_text is not None:
             prompt = slash_text
+        source._webhook_toolsets = deepcopy(route_config.get("toolsets"))
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id)
+        event._webhook_delivery = self._delivery_info[session_chat_id]
         if slash_text is not None:
             event.allow_gateway_control = True
         # Inbound media from the proxy: local file paths (vision tool access). Images only —
         # the proxy filters to image/* and bounds the count; the adapter re-verifies both.
-        media = self._resolve_attachments(payload.get('attachments') if isinstance(payload, dict) else None)
+        with self._profile_scope(profile):
+            media = self._resolve_attachments(payload.get('attachments'), route_config.get('attachment_roots', []))
         if media:
             event.media_urls = [m[0] for m in media]
             event.media_types = [m[1] for m in media]
@@ -752,8 +784,10 @@ class WebhookAdapter(BasePlatformAdapter):
         unclosed webhook sessions leak unbounded. Fires at the true end of the run; ``end_session()`` is
         first-reason-wins. Routes with ``persistent_session: true`` keep the conversation session open
         across turns; the session ends only via /new, /reset, or the operator's own cleanup."""
-        delivery = self._delivery_info.get(event.source.chat_id, {})
-        if delivery.get("persistent_session"):
+        delivery = getattr(event, "_webhook_delivery", None)
+        if delivery is None:
+            delivery = self._delivery_info.get(event.source.chat_id, {})
+        if delivery.get("persistent_session") or (not delivery and event.source.chat_type in ("dm", "group")):
             logger.debug("[webhook] Keeping persistent session open for %s", event.source.chat_id)
             return
         await self._end_webhook_session(event, event.source.chat_id)
