@@ -14,9 +14,9 @@ class BuilderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / 'source'
-            subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(source)], check=True)
+            subprocess.run([sys.executable, '-B', '-m', 'venv', '--without-pip', str(source)], check=True)
             python = source / 'bin/python'
-            site = Path(subprocess.check_output([str(python), '-c',
+            site = Path(subprocess.check_output([str(python), '-B', '-c',
                 'import sysconfig;print(sysconfig.get_paths()["purelib"])'], text=True).strip())
             (site / 'release_sentinel.py').write_text('VERSION="selected-venv"\n')
             # Inspect the actual environment query; intercept only the expensive
@@ -37,7 +37,7 @@ class BuilderTests(unittest.TestCase):
             with patch.object(builder.shutil, 'copytree', side_effect=copy), patch.object(builder, 'run', side_effect=run):
                 with self.assertRaisesRegex(RuntimeError, 'verified-source-copy'):
                     builder.private_python(python.absolute(), root / 'private')
-            self.assertEqual(subprocess.check_output([str(python), '-c',
+            self.assertEqual(subprocess.check_output([str(python), '-B', '-c',
                 'import release_sentinel;print(release_sentinel.VERSION)'], text=True).strip(), 'selected-venv')
 
 

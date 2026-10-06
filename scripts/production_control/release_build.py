@@ -42,22 +42,29 @@ def ignore_runtime(directory, names):
             name.startswith('__editable__')]
 
 
-def private_python(source_python, root):
-    info = json.loads(run([str(source_python), '-c',
+def private_python(source_python, root, *, runner=None, source_root=None):
+    runner = runner or run
+    info = json.loads(runner([str(source_python), '-B', '-s', '-c',
         'import json,sys,sysconfig; print(json.dumps({"base":sys.base_prefix,"site":sysconfig.get_paths()["purelib"]}))']))
+    if source_root is not None:
+        for name in ('base', 'site'):
+            if not Path(info[name]).resolve().is_relative_to(source_root.resolve()):
+                raise RuntimeError('Interpreter metadata escapes source runtime')
     base = root / 'python'
     shutil.copytree(Path(info['base']).resolve(), base, symlinks=True, ignore=ignore_runtime)
     python = base / 'bin' / 'python3'
     venv = root / 'venv'
-    run([str(python), '-m', 'venv', '--without-pip', str(venv)], env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+    runner([str(python), '-B', '-s', '-m', 'venv', '--without-pip', str(venv)], env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     executable = venv / 'bin' / 'python'
-    site = Path(run([str(executable), '-c', 'import sysconfig; print(sysconfig.get_paths()["purelib"])']))
+    site = Path(runner([str(executable), '-B', '-s', '-c', 'import sysconfig; print(sysconfig.get_paths()["purelib"])']))
+    if not site.resolve().is_relative_to(root.resolve()):
+        raise RuntimeError('Interpreter site path escapes destination runtime')
     shutil.copytree(info['site'], site, dirs_exist_ok=True, symlinks=True, ignore=ignore_runtime)
     # Replace all console-script launchers with the preserved package entry points
     # so child tools cannot fall through to a development interpreter on PATH.
     command = '''import importlib.metadata,json
-print(json.dumps({e.name:e.value for e in importlib.metadata.entry_points(group="console_scripts")}))'''
-    entries = json.loads(run([str(executable), '-c', command]))
+print(json.dumps({e.name:e.value for d in importlib.metadata.distributions() for e in d.entry_points if e.group == "console_scripts"}))'''
+    entries = json.loads(runner([str(executable), '-B', '-s', '-c', command]))
     for name, value in entries.items():
         if '/' in name or ':' not in value:
             continue
