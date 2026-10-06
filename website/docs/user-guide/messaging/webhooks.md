@@ -93,6 +93,62 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `coalesce` | No | Debounce rapid distinct events on the same logical entity into one agent run. Block with a required `key` (payload field or template identifying the entity, e.g. `pull_request.number`), optional `window_seconds` (quiet window, default 30) and `max_wait_seconds` (dispatch cap, default 300). See [Event Coalescing](#event-coalescing). Mutually exclusive with `deliver_only` and `cron_job`. |
 | `mirror_to_session` | No | Default `false`. When `true`, after a successful delivery to a chat platform the delivered message is also written into that chat's session transcript (as a labelled user turn, the same way continuable cron briefs are), so when you reply in that chat the agent knows what it just sent you. See [Replying to a delivery](#replying-to-a-delivery). |
 
+### Persistent conversational routes
+
+Set `persistent_session: true` for a trusted messaging proxy. The JSON object
+must supply a nonempty string `chat_guid` (or `chat_identifier`), a boolean
+`is_group` if present, and a string `sender` (required for groups). The session
+is scoped to the authenticated route, routed profile, conversation and, for
+groups, participant. Participant labels remain untrusted context: the authenticated
+route identity, **not payload `sender`**, selects `toolsets`. The proxy must still
+enforce its own sender allowlist before signing a message.
+
+Replies use the originating delivery's configuration, including templated
+`deliver_extra`, even while another delivery is running or queued. There is no
+conversation-global "latest reply capability". An unbound later send cannot
+reuse a conversation's last capability. Normal gateway busy-message batching
+still applies; batching is not an independent reply guarantee for every payload.
+Do not enable route `coalesce` when each inbound capability requires a separate
+reply. A restarted gateway cannot restore an expired in-memory reply capability.
+
+Raw slash text in the proxy's `prompt` field (or legacy `text`, `message`, `body`)
+reaches the gateway command dispatcher before route framing. `/new` and `/reset`
+rotate the durable session; normal completed turns leave it open. Non-object JSON
+is rejected with HTTP 400. Existing unscoped prototype session keys are deliberately
+not reused or auto-migrated: their original route ownership is ambiguous.
+
+#### Local image attachment roots
+
+Local attachments are disabled unless the operator explicitly configures
+`attachment_roots` on the route:
+
+```yaml
+persistent_session: true
+attachment_roots:
+  - /srv/messaging-proxy/attachments
+```
+
+Use absolute paths to narrowly scoped directories readable by the **gateway OS
+user**. The root and its ancestor directories must be operator-controlled. A
+separate proxy user's home is not inferred from gateway `HOME`. A private staging
+directory with explicit access permissions is preferable to broadening access to
+an entire Messages store. Never accept a root from request JSON. Changing this
+setting does not grant filesystem permissions or macOS privacy consent.
+
+The adapter accepts at most four entries with string `path` and `mime` fields,
+`image/*` MIME syntax, and regular files of at most 20 MiB each. It rejects relative
+paths, `..`, NULs, directories, prefix siblings, symlink leaves and symlink traversal
+below the configured root. POSIX descriptor-relative no-follow opens and private
+snapshots prevent downstream vision from reopening a replaced source pathname;
+platforms without this mechanism fail closed. MIME syntax is not image-content
+validation: the image decoder remains responsible for validating image bytes.
+
+Snapshots are mode-0600 files in the receiving profile's
+`cache/webhook_attachments/`, retained for follow-up turns. Operators should include
+this directory in their cache retention policy; these are copies of private media.
+Do not delete active-session media while it is still needed. Rejected attachments
+are omitted while the accompanying text still proceeds.
+
 ### Full example
 
 ```yaml

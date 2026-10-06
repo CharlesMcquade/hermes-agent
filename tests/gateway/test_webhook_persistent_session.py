@@ -5,6 +5,9 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.platforms.webhook import WebhookAdapter
+from gateway.session import SessionSource
+from gateway.config import Platform
+from gateway.platforms.event import MessageEvent
 
 
 def _adapter():
@@ -18,7 +21,7 @@ def _adapter():
     a._captured_source = {}
     def _build_source(**kw):
         a._captured_source.update(kw)
-        return kw
+        return SessionSource(platform=Platform.WEBHOOK, **kw)
     a.build_source = _build_source
     a.handle_message = AsyncMock()
     return a
@@ -44,9 +47,10 @@ def test_persistent_route_uses_conversation_chat_id_and_sender():
     asyncio.run(run())
     # source is a kwargs dict captured from our stubbed build_source
     src = a._captured_source
-    assert src["chat_id"] == "any;-;+15550001111"
+    assert src["chat_id"] != "any;-;+155****1111"
     assert src["chat_type"] == "dm"
-    assert src["user_id"] == "charles"
+    assert src["user_id"] == "webhook:verity-imsg"
+    assert src["user_name"] == "charles"
     # delivery info carries the flag
     info = list(a._delivery_info.values())[0]
     assert info["persistent_session"] is True
@@ -62,9 +66,10 @@ def test_group_route_isolates_per_sender_with_group_chat_type():
             profile=None, event_type="message")
     asyncio.run(run())
     src = a._captured_source
-    assert src["chat_id"] == "any;+;g-uuid"
+    assert src["chat_id"] != "any;+;g-uuid"
     assert src["chat_type"] == "group"
-    assert src["user_id"] == "alice"
+    assert src["user_id"] == "webhook:verity-imsg"
+    assert src["user_name"] == "alice"
 
 
 def test_one_shot_route_unchanged_without_flag():
@@ -85,7 +90,7 @@ def test_persistent_session_not_ended_on_processing_complete():
     a = _adapter()
     a._end_webhook_session = AsyncMock()
     a.logger = MagicMock()
-    evt = MagicMock()
+    evt = MessageEvent(text="hi", source=SessionSource(platform=Platform.WEBHOOK, chat_id="fixture"))
     evt.source.chat_id = "any;-;+15550001111"
     a._delivery_info[evt.source.chat_id] = {"persistent_session": True}
     asyncio.run(a.on_processing_complete(evt, None))
@@ -95,7 +100,7 @@ def test_persistent_session_not_ended_on_processing_complete():
 def test_one_shot_session_still_ended_on_processing_complete():
     a = _adapter()
     a._end_webhook_session = AsyncMock()
-    evt = MagicMock()
+    evt = MessageEvent(text="hi", source=SessionSource(platform=Platform.WEBHOOK, chat_id="fixture"))
     evt.source.chat_id = "webhook:verity-imsg:d-1"
     a._delivery_info[evt.source.chat_id] = {"persistent_session": False}
     asyncio.run(a.on_processing_complete(evt, None))
