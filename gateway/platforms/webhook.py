@@ -645,6 +645,24 @@ class WebhookAdapter(BasePlatformAdapter):
         return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
                                   "delivery_id": delivery_id}, status=202)
 
+    def _extract_slash_command(self, payload: Any) -> Optional[str]:
+        """Raw message text when it is a bare gateway slash command (e.g. '/new', '/new some task').
+
+        Checked against the RAW payload text BEFORE route-prompt assembly, so commands like /new
+        reach the standard gateway slash dispatcher (which requires text to start with '/').
+        Only the raw text qualifies - never the rendered prompt - so route framing can neither
+        create nor hide commands."""
+        if not isinstance(payload, dict):
+            return None
+        raw = payload.get("text") or payload.get("message") or payload.get("body")
+        if not isinstance(raw, str):
+            return None
+        stripped = raw.strip()
+        if not stripped.startswith("/"):
+            return None
+        command = stripped.split(maxsplit=1)[0][1:].split("@", 1)[0].lower()
+        return stripped if command and "/" not in command else None
+
     def _spawn_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
                          route_name: str, profile, event_type: str) -> "asyncio.Task":
         """Record delivery info and fire the agent run (shared by the immediate and coalesced paths)."""
@@ -678,8 +696,16 @@ class WebhookAdapter(BasePlatformAdapter):
                                        user_id=f"webhook:{route_name}", user_name=route_name)
         if profile and isinstance(profile, str):
             source.profile = profile
+        # Bare gateway slash commands (e.g. '/new') bypass the route prompt entirely so the
+        # standard gateway dispatcher sees them at prompt start. The reply leg still egresses
+        # through the route's delivery info (same session_chat_id mapping above).
+        slash_text = self._extract_slash_command(payload)
+        if slash_text is not None:
+            prompt = slash_text
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id)
+        if slash_text is not None:
+            event.allow_gateway_control = True
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))
