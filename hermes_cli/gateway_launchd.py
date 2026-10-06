@@ -10,6 +10,8 @@ from pathlib import Path
 import contextlib
 import json
 import os
+import plistlib
+import re
 import shlex
 import subprocess
 import sys
@@ -385,6 +387,8 @@ def generate_launchd_plist() -> str:
 <dict>
     <key>Label</key>
     <string>{label}</string>
+    <key>HermesServiceOwner</key>
+    <string>cli</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -446,6 +450,102 @@ def generate_launchd_plist() -> str:
 </dict>
 </plist>
 """
+
+
+def _external_launchd_definition() -> tuple[Path, bytes, dict] | None:
+    """Read ownership before any generator, write, signal, or bootstrap.
+
+    App-associated definitions and unrecognized commands belong to their installer,
+    not the CLI. Legacy CLI launchers remain refreshable; a label alone never
+    grants ownership. Malformed definitions fail closed rather than being repaired.
+    """
+    path = _gw().get_launchd_plist_path()
+    if not path.exists():
+        return None
+    try:
+        raw = path.read_bytes()
+        definition = plistlib.loads(raw)
+        argv = definition.get("ProgramArguments")
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+            raise ValueError("invalid ProgramArguments")
+        if definition.get("AssociatedBundleIdentifiers") or definition.get("Program"):
+            return path, raw, definition
+        if definition.get("HermesServiceOwner") == "cli":
+            return None
+        from gateway.status import looks_like_gateway_command_line
+        if looks_like_gateway_command_line(shlex.join(argv)):
+            return None
+        # The generated AppleScript wrapper is not itself a gateway process.
+        # Recognize only our timestamp wrapper, not arbitrary osascript programs.
+        if argv[:2] == ["/usr/bin/osascript", "-e"] and len(argv) == 3:
+            script = argv[2]
+            if script.startswith('do shell script "exec ') and script.endswith('"'):
+                shell = script[len('do shell script "'): -1].replace('\\"', '"').replace('\\\\', '\\')
+                tokens = shlex.split(shell)
+                command = tokens[1:] if tokens[:1] == ["exec"] else []
+                if command:
+                    executable = Path(command[0]).name
+                    if (executable == "hermes" and command[1:3] == ["--run-module", "hermes_cli.stderr_timestamp"]
+                            or re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", executable)
+                            and command[1:3] == ["-m", "hermes_cli.stderr_timestamp"]):
+                        return None
+        return path, raw, definition
+    except (OSError, ValueError, TypeError, AttributeError, plistlib.InvalidFileException):
+        _external_launchd_refusal("cannot read an unambiguous service definition")
+
+
+def _external_launchd_refusal(reason: str) -> None:
+    _gw().print_error(f"Externally owned launchd service: {reason}. "
+                      "No definition rewrite, bootstrap, or detached fallback was attempted; "
+                      "use the owning application's service controls.")
+    raise SystemExit(1)
+
+
+def _restart_external_launchd(snapshot: tuple[Path, bytes, dict]) -> None:
+    """Restart only an exactly identified loaded job, retaining its bootstrap owner."""
+    path, raw, definition = snapshot
+    label = _gw().get_launchd_label()
+    env = definition.get("EnvironmentVariables")
+    home = env.get("HERMES_HOME") if isinstance(env, dict) else None
+    if (definition.get("Label") != label or not isinstance(home, str)
+            or not Path(home).is_absolute()
+            or Path(home).resolve() != _gw().get_hermes_home().resolve()):
+        _external_launchd_refusal("label or profile home does not match")
+    argv = definition["ProgramArguments"]
+    matches = []
+    try:
+        for domain in (f"gui/{os.getuid()}", f"user/{os.getuid()}"):
+            result = subprocess.run(["launchctl", "print", f"{domain}/{label}"],
+                                    timeout=5, **_gw()._CAPTURE_TEXT)
+            if result.returncode in (3, 113):
+                continue
+            if result.returncode != 0:
+                _external_launchd_refusal("launchd domain inspection failed")
+            output = result.stdout or ""
+            def field(name):
+                found = re.findall(r"^\t" + name + r" = (.+)$", output, re.MULTILINE)
+                return found[0] if len(found) == 1 else None
+            arguments = re.findall(r"^\targuments = \{\n(.*?)^\t\}", output, re.MULTILINE | re.DOTALL)
+            live_argv = [line.strip() for line in arguments[0].splitlines()] if len(arguments) == 1 else None
+            pid = _gw()._parse_launchd_pid_from_print_output(output)
+            if (field("path") != str(path) or field("program") != definition.get("Program", argv[0])
+                    or live_argv != argv or pid is None):
+                _external_launchd_refusal("loaded job does not match the installed definition")
+            matches.append((domain, pid))
+        if len(matches) != 1:
+            _external_launchd_refusal("expected exactly one loaded launchd domain")
+        domain, old_pid = matches[0]
+        if path.read_bytes() != raw:
+            _external_launchd_refusal("definition changed during restart admission")
+        # No bootout/bootstrap: the app's responsible identity and loaded definition
+        # remain launchd-owned. A failure MUST NOT enter the generic degrade path.
+        subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"],
+                       check=True, timeout=20, **_gw()._CAPTURE_TEXT)
+        if not _gw()._wait_for_launchd_service_pid(label, old_pid, timeout=15.0, domain=domain):
+            _external_launchd_refusal("no fresh supervised process appeared")
+    except (OSError, subprocess.SubprocessError):
+        _external_launchd_refusal("launchd restart failed")
+    print("✓ Externally owned service restarted (definition preserved)")
 
 
 def launchd_plist_is_current() -> bool:
@@ -530,6 +630,8 @@ def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
     re-reads it immediately."""
     plist_path = _gw().get_launchd_plist_path()
+    if _external_launchd_definition() is not None:
+        return False
     if not plist_path.exists() or _gw().launchd_plist_is_current():
         return False
 
@@ -592,6 +694,8 @@ def refresh_launchd_plist_if_needed() -> bool:
 
 
 def launchd_install(force: bool = False, *, start_now: bool = True):
+    if _external_launchd_definition() is not None:
+        _external_launchd_refusal("installation is owned by another application")
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     # Loading the plist starts the gateway (RunAtLoad), so a no-start install writes it without
@@ -657,6 +761,8 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
 
 
 def launchd_uninstall():
+    if _external_launchd_definition() is not None:
+        _external_launchd_refusal("uninstall must be performed by the bootstrap owner")
     plist_path = _gw().get_launchd_plist_path()
     # Captured: uninstalling an already-unloaded job is fine — don't print Boot-out failed: 3.
     subprocess.run(
@@ -669,6 +775,8 @@ def launchd_uninstall():
 
 
 def launchd_start():
+    if _external_launchd_definition() is not None:
+        _external_launchd_refusal("start must be performed by the bootstrap owner")
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
 
@@ -720,6 +828,8 @@ def _launchd_ok(message: str) -> None:
 
 
 def launchd_stop():
+    if _external_launchd_definition() is not None:
+        _external_launchd_refusal("stop must be performed by the bootstrap owner")
     target = f"{_launchd_domain()}/{get_launchd_label()}"
     _gw()._mark_planned_stop()
     # bootout unloads the definition so KeepAlive doesn't respawn; `hermes gateway start` re-bootstraps.
@@ -758,6 +868,9 @@ def _wait_for_launchd_service_pid(
 
 
 def launchd_restart():
+    external = _external_launchd_definition()
+    if external is not None:
+        return _restart_external_launchd(external)
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
     target = f"{domain}/{label}"
@@ -903,7 +1016,9 @@ def launchd_status(deep: bool = False):
     launchd_unsupported = _gw()._launchd_unsupported_marker_exists()
 
     print(f"Launchd plist: {plist_path}")
-    if _gw().launchd_plist_is_current():
+    if _external_launchd_definition() is not None:
+        print("✓ Service definition is externally owned; CLI refresh is disabled")
+    elif _gw().launchd_plist_is_current():
         print("✓ Service definition matches the current Hermes install")
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")

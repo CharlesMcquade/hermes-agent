@@ -488,7 +488,7 @@ class TestLaunchdServiceRecovery:
         a direct bootout would kill this CLI before bootstrap. The reload must
         be delegated to a detached helper instead."""
         plist_path = tmp_path / "ai.hermes.gateway.plist"
-        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        plist_path.write_bytes(plistlib.dumps({"ProgramArguments": ["hermes", "gateway", "run"]}))
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
@@ -563,7 +563,7 @@ class TestLaunchdServiceRecovery:
         nothing re-registered the label. So always prefer the detached helper.
         """
         plist_path = tmp_path / "ai.hermes.gateway.plist"
-        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        plist_path.write_bytes(plistlib.dumps({"ProgramArguments": ["hermes", "gateway", "run"]}))
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
@@ -614,7 +614,7 @@ class TestLaunchdServiceRecovery:
         retry budget got burned on 2026-08-05 (4 attempts, all rc=5).
         """
         plist_path = tmp_path / "ai.hermes.gateway.plist"
-        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        plist_path.write_bytes(plistlib.dumps({"ProgramArguments": ["hermes", "gateway", "run"]}))
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
@@ -666,7 +666,7 @@ class TestLaunchdServiceRecovery:
         its retry budget isn't spent on guaranteed-EIO bootstraps.
         """
         plist_path = tmp_path / "ai.hermes.gateway.plist"
-        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        plist_path.write_bytes(plistlib.dumps({"ProgramArguments": ["hermes", "gateway", "run"]}))
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
