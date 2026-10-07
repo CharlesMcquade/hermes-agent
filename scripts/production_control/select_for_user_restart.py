@@ -3,7 +3,7 @@
 
 check is production-read-only (disposable routing fixtures are written to scratch).
 prepare and select each require separate explicit approval; neither restarts.
-Only the reviewed v4 transition is admitted. New bundles/releases require review.
+Only the reviewed v5 transition is admitted. New bundles/releases require review.
 """
 import argparse
 import base64
@@ -23,7 +23,7 @@ import types
 
 REFRESH_PIN = 'ea590ad502cba1309d96ddc106f10a3072025426fe3be5c0e2d593e4eac6c18a'
 OLD_PIN = '81e8bbbe26d629ee8137445d6334b04ccc9cc3597f088e5ff965debd712194f3'
-NEW_PIN = '387ada60091d8bd93c74c5edcbdacb144154897b9ab78814674a7eeb5d6fd45b'
+NEW_PIN = '72fb5888fdf571d403412e5478897e79ae849f03313de358f35c7affd81c6629'
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
            'control_refresh', 'watchdog', 'approved_restart_job')
 ORDER = ['Restart WebUI', 'Reconnect and verify candidate WebUI native identity',
@@ -62,6 +62,84 @@ def retained(path):
     after = path.stat()
     require(before == after, 'Input changed during read')
     return raw, (tuple(ancestry), after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+
+
+# Finite routing surface of the reviewed launcher, WebUI profile reload and CLI.
+# Reject even empty/shadowed assignments: no secret values or dotenv evaluation
+# are needed to establish this deliberately narrower admission policy.
+ROUTING_KEYS = frozenset({
+    "PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHONSTARTUP",
+    "PYTHONEXECUTABLE", "PYTHONPLATLIBDIR", "PYTHONNOUSERSITE", "PYTHONSAFEPATH",
+    "PYTHONDONTWRITEBYTECODE", "__PYVENV_LAUNCHER__", "VIRTUAL_ENV",
+    "HOME", "USERPROFILE", "HERMES_HOME", "HERMES_BASE_HOME", "HERMES_PROFILE",
+    "HERMES_CONFIG", "HERMES_CONFIG_PATH", "HERMES_ENV", "HERMES_ENV_PATH",
+    "HERMES_WEBUI_PYTHON", "HERMES_WEBUI_AGENT_DIR", "HERMES_AGENT_DIR",
+    "HERMES_WEBUI_DIR", "HERMES_WEBUI_STATE_DIR", "HERMES_WEBUI_ISOLATED_PROFILE",
+    "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_FRAMEWORK_PATH",
+})
+HANDOFF_PRECONDITION = (
+    "Default profile only: no profile switches (including other clients), profile "
+    "work, config/environment edits or supervisor-environment changes from check "
+    "through both user restarts and identity verification. Otherwise stop and "
+    "repeat admission; a completed check is not a launch-time fence."
+)
+
+
+def profile_routing_guard(new):
+    """Read-only, invocation-local authority; never import real profile state.
+
+    The WebUI reload is a line parser, unlike launcher python-dotenv. Admit only
+    their unambiguous single-line assignment subset. Unsupported syntax is unknown,
+    not safe. Retain hashes/identity only, never credentials in reports/fixtures.
+    """
+    try:
+        home = Path(new["state_dir"])
+        paths = {home / "active_profile", home / ".env"}
+        optional = {home / ".op.env"}
+        require(set(new["services"]) == {"agent", "webui"}, "Unknown services")
+        for service in new["services"].values():
+            env = service["env"]
+            optional.add(Path(service["repo"]) / ".env")
+            require(env.get("HERMES_HOME") == str(home)
+                    and env.get("HERMES_BASE_HOME") == str(home),
+                    "Unknown default-profile routing authority")
+            paths.update(Path(p) for p in service.get("env_files", []))
+        # Only canonical keys, optional export, and complete one-line values.
+        assignment = re.compile(r'''(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|[^'"\r\n]*)(?:[ \t]*\#.*)?''')
+        def observe():
+            observations = {}
+            for path in sorted(paths | optional):
+                require(path.is_absolute() and path == path.resolve(), "Unknown routing path")
+                if path in optional and not os.path.lexists(path):
+                    observations[path] = None  # Known optional loader input; fence appearance.
+                    continue
+                raw, identity = retained(path)
+                text = raw.decode("utf-8")
+                require("\x00" not in text, "Unknown routing input syntax")
+                if path == home / "active_profile":
+                    require(text.strip() == "default", "Default profile authority required")
+                else:
+                    for line in text.splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        match = assignment.fullmatch(line)
+                        require(match is not None, "Unknown routing input syntax")
+                        require(match[1] not in ROUTING_KEYS,
+                                "Routing override assignment refused")
+                observations[path] = (digest(raw), identity)
+            return observations
+        initial = observe()
+    except Exception:
+        # Never propagate decode/parser errors that can quote credential content.
+        raise SelectionRefused("Default-profile routing authority absent, unsafe or unsupported") from None
+    def unchanged():
+        try:
+            require(observe() == initial, "Routing authority changed")
+        except Exception:
+            raise SelectionRefused("Default-profile routing authority changed or unsafe") from None
+    unchanged()
+    return unchanged
 
 
 def prehash_bundle(base, controls, pin):
@@ -304,11 +382,15 @@ def main(argv=None):
         require(action != 'prepare' or args.pending_receipt_sha256 is None, 'Prepare cannot reuse pending receipt')
         require(action != 'select' or args.pending_receipt_sha256 is not None, 'Select requires prepared receipt pin')
         observations, unchanged = prehash_bundle(args.base, args.controls, args.control_refresh_sha256)
-        def inputs():
+        def manifest_guard():
             unchanged()
             return manifest_inputs(args.base, args.candidate, args.expect_selected_sha256,
                                    args.expect_candidate_sha256, args.pending_receipt_sha256)
-        old, new = inputs()
+        old, new = manifest_guard()
+        profile_unchanged = profile_routing_guard(new)
+        def inputs():
+            profile_unchanged()
+            return manifest_guard()
         with installed_modules(args.controls, observations) as (controller, pending):
             c = controller.Controller(args.base, control_refresh_sha256=args.control_refresh_sha256)
             with c.locked():
@@ -325,12 +407,12 @@ def main(argv=None):
                                   args.expect_candidate_sha256, approval=action != 'check',
                                   receipt_pin=args.pending_receipt_sha256, guard=inputs)
             print(json.dumps(dict(pending_gate=result, routing=routing, app_canary='separate_gate_not_run',
-                                  warning=WARNING, ordered_handoff=ORDER), indent=2))
+                                  warning=WARNING, ordered_handoff=ORDER, handoff_precondition=HANDOFF_PRECONDITION), indent=2))
         return 0
     except Exception as exc:
         print(json.dumps(dict(status='blocked', changed=False if action == 'check' else None,
                               error=str(exc), installed_protocol=admission, app_canary='separate_gate_not_run',
-                              warning=WARNING, ordered_handoff=ORDER), indent=2))
+                              warning=WARNING, ordered_handoff=ORDER, handoff_precondition=HANDOFF_PRECONDITION), indent=2))
         return 2
 
 

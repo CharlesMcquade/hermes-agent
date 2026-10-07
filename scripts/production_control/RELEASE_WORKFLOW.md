@@ -165,29 +165,58 @@ identities can fail normally; reconciliation belongs to the installed pending
 protocol. Do not call `observe` as a supposedly read-only operation: it can persist
 results or restore a timed-out selector.
 
-### Current concrete blocker (v4)
+### Reviewed v5 artifact and bounded default-profile admission
 
-The reviewed controller is installed and admitted, but candidate v4 does **not**
-pin `HERMES_WEBUI_PYTHON` in its manifest environment. The launcher loads an unpinned
-`runtime.env`, then restores only explicitly declared manifest variables. Candidate
-`api/config.py::_discover_python` prioritizes `HERMES_WEBUI_PYTHON`, and
-`api/routes.py::_run_gateway_lifecycle_command` executes that interpreter.
-Therefore a clean-environment canary is not proof of the actual Gateway CLI route.
-The adapter rejects v4 before stage/selection. No credential file needs to be read
-to establish this gap. The builder now explicitly pins the private interpreter in
-`HERMES_WEBUI_PYTHON` before sealing, so the existing launcher restores it after
-mutable environment files. The build regression exercises that actual launcher
-merge against conflicting inherited/file values. Do not mutate v4: a corrected
-candidate needs fresh inventory/manifest pins, contained routing proof and review.
+The adapter's new manifest pin is the reviewed v5 artifact
+`72fb5888fdf571d403412e5478897e79ae849f03313de358f35c7affd81c6629`.
+The old manifest and six-module refresh pins are unchanged. This review correlated
+exact source commits, genuine Git provenance, sealed source/dependency inventories,
+contained runtime identities, the retained two-start canary report, and an
+independently repeated contained routing proof. It is **not pending admission,
+selection, a native restart, or production readiness**. V4 remains rejected:
+it lacked the manifest `HERMES_WEBUI_PYTHON` pin. V5 pins that interpreter, but
+launcher pins alone are insufficient: WebUI `init_profile_state()` subsequently
+calls `_reload_dotenv()`, which can override PATH/PYTHONPATH inherited by both
+Gateway command constructors. The active-profile helper resolves `hermes` from
+PATH before trying fallbacks.
 
-The contained routing fixture imports the actual candidate WebUI/config and CLI,
-checks both command constructors, then runs the real CLI dispatcher with a fake
+Before installed controller admission, the adapter now reads the exact manifest's
+base-home `active_profile` and `.env`, and declared launcher environment files.
+Both service homes/base homes must agree with manifest `state_dir`; only literal
+`default` (surrounding whitespace stripped) is admitted. Missing, unreadable,
+symlinked, unsafe-owner/mode, malformed or nondefault authority is refused rather
+than adopting the application's permissive default. No named profile is read.
+Known optional CLI dotenv inputs (`.op.env` and candidate project `.env` files)
+are checked when present; their absence is also rechecked to detect appearance.
+
+This is intentionally narrower than a dotenv implementation: comments, blanks and
+canonical single-line assignments (including `export` and quoted values) are
+supported; unsupported syntax, multiline values and decoding errors are refused.
+Assignments to the finite `ROUTING_KEYS` set are refused even when empty, shadowed,
+or restored by the launcher. This covers PATH/import routing, Python interpreter
+and library routing, virtualenv, home/base/profile/config/env paths, and WebUI
+interpreter/source/state/isolation overrides, including `HERMES_WEBUI_AGENT_DIR`.
+Values are never printed, interpolated, executed, copied into fixtures, or retained
+in reports. Only invocation-local digests and file identities survive inspection.
+The guard re-reads these authorities at the existing controller admission and
+publication edges; it introduces no new receipt or selection transaction.
+
+The contained routing fixture imports actual candidate WebUI/config and CLI,
+checks both command constructors, and runs the real CLI dispatcher with a fake
 native plist and intercepted launchctl boundary. It asserts exact print/print/
-kickstart ordering and unchanged fixture plist bytes. It proves code composition,
-**not a real native restart**, current production environment, message delivery, or
-post-handoff identity. A synthetic interpreter override was demonstrated to change
-the emitted command; an in-memory fixture with the candidate interpreter pinned
-passed. Neither experiment changes the sealed manifest or authorizes v4 staging.
+kickstart ordering and unchanged fixture plist bytes. This proves code composition,
+**not a real native restart**, arbitrary plugins/configuration, current in-memory
+profile state, message delivery, or post-handoff identity. Synthetic fixture
+regressions cover input refusal and drift at both prepare/select publication edges.
+
+The file guard is invocation-local, not a durable profile lease or launch-time
+fence. It does not inspect live process environments or claim protection against
+concurrent same-user mutation after the last read. **No profile switching (in any
+client), profile work, config/environment edits or supervisor-environment changes
+from admission through both user restarts and identity verification.** Any such
+change invalidates the handoff: stop and repeat admission. Reconfirm the candidate
+WebUI's default profile after reconnecting; stale cookies/request profiles are not
+certified by the on-disk `active_profile` check.
 
 ### Ordered human handoff, only after all gates pass
 

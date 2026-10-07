@@ -75,6 +75,25 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse((self.base/pending.RECEIPT).exists())
         self.assertEqual(self.c.manifest_path.read_bytes(), self.f.old)
 
+        # Exercise the public entry: unsafe profile routing must stop even
+        # before installed Python is executed, not merely inside a helper test.
+        home, runtime, new = ProfileRoutingTests.routing_fixture(self)
+        (home / '.env').write_text('PATH=/synthetic-wrong\n')
+        common = ['--base', str(self.base), '--controls', str(self.base/'controls'),
+                  '--candidate', str(self.f.candidate), '--scratch', str(self.base),
+                  '--control-refresh-sha256', s.REFRESH_PIN,
+                  '--expect-selected-sha256', self.old_pin,
+                  '--expect-candidate-sha256', self.new_pin]
+        for flags in (['--check'], ['--prepare', '--approve-prepare'],
+                      ['--select', '--approve-select', '--pending-receipt-sha256', '0'*64]):
+            with patch.object(s, 'prehash_bundle', return_value=({}, lambda: None)), \
+                 patch.object(s, 'manifest_inputs', return_value=({}, new)), \
+                 patch.object(s, 'installed_modules', side_effect=AssertionError('must not import')) as imports, \
+                 redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(s.main(common + flags), 2)
+                imports.assert_not_called()
+                self.assertNotIn('/synthetic-wrong', out.getvalue())
+
     def test_publication_edge_rechecks_adapter_proof(self):
         calls = []
         def guard():
@@ -114,6 +133,100 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result['status'],'pending_gate_not_checked')
         self.assertIn('unsafe',result['warning'])
         self.assertEqual(result['ordered_handoff'][0], 'Restart WebUI')
+
+
+
+class ProfileRoutingTests(unittest.TestCase):
+    setUp = AdapterTests.setUp
+    action = AdapterTests.action
+
+    def routing_fixture(self):
+        home = self.base / "profile-home"
+        home.mkdir(exist_ok=True)
+        (home / "active_profile").write_text("default\n")
+        (home / ".env").write_text("TOKEN=synthetic-only\n")
+        runtime = self.base / "runtime.env"
+        runtime.write_text("TOKEN=synthetic-only\n")
+        env = {"HERMES_HOME": str(home), "HERMES_BASE_HOME": str(home)}
+        new = {"state_dir": str(home), "services": {
+            "agent": {"repo": str(self.base / "agent"), "env": env.copy()},
+            "webui": {"repo": str(self.base / "webui"), "env": env.copy(), "env_files": [str(runtime)]}}}
+        return home, runtime, new
+
+    def test_routing_authority_is_default_only_and_values_never_escape(self):
+        home, runtime, new = self.routing_fixture()
+        s.profile_routing_guard(new)()
+        for name in ("active_profile", ".env"):
+            path = home / name; raw = path.read_bytes()
+            path.unlink()
+            with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+            path.write_bytes(raw)
+            path.chmod(0o666)
+            with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+            path.chmod(0o600)
+            path.unlink(); path.symlink_to(runtime)
+            with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+            path.unlink(); path.write_bytes(raw)
+        for profile in ("", "unknown", "Default", "../other"):
+            (home / "active_profile").write_text(profile)
+            with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+        (home / "active_profile").write_text("default\n")
+        keys = ("PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "VIRTUAL_ENV",
+                "HOME", "HERMES_HOME", "HERMES_BASE_HOME", "HERMES_WEBUI_PYTHON",
+                "HERMES_WEBUI_AGENT_DIR", "HERMES_AGENT_DIR", "HERMES_WEBUI_DIR",
+                "HERMES_WEBUI_STATE_DIR", "HERMES_WEBUI_ISOLATED_PROFILE",
+                "HERMES_CONFIG_PATH", "HERMES_PROFILE", "HERMES_ENV_PATH")
+        for path in (home / ".env", runtime):
+            for key in keys:
+                for form in (key+"=synthetic-sensitive", "export "+key+"=synthetic-sensitive",
+                             key+"=", "  "+key+" = \"synthetic-sensitive\""):
+                    with self.subTest(key=key, form=form):
+                        path.write_text(form+"\n")
+                        with self.assertRaises(s.SelectionRefused) as caught:
+                            s.profile_routing_guard(new)
+                        self.assertNotIn("synthetic-sensitive", str(caught.exception))
+            for raw in (b"TOKEN=\xff", b"not an assignment", b"TOKEN=\"unterminated", b"TOKEN=ok\x00"):
+                path.write_bytes(raw)
+                with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+            path.write_text("TOKEN=synthetic-only\n")
+        new["services"]["webui"]["env"]["HERMES_BASE_HOME"] = str(self.base / "unknown")
+        with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+
+    def test_routing_drift_refuses_at_prepare_and_select_publication_edges(self):
+        home, runtime, new = self.routing_fixture()
+        for path in (home / "active_profile", home / ".env", runtime):
+            guard = s.profile_routing_guard(new)
+            raw = path.read_bytes(); path.write_bytes(raw + b"\n")
+            with self.assertRaises(s.SelectionRefused): guard()
+            path.write_bytes(raw)
+        for path in (home / ".op.env", self.base / "agent/.env", self.base / "webui/.env"):
+            guard = s.profile_routing_guard(new)
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("PATH=/synthetic-wrong\n")
+            with self.assertRaises(s.SelectionRefused): guard()
+            with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+            path.unlink()
+        for action in ("prepare", "select"):
+            # Each iteration starts from a fresh disposable existing protocol.
+            if action == "select":
+                receipt = self.action("prepare", approval=True)["receipt_sha256"]
+            guard = s.profile_routing_guard(new)
+            original = self.c.refresh_admission
+            calls = []
+            def mutate_at_publication():
+                calls.append(True)
+                if len(calls) == 3:
+                    (home / ".env").write_text("PATH=/synthetic-wrong\n")
+                guard()
+            s.bind_publication_guard(self.c, mutate_at_publication)
+            kwargs = {"approval": True}
+            if action == "select": kwargs["receipt_pin"] = receipt
+            with self.assertRaises(s.SelectionRefused): self.action(action, **kwargs)
+            self.assertEqual(self.c.manifest_path.read_bytes(), self.f.old)
+            if action == "prepare": self.assertFalse((self.base/pending.RECEIPT).exists())
+            self.assertEqual(self.f.host.calls, [])
+            self.c.refresh_admission = original
+            (home / ".env").write_text("TOKEN=synthetic-only\n")
 
 
 class BundleTests(unittest.TestCase):
