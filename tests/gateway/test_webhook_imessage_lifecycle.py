@@ -166,10 +166,11 @@ async def test_attachment_containment_through_ingress(harness, tmp_path, kind, m
              "nul": str(good) + "\x00", "symlink": str(link), "type": [str(good)],
              "traversal": str(root / ".." / "Attachments-escape" / "image.png")}
     a._routes["a"]["attachment_roots"] = [str(root)]
-    await post(a, proxy_payload(attachments=[dict(path=paths[kind], mime="image/png")]))
+    response = await post(a, proxy_payload(attachments=[dict(path=paths[kind], mime="image/png")]))
     await drain(a)
-    assert len(events) == 1
     if kind == "valid":
+        assert response.status == 202
+        assert len(events) == 1
         from pathlib import Path
         assert len(events[0].media_urls) == 1
         snapshot = Path(events[0].media_urls[0])
@@ -177,7 +178,8 @@ async def test_attachment_containment_through_ingress(harness, tmp_path, kind, m
         good.symlink_to(secret)  # deferred vision must never reopen attacker-controlled path
         assert snapshot.read_bytes() == b"fixture image"
     else:
-        assert not events[0].media_urls
+        assert response.status == 503
+        assert not events and not a._seen_deliveries
 
 
 @pytest.mark.asyncio
@@ -185,10 +187,11 @@ async def test_payload_cannot_grant_attachment_roots(harness, tmp_path):
     a, _, events, _, _ = harness
     image = tmp_path / "private.png"
     image.write_bytes(b"private")
-    await post(a, proxy_payload(attachment_roots=[str(tmp_path)],
+    response = await post(a, proxy_payload(attachment_roots=[str(tmp_path)],
                                attachments=[dict(path=str(image), mime="image/png")]))
     await drain(a)
-    assert not events[0].media_urls
+    assert response.status == 503
+    assert not events and not a._seen_deliveries
 
 
 @pytest.mark.asyncio

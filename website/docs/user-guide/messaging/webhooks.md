@@ -146,8 +146,27 @@ validation: the image decoder remains responsible for validating image bytes.
 Snapshots are mode-0600 files in the receiving profile's
 `cache/webhook_attachments/`, retained for follow-up turns. Operators should include
 this directory in their cache retention policy; these are copies of private media.
-Do not delete active-session media while it is still needed. Rejected attachments
-are omitted while the accompanying text still proceeds.
+Do not delete active-session media while it is still needed.
+
+For `persistent_session: true`, a supplied attachment batch is **required and
+all-or-nothing**. Every entry must pass validation and snapshot successfully;
+missing/misconfigured roots, unreadable files, excess entries, invalid media or
+storage errors return retryable HTTP 503, with no agent dispatch or successful
+receipt. Partial private copies are removed. Empty/absent attachments remain text
+turns. These image turns require immediate agent dispatch: do not configure
+`coalesce`, `cron_job`, or `deliver_only` on a persistent image route (such image
+requests return 503). Ordinary non-persistent routes retain best-effort filtering:
+rejected attachments are omitted while accompanying text proceeds.
+
+Delivery IDs are reserved during admission, scoped by profile and route. A
+concurrent attempt receives HTTP 503 until the first settles; failure or
+cancellation releases the reservation for retry. `accepted` is returned only
+after synchronous snapshotting and in-process task admission. `duplicate` means
+that admission succeeded previously within the process-local idempotency window
+(default one hour); it does not re-import the producer's files. This is **not a
+crash-durable receipt, durable queue, exactly-once execution, or proof of model
+processing/reply completion**. Restart loses admitted IDs and scheduled tasks;
+use a separate durable delivery mechanism if that stronger contract is required.
 
 ### Full example
 
