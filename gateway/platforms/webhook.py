@@ -188,6 +188,9 @@ class WebhookAdapter(BasePlatformAdapter):
         self.gateway_runner = None  # set externally; needed for cross-platform delivery
         # Idempotency: TTL cache of recently processed delivery IDs.
         self._seen_deliveries: Dict[str, float] = {}
+        # Event-loop-owned reservations are not successful receipts and never expire
+        # while their admitting coroutine can still commit.
+        self._pending_deliveries: set[str] = set()
         self._idempotency_ttl: int = 3600  # 1 hour
         self._seen_deliveries_next_prune_at: float = 0.0
         self._rate_counts: Dict[str, Deque[float]] = {}  # per-route hit timestamps in a fixed window
@@ -648,9 +651,33 @@ class WebhookAdapter(BasePlatformAdapter):
             "webhook-id", headers.get("X-Request-ID", uuid4().hex))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         dedupe_key = json.dumps([profile, route_name, delivery_id])
-        if not self._record_delivery_id(dedupe_key, now):
+        seen_at = self._seen_deliveries.get(dedupe_key)
+        if seen_at is not None and now - seen_at < self._idempotency_ttl:
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+        if dedupe_key in self._pending_deliveries:
+            return _json_error("Delivery admission in progress; retry", 503)
+        # No await between lookup and reservation (one adapter event loop). Only
+        # successful admission becomes a duplicate receipt, never a mere attempt.
+        self._pending_deliveries.add(dedupe_key)
+        try:
+            response = await self._admit_delivery(
+                request, route_config, route_name, profile, payload, prompt, event_type, delivery_id, now)
+            if 200 <= response.status < 300:
+                self._record_delivery_id(dedupe_key, time.time())
+            return response
+        except Exception:
+            logger.warning("[webhook] Delivery admission failed on route %s", route_name, exc_info=True)
+            return _json_error("Delivery admission failed; retry", 503)
+        finally:
+            # Includes cancellation / BaseException: retries must not be poisoned.
+            self._pending_deliveries.discard(dedupe_key)
+
+    async def _admit_delivery(self, request, route_config, route_name, profile, payload, prompt,
+                              event_type, delivery_id, now):
+        if (route_config.get("persistent_session") is True and payload.get("attachments")
+                and any(route_config.get(key) for key in ("cron_job", "deliver_only", "coalesce"))):
+            return _json_error("Required images need immediate agent dispatch", 503)
         if route_config.get("cron_job"):
             return self._handle_cron_trigger(prompt, route_config, route_name, event_type, delivery_id, profile)
         if route_config.get("deliver_only"):
@@ -676,9 +703,9 @@ class WebhookAdapter(BasePlatformAdapter):
                                   "delivery_id": delivery_id}, status=202)
 
     @staticmethod
-    def _resolve_attachments(raw: Any, roots=None) -> list:
+    def _resolve_attachments(raw: Any, roots=None, *, required=False) -> list:
         from gateway.platforms.webhook_attachments import resolve_attachments
-        return resolve_attachments(raw, roots)
+        return resolve_attachments(raw, roots, required=required)
 
     async def handle_message(self, event):
         # Covers inline busy/control responses. Background/drain tasks rebind to
@@ -725,15 +752,12 @@ class WebhookAdapter(BasePlatformAdapter):
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
         # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
-        self._delivery_info[session_chat_id] = {
+        delivery = {
             "deliver": route_config.get("deliver", "log"), "profile": profile,
             "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
             "route": route_name,
             "mirror": route_config.get("mirror_to_session") is True,
             "persistent_session": route_config.get("persistent_session") is True}
-        self._delivery_info_created[session_chat_id] = now
-        self._delivery_info_order.append((now, session_chat_id))
-        self._prune_delivery_info(now)
         persistent_session = route_config.get("persistent_session") is True
         sender = payload.get("sender") if isinstance(payload, dict) else None
         if persistent_session:
@@ -761,20 +785,34 @@ class WebhookAdapter(BasePlatformAdapter):
         source._webhook_toolsets = deepcopy(route_config.get("toolsets"))
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id)
-        event._webhook_delivery = self._delivery_info[session_chat_id]
+        event._webhook_delivery = delivery
         if slash_text is not None:
             event.allow_gateway_control = True
         # Inbound media from the proxy: local file paths (vision tool access). Images only —
         # the proxy filters to image/* and bounds the count; the adapter re-verifies both.
         with self._profile_scope(profile):
-            media = self._resolve_attachments(payload.get('attachments'), route_config.get('attachment_roots', []))
+            media = self._resolve_attachments(payload.get('attachments'), route_config.get('attachment_roots', []),
+                                              required=persistent_session)
         if media:
             event.media_urls = [m[0] for m in media]
             event.media_types = [m[1] for m in media]
             event.message_type = MessageType.PHOTO
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
-        task = asyncio.create_task(self.handle_message(event))
+        pending = None
+        try:
+            pending = self.handle_message(event)
+            task = asyncio.create_task(pending)
+        except BaseException:
+            if pending is not None:
+                pending.close()
+            from gateway.platforms.webhook_attachments import discard_snapshots
+            discard_snapshots(media)
+            raise
+        self._delivery_info[session_chat_id] = delivery
+        self._delivery_info_created[session_chat_id] = now
+        self._delivery_info_order.append((now, session_chat_id))
+        self._prune_delivery_info(now)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task
