@@ -183,17 +183,29 @@ PATH before trying fallbacks.
 Before installed controller admission, the adapter now reads the exact manifest's
 base-home `active_profile` and `.env`, and declared launcher environment files.
 Both service homes/base homes must agree with manifest `state_dir`; only literal
-`default` (surrounding whitespace stripped) is admitted. Missing, unreadable,
-symlinked, unsafe-owner/mode, malformed or nondefault authority is refused rather
-than adopting the application's permissive default. No named profile is read.
+`default` (surrounding whitespace stripped), or verified absence of `active_profile`,
+is admitted. The exact v5 `_read_active_profile_file()` defines absence as default.
+Absence requires safe ancestry traversed with no-follow directory descriptors and
+an ENOENT leaf check; identities and negative existence are rechecked to fence
+appearance/replacement. No real profile file is created. Unreadable, empty,
+symlinked, unsafe-owner/mode, malformed or nondefault authority remains refused;
+the application's broader error/empty fallbacks are not adopted. No named profile
+is read. The required base-home `.env` remains required.
 Known optional CLI dotenv inputs (`.op.env` and candidate project `.env` files)
 are checked when present; their absence is also rechecked to detect appearance.
 
 This is intentionally narrower than a dotenv implementation: comments, blanks and
 canonical single-line assignments (including `export` and quoted values) are
 supported; unsupported syntax, multiline values and decoding errors are refused.
-Assignments to the finite `ROUTING_KEYS` set are refused even when empty, shadowed,
-or restored by the launcher. This covers PATH/import routing, Python interpreter
+Assignments to the finite `ROUTING_KEYS` set are refused even when empty or shadowed,
+except in declared startup `env_files` where every service reading that file
+explicitly pins the key in manifest `env`, or exact native-v1 `_ENTRY` scrubs/forces
+it after `dotenv_values(interpolate=False)` and before `execve`. The allowed set is
+the intersection across readers. This exemption never applies to base/profile
+`.env`, `.op.env`, or candidate project dotenv files loaded later, even if also
+listed as startup files. AST-extracted v5 profile-reader and native-v1 launcher
+fixtures prove these precedence cases without real credentials or process actions.
+This covers PATH/import routing, Python interpreter
 and library routing, virtualenv, home/base/profile/config/env paths, and WebUI
 interpreter/source/state/isolation overrides, including `HERMES_WEBUI_AGENT_DIR`.
 Values are never printed, interpolated, executed, copied into fixtures, or retained

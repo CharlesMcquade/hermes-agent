@@ -65,8 +65,8 @@ def retained(path):
 
 
 # Finite routing surface of the reviewed launcher, WebUI profile reload and CLI.
-# Reject even empty/shadowed assignments: no secret values or dotenv evaluation
-# are needed to establish this deliberately narrower admission policy.
+# Late loaders reject even empty/shadowed assignments. Startup-only files may
+# contain keys demonstrably superseded by the pinned native-v1 _ENTRY.
 ROUTING_KEYS = frozenset({
     "PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHONSTARTUP",
     "PYTHONEXECUTABLE", "PYTHONPLATLIBDIR", "PYTHONNOUSERSITE", "PYTHONSAFEPATH",
@@ -85,6 +85,42 @@ HANDOFF_PRECONDITION = (
 )
 
 
+def absent_profile_identity(path):
+    """Prove ENOENT beneath retained safe, no-follow directory descriptors.
+
+    Unlike exists()/lexists(), permission errors and dangling links are not absence.
+    Directory identities fence replacement without treating unrelated writes as drift.
+    """
+    fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    ancestry = []
+    try:
+        for part in (None, *path.parent.parts[1:]):
+            if part is not None:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            st = os.fstat(fd)
+            require(st.st_uid in {0, os.getuid()} and not st.st_mode & 0o7022,
+                    "Unsafe absent-profile ancestry")
+            ancestry.append((st.st_dev, st.st_ino, st.st_mode, st.st_uid))
+        try:
+            os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return ("absent", tuple(ancestry))
+        raise SelectionRefused("Profile appeared during absence check")
+    finally:
+        os.close(fd)
+
+
+# Exact native-v1 _ENTRY clears these after dotenv_values(interpolate=False),
+# then reapplies item.env and forces the three Python safety flags before execve.
+# Admission still requires the complete pinned installed bundle and core guards.
+STARTUP_SUPERSEDED = frozenset({
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
+    "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE", "PYTHONSAFEPATH",
+})
+
+
 def profile_routing_guard(new):
     """Read-only, invocation-local authority; never import real profile state.
 
@@ -94,23 +130,35 @@ def profile_routing_guard(new):
     """
     try:
         home = Path(new["state_dir"])
-        paths = {home / "active_profile", home / ".env"}
+        active = home / "active_profile"
+        paths = {active, home / ".env"}
         optional = {home / ".op.env"}
+        late = {home / ".env", home / ".op.env"}
+        superseded = {}
         require(set(new["services"]) == {"agent", "webui"}, "Unknown services")
         for service in new["services"].values():
             env = service["env"]
-            optional.add(Path(service["repo"]) / ".env")
+            project_env = Path(service["repo"]) / ".env"
+            optional.add(project_env)
+            late.add(project_env)
             require(env.get("HERMES_HOME") == str(home)
                     and env.get("HERMES_BASE_HOME") == str(home),
                     "Unknown default-profile routing authority")
-            paths.update(Path(p) for p in service.get("env_files", []))
+            for value in service.get("env_files", []):
+                path = Path(value)
+                paths.add(path)
+                safe = STARTUP_SUPERSEDED | set(env)
+                superseded[path] = superseded.get(path, safe) & safe
         # Only canonical keys, optional export, and complete one-line values.
         assignment = re.compile(r'''(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|[^'"\r\n]*)(?:[ \t]*\#.*)?''')
         def observe():
             observations = {}
             for path in sorted(paths | optional):
                 require(path.is_absolute() and path == path.resolve(), "Unknown routing path")
-                if path in optional and not os.path.lexists(path):
+                if path == active and not os.path.lexists(path):
+                    observations[path] = absent_profile_identity(path)
+                    continue
+                if path in optional and path not in paths and not os.path.lexists(path):
                     observations[path] = None  # Known optional loader input; fence appearance.
                     continue
                 raw, identity = retained(path)
@@ -125,7 +173,8 @@ def profile_routing_guard(new):
                             continue
                         match = assignment.fullmatch(line)
                         require(match is not None, "Unknown routing input syntax")
-                        require(match[1] not in ROUTING_KEYS,
+                        allowed = superseded.get(path, set()) if path not in late else set()
+                        require(match[1] not in ROUTING_KEYS or match[1] in allowed,
                                 "Routing override assignment refused")
                 observations[path] = (digest(raw), identity)
             return observations

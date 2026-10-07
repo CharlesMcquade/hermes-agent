@@ -136,6 +136,37 @@ class AdapterTests(unittest.TestCase):
 
 
 
+
+# AST-extracted verbatim from reviewed v5 api/profiles.py and native-v1 launcher.
+# Execute only these source fragments, never candidate imports or real env files.
+PROFILE_READER = '''def _read_active_profile_file() -> str:
+    """Read the sticky active profile from ~/.hermes/active_profile."""
+    ap_file = _DEFAULT_HERMES_HOME / 'active_profile'
+    if ap_file.exists():
+        try:
+            name = ap_file.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+        except Exception:
+            logger.debug("Failed to read active profile file")
+    return 'default'
+'''
+NATIVE_ENTRY = '''import json,os,sys
+item=json.loads(sys.argv[1])
+if item.get("env_files"):
+ from dotenv import dotenv_values
+ for path in item["env_files"]:
+  os.environ.update({k:v for k,v in dotenv_values(path,interpolate=False).items() if v is not None})
+for name in ("PYTHONPATH","PYTHONHOME","PYTHONSTARTUP","_HERMES_GATEWAY"):
+ os.environ.pop(name,None)
+os.environ.update(item.get("env",{}))
+os.environ["PYTHONDONTWRITEBYTECODE"]="1"
+os.environ["PYTHONNOUSERSITE"]="1"
+os.environ["PYTHONSAFEPATH"]="1"
+os.chdir(item["cwd"])
+os.execve(item["argv"][0],item["argv"],os.environ)
+'''
+
 class ProfileRoutingTests(unittest.TestCase):
     setUp = AdapterTests.setUp
     action = AdapterTests.action
@@ -153,13 +184,127 @@ class ProfileRoutingTests(unittest.TestCase):
             "webui": {"repo": str(self.base / "webui"), "env": env.copy(), "env_files": [str(runtime)]}}}
         return home, runtime, new
 
+    def test_actual_absent_profile_defaults_and_appearance_is_fenced(self):
+        import ast
+        home, runtime, new = self.routing_fixture()
+        (home / "active_profile").unlink()
+        namespace = {"_DEFAULT_HERMES_HOME": home}
+        exec(compile(ast.parse(PROFILE_READER), "v5-profile-reader", "exec"), namespace)
+        self.assertEqual(namespace["_read_active_profile_file"](), "default")
+        guard = s.profile_routing_guard(new)
+        guard()
+        self.assertFalse((home / "active_profile").exists())
+        (home / "active_profile").write_text("default")
+        with self.assertRaises(s.SelectionRefused): guard()
+
+    def test_absent_profile_requires_safe_ancestry_and_exact_negative_existence(self):
+        home, runtime, new = self.routing_fixture()
+        active = home / "active_profile"
+        active.unlink()
+        guard = s.profile_routing_guard(new)
+        active.symlink_to(home / "missing-target")
+        with self.assertRaises(s.SelectionRefused): guard()
+        with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+        active.unlink()
+        home.chmod(0o777)
+        try:
+            with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+        finally:
+            home.chmod(0o700)
+        with patch.object(s.os, "stat", side_effect=PermissionError("synthetic")):
+            with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+        identity = s.absent_profile_identity(active)
+        home.rename(home.with_name("old-home"))
+        home.mkdir()
+        self.assertNotEqual(identity, s.absent_profile_identity(active))
+
+    def test_absent_profile_appearance_blocks_both_publication_edges(self):
+        home, runtime, new = self.routing_fixture()
+        active = home / "active_profile"
+        active.unlink()
+        for action in ("prepare", "select"):
+            if action == "select":
+                receipt = self.action("prepare", approval=True)["receipt_sha256"]
+            guard = s.profile_routing_guard(new)
+            original = self.c.refresh_admission
+            calls = []
+            def appear():
+                calls.append(True)
+                if len(calls) == 3:
+                    active.write_text("default")
+                guard()
+            s.bind_publication_guard(self.c, appear)
+            kwargs = {"approval": True}
+            if action == "select": kwargs["receipt_pin"] = receipt
+            with self.assertRaises(s.SelectionRefused): self.action(action, **kwargs)
+            self.assertEqual(self.c.manifest_path.read_bytes(), self.f.old)
+            if action == "prepare": self.assertFalse((self.base/pending.RECEIPT).exists())
+            self.assertEqual(self.f.host.calls, [])
+            self.c.refresh_admission = original
+            active.unlink()
+
+    def test_actual_native_entry_supersedes_only_startup_assignments(self):
+        import ast
+        import sys
+        import types
+        tree = ast.parse((ROOT / "production_launcher.py").read_text())
+        actual_entry = next(ast.literal_eval(n.value) for n in tree.body
+                            if isinstance(n, ast.Assign) and any(
+                                isinstance(a, ast.Name) and a.id == "_ENTRY" for a in n.targets))
+        self.assertEqual(actual_entry, NATIVE_ENTRY)
+        home, runtime, new = self.routing_fixture()
+        env = new["services"]["webui"]["env"]
+        env["HERMES_WEBUI_AGENT_DIR"] = str(self.base / "agent")
+        values = {"HERMES_HOME": "/synthetic-wrong", "HERMES_WEBUI_AGENT_DIR": "/synthetic-wrong",
+                  **{key: "/synthetic-wrong" for key in s.STARTUP_SUPERSEDED}}
+        runtime.write_text("".join(k+"="+v+"\n" for k,v in values.items()))
+        # Real launcher AST; only credential parser and process boundary are synthetic.
+        dotenv = types.ModuleType("dotenv")
+        def parse(path, *, interpolate):
+            self.assertIs(interpolate, False)
+            self.assertEqual(path, str(runtime))
+            return dict(line.split("=", 1) for line in runtime.read_text().splitlines())
+        dotenv.dotenv_values = parse
+        item = dict(new["services"]["webui"], cwd=str(self.base), argv=["/synthetic-python"])
+        with patch.dict(os.environ, {}, clear=True), patch.dict(sys.modules, {"dotenv": dotenv}), \
+             patch.object(sys, "argv", ["entry", json.dumps(item)]), \
+             patch.object(os, "chdir"), patch.object(os, "execve") as execute:
+            exec(compile(ast.parse(NATIVE_ENTRY), "native-v1-entry", "exec"), {})
+            launched = dict(execute.call_args.args[2])
+        self.assertEqual(launched["HERMES_HOME"], str(home))
+        self.assertEqual(launched["HERMES_WEBUI_AGENT_DIR"], env["HERMES_WEBUI_AGENT_DIR"])
+        for key in s.STARTUP_SUPERSEDED:
+            if key in {"PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE", "PYTHONSAFEPATH"}:
+                self.assertEqual(launched[key], "1")
+            else:
+                self.assertNotIn(key, launched)
+        guard = s.profile_routing_guard(new)
+        guard()
+        runtime.write_text(runtime.read_text()+"# drift\n")
+        with self.assertRaises(s.SelectionRefused): guard()
+        # A shared startup file is safe only for the intersection of its readers.
+        new["services"]["agent"]["env_files"] = [str(runtime)]
+        with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+        new["services"]["agent"]["env"]["HERMES_WEBUI_AGENT_DIR"] = env["HERMES_WEBUI_AGENT_DIR"]
+        s.profile_routing_guard(new)()
+        # Aliasing a late loader never inherits the startup exemption.
+        for late in (home / ".env", home / ".op.env", self.base / "webui/.env"):
+            late.parent.mkdir(exist_ok=True)
+            late.write_text("HERMES_HOME=/synthetic-wrong\n")
+            new["services"]["webui"]["env_files"].append(str(late))
+            with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+            late.write_text("TOKEN=synthetic-only\n")
+
     def test_routing_authority_is_default_only_and_values_never_escape(self):
         home, runtime, new = self.routing_fixture()
         s.profile_routing_guard(new)()
         for name in ("active_profile", ".env"):
             path = home / name; raw = path.read_bytes()
             path.unlink()
-            with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
+            if name == "active_profile":
+                s.profile_routing_guard(new)()
+            else:
+                with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
             path.write_bytes(raw)
             path.chmod(0o666)
             with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
@@ -182,9 +327,12 @@ class ProfileRoutingTests(unittest.TestCase):
                              key+"=", "  "+key+" = \"synthetic-sensitive\""):
                     with self.subTest(key=key, form=form):
                         path.write_text(form+"\n")
-                        with self.assertRaises(s.SelectionRefused) as caught:
-                            s.profile_routing_guard(new)
-                        self.assertNotIn("synthetic-sensitive", str(caught.exception))
+                        if path == runtime and key in (s.STARTUP_SUPERSEDED | set(new["services"]["webui"]["env"])):
+                            s.profile_routing_guard(new)()
+                        else:
+                            with self.assertRaises(s.SelectionRefused) as caught:
+                                s.profile_routing_guard(new)
+                            self.assertNotIn("synthetic-sensitive", str(caught.exception))
             for raw in (b"TOKEN=\xff", b"not an assignment", b"TOKEN=\"unterminated", b"TOKEN=ok\x00"):
                 path.write_bytes(raw)
                 with self.assertRaises(s.SelectionRefused): s.profile_routing_guard(new)
