@@ -32,6 +32,28 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.manifest = {'source_commits': {'agent': self.sha},
                          'services': {'agent': {'repo': str(self.repo), 'commit': self.sha}}}
 
+    def test_pending_check_is_explicit_readonly_and_separate_from_canary(self):
+        self.assertEqual(workflow.pending_check({})['status'], 'pending_gate_not_checked')
+        base = self.root/'base'; base.mkdir()
+        baseline = base/'production-release.json'; baseline.write_text('old')
+        output = self.root/'candidate'; output.mkdir(); (output/'release.json').write_text('new')
+        cfg = dict(baseline=str(baseline), output=str(output), controls=str(self.root/'controls'),
+                   scratch=str(self.root), control_refresh_sha256='a'*64)
+        for rc, payload, expected in (
+            (2, {'status':'blocked','installed_protocol':'reviewed_installed_protocol_admitted'}, 'blocked'),
+            (0, {'pending_gate':{'status':'checked_not_staged'},'app_canary':'separate_gate_not_run'}, 'checked_not_staged'),
+            (0, {'status':'passed'}, 'blocked')):
+            with mock.patch.object(workflow.subprocess, 'run', return_value=subprocess.CompletedProcess([],rc,json.dumps(payload),'')) as run:
+                result = workflow.pending_check(cfg)
+            self.assertEqual(result['status'], expected)
+            argv=run.call_args.args[0]
+            self.assertIn('--check',argv)
+            self.assertNotIn('--prepare',argv)
+            self.assertNotIn('--select',argv)
+            self.assertNotIn('--approve-prepare',argv)
+            self.assertEqual(argv[1:3],['-I','-B'])
+            self.assertEqual(set(run.call_args.kwargs['env']),{'HOME','TMPDIR','PATH'})
+
     def git(self, repo, *args):
         return subprocess.run(['/usr/bin/git', '-C', str(repo), *args],
                               capture_output=True, check=True)

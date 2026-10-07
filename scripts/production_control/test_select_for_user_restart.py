@@ -1,235 +1,163 @@
-"""Disposable transaction-kernel tests; NOT live UI/controller acceptance."""
-import contextlib
+"""Disposable adapter tests; process identities and writes are fixture-only."""
+import copy
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest import mock
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent
-
-def load(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / (name + '.py'))
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-s = load('select_for_user_restart')
-r = load('restart_production')
+spec = importlib.util.spec_from_file_location('selection_adapter', ROOT/'select_for_user_restart.py')
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+import test_pending_user_restart as fixture
+import watchdog as pending
 
 
-class Fixture:
-    def __init__(self, base):
-        self.base = base
-        self.manifest_path = base / 'production-release.json'
-        self.transaction_path = base / 'activation-transaction.json'
-        self.phase = 'rolled_back'
-        self.pid = 101
-        self.reject_candidate = False
-        self.in_lock = False
-        self.admitted = 0
-        self.preflight_count = 0
-        for name in ('old', 'candidate'):
-            m = {'schema_version': 2, 'release_id': name, 'labels': {'agent': 'a', 'webui': 'w'}, 'services': {}}
-            (self.manifest_path if name == 'old' else base / 'candidate.json').write_text(json.dumps(m))
-        self.transaction_path.write_text(json.dumps({'schema_version': 2, 'transaction': {'phase': self.phase}}))
-        (base / 'control.lock').touch()
-        for role in ('agent', 'webui'):
-            (base / (role + '.plist')).write_bytes(b'exact plist bytes')
-
-    @contextlib.contextmanager
-    def locked(self):
-        st = (self.base / 'control.lock').stat()
-        with r.control_lock(self.base, (st.st_dev, st.st_ino)):
-            self.in_lock = True
-            try:
-                yield
-            finally:
-                self.in_lock = False
-
-    def refresh_admission(self):
-        assert self.in_lock
-        self.admitted += 1
-        return lambda: None
-
-    def read_transaction(self):
-        return {'phase': self.phase}
-
-    def retained_file(self, path):
-        st = path.stat()
-        return path.read_bytes(), (st.st_ino, st.st_mtime_ns)
-
-    def validate_manifest(self, m):
-        return m
-
-    def plist_path(self, m, role):
-        return self.base / (role + '.plist')
-
-    def definitions(self, m, saved):
-        return saved
-
-    def candidate_definitions(self, old, new, saved, reload):
-        assert reload is False
-        return saved
-
-    def check_revocation(self, m):
-        if self.reject_candidate and m['release_id'] == 'candidate':
-            raise s.SelectionRefused('revoked')
-
-    def preflight(self, m):
-        self.preflight_count += 1
-
-    def snapshot(self, m, d):
-        return {'pids': {'agent': self.pid, 'webui': 102}}
-
-
-class SelectionTests(unittest.TestCase):
+class AdapterTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
+        f = fixture.PendingTests(); f.setUp()
+        self.addCleanup(f.doCleanups)
+        self.f = f; self.c = f.c; self.base = f.base
+        self.old_pin = s.digest(f.old); self.new_pin = s.digest(f.candidate.read_bytes())
+        self.patches = [patch.object(s, 'OLD_PIN', self.old_pin), patch.object(s, 'NEW_PIN', self.new_pin)]
+        for p in self.patches:
+            p.start(); self.addCleanup(p.stop)
+
+    def action(self, action, **kwargs):
+        return s.run_protocol(self.c, pending, action, self.f.candidate,
+                              self.old_pin, self.new_pin, **kwargs)
+
+    def test_check_and_approval_boundaries_preserve_everything(self):
+        (self.base/'control.lock').touch()  # Installed protocol requires a pre-existing lock.
+        before = {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()}
+        result = self.action('check')
+        self.assertEqual(result['status'], 'checked_not_staged')
+        for action in ('prepare', 'select'):
+            with self.assertRaisesRegex(s.SelectionRefused, 'approval'):
+                self.action(action)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()})
+        self.assertEqual(self.f.host.calls, [])
+
+    def test_existing_protocol_prepare_select_keep_old_process_identities(self):
+        before = copy.deepcopy(self.f.f.processes)
+        prepared = self.action('prepare', approval=True)
+        self.assertEqual(prepared['status'], 'prepared_not_selected')
+        self.assertEqual(self.c.manifest_path.read_bytes(), self.f.old)
+        pin = prepared['receipt_sha256']
+        selected = self.action('select', approval=True, receipt_pin=pin)
+        self.assertEqual(selected['status'], 'selected_awaiting_user_restart')
+        self.assertEqual(self.c.manifest_path.read_bytes(), self.f.candidate.read_bytes())
+        self.assertEqual(self.f.f.processes, before)
+        self.assertEqual(self.f.host.calls, [])
+        self.assertEqual(self.action('select', approval=True, receipt_pin=pin)['status'], 'already_selected')
+
+    def test_altered_pending_proof_and_selector_cas_rejected(self):
+        pin = self.action('prepare', approval=True)['receipt_sha256']
+        path = self.base/pending.RECEIPT; raw = path.read_bytes()
+        path.write_bytes(raw+b' ')
+        with self.assertRaisesRegex(Exception, 'pin mismatch'):
+            self.action('select', approval=True, receipt_pin=pin)
+        path.write_bytes(raw)
+        self.c.manifest_path.write_bytes(self.f.old+b' ')
+        with self.assertRaisesRegex(Exception, 'CAS'):
+            self.action('select', approval=True, receipt_pin=pin)
+        self.assertEqual(self.f.host.calls, [])
+
+    def test_guard_refuses_before_protocol_writes(self):
+        def refuse(): raise s.SelectionRefused('routing proof changed')
+        with self.assertRaisesRegex(s.SelectionRefused, 'routing proof changed'):
+            self.action('prepare', approval=True, guard=refuse)
+        self.assertFalse((self.base/pending.RECEIPT).exists())
+        self.assertEqual(self.c.manifest_path.read_bytes(), self.f.old)
+
+    def test_publication_edge_rechecks_adapter_proof(self):
+        calls = []
+        def guard():
+            calls.append(True)
+            if len(calls) == 3:
+                raise s.SelectionRefused('proof altered before publication')
+        s.bind_publication_guard(self.c, guard)
+        with self.assertRaisesRegex(s.SelectionRefused, 'proof altered'):
+            self.action('prepare', approval=True)
+        self.assertFalse((self.base/pending.RECEIPT).exists())
+        self.assertEqual(self.c.manifest_path.read_bytes(), self.f.old)
+        self.assertEqual(self.f.host.calls, [])
+
+    def test_candidate_and_old_pins_are_exact(self):
+        with self.assertRaisesRegex(s.SelectionRefused, 'Unreviewed'):
+            s.manifest_inputs(self.base, self.f.candidate, '0'*64, self.new_pin)
+        self.f.candidate.write_bytes(self.f.candidate.read_bytes()+b' ')
+        with self.assertRaisesRegex(s.SelectionRefused, 'Candidate.*CAS'):
+            s.manifest_inputs(self.base, self.f.candidate, self.old_pin, self.new_pin)
+
+    def test_unpinned_interpreter_blocks_before_any_candidate_execution(self):
+        new = {'services': {'agent': {'repo': str(self.base/'agent')}, 'webui': {
+            'repo': str(self.base/'webui'), 'argv': [str(self.base/'runtime/venv/bin/python')],
+            'env_files': [str(self.base/'runtime.env')], 'env': {}}}}
+        with patch.object(s.subprocess, 'run', side_effect=AssertionError('must not execute')):
+            with self.assertRaisesRegex(s.SelectionRefused, 'does not pin HERMES_WEBUI_PYTHON'):
+                s.prove_routes(new, self.base)
+
+    def test_source_only_audit_never_claims_ready_or_old_button_safe(self):
+        for release in ('old', 'new'):
+            root = self.base/release
+            (root/'api').mkdir(parents=True); (root/'hermes_cli').mkdir()
+            for name in ('api/routes.py','api/gateway_restart.py','hermes_cli/gateway_launchd.py'):
+                (root/name).write_text('fixture')
+        def m(name): return {'services': {r: {'repo':str(self.base/name)} for r in ('webui','agent')}}
+        result = s.audit_routes(m('old'),m('new'),self.base)
+        self.assertEqual(result['status'],'pending_gate_not_checked')
+        self.assertIn('unsafe',result['warning'])
+        self.assertEqual(result['ordered_handoff'][0], 'Restart WebUI')
+
+
+class BundleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=os.environ['TMPDIR'])
         self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
-        self.c = Fixture(self.base)
-        self.old = self.c.manifest_path.read_bytes()
-        self.new = (self.base / 'candidate.json').read_bytes()
-        self.transaction = self.c.transaction_path.read_bytes()
-        self.kw = dict(atomic_write=r.atomic_write, save_json=r.save_json,
-                       route_gate=lambda *a: lambda: None, approve=True)
+        self.base = Path(self.temp.name); self.controls = self.base/'controls'; self.controls.mkdir()
+        self.hashes = {}
+        for name in s.MODULES:
+            raw = b'raise AssertionError("must never import unapproved fixture")\n'
+            (self.controls/(name+'.py')).write_bytes(raw)
+            self.hashes[name+'.py'] = s.digest(raw)
+        (self.controls/'control-receipt.json').write_text(json.dumps(self.hashes))
+        self.receipt = self.base/'native-control-refresh-receipt.json'
+        self.receipt.write_text(json.dumps({'stage':{'base':str(self.base),'version':str(self.controls),'control_sha256':self.hashes}}))
+        self.pin = s.digest(self.receipt.read_bytes())
 
-    def run_select(self, **overrides):
-        kw = dict(self.kw, **overrides)
-        return s.select_locked(self.c, self.base / 'candidate.json', s.digest(self.old),
-                               s.digest(self.new), self.base / 'backup.json',
-                               self.base / 'receipt.json', **kw)
+    def test_fake_self_pinned_bundle_is_not_authority(self):
+        with self.assertRaisesRegex(s.SelectionRefused,'Unreviewed'):
+            s.prehash_bundle(self.base,self.controls,self.pin)
+        with self.assertRaisesRegex(s.SelectionRefused,'receipt pin mismatch'):
+            s.prehash_bundle(self.base,self.controls,s.REFRESH_PIN)
 
-    def test_rolled_back_terminal_selection_preserves_transaction_and_pids(self):
-        result = self.run_select()
-        self.assertEqual(result['status'], 'selected_pending_user_restart')
-        self.assertEqual(result['pids'], {'agent': 101, 'webui': 102})
-        self.assertEqual(self.c.manifest_path.read_bytes(), self.new)
-        self.assertEqual(self.c.transaction_path.read_bytes(), self.transaction)
-        self.assertTrue((self.base / 'backup.json').exists())
-        self.assertEqual(self.c.admitted, 1)
+    def test_every_module_and_receipt_prehashed_before_any_import(self):
+        with patch.object(s,'REFRESH_PIN',self.pin):
+            observations, unchanged = s.prehash_bundle(self.base,self.controls,self.pin)
+            for name in s.MODULES:
+                p=self.controls/(name+'.py'); raw=p.read_bytes(); p.write_bytes(raw+b'#tamper')
+                with self.assertRaisesRegex(s.SelectionRefused,'Unpinned control module'):
+                    s.prehash_bundle(self.base,self.controls,self.pin)
+                p.write_bytes(raw)
+            self.receipt.write_bytes(self.receipt.read_bytes()+b' ')
+            with self.assertRaisesRegex(s.SelectionRefused,'proof changed'):
+                unchanged()
+            self.assertEqual(len(observations),8)
 
-    def test_dry_run_no_writes(self):
-        self.assertEqual(self.run_select(approve=False)['status'], 'checked')
-        self.assertEqual(self.c.manifest_path.read_bytes(), self.old)
-        self.assertFalse((self.base / 'backup.json').exists())
-
-    def test_nonterminal_and_failed_rollback_refused(self):
-        for phase in ('prepared', 'rollback_started', 'rollback_failed'):
-            self.c.phase = phase
-            with self.assertRaises(s.SelectionRefused):
-                self.run_select()
-            self.assertEqual(self.c.manifest_path.read_bytes(), self.old)
-
-    def test_admission_refusal_preserves_everything(self):
-        def refuse():
-            raise s.SelectionRefused('native refresh refusal')
-        self.c.refresh_admission = refuse
-        with self.assertRaisesRegex(s.SelectionRefused, 'native refresh'):
-            self.run_select()
-        self.assertFalse((self.base / 'backup.json').exists())
-
-    def test_route_refusal_precedes_backup(self):
-        def gate(*args):
-            raise s.SelectionRefused('watchdog ownership')
-        with self.assertRaisesRegex(s.SelectionRefused, 'watchdog'):
-            self.run_select(route_gate=gate)
-        self.assertFalse((self.base / 'backup.json').exists())
-        self.assertEqual(self.c.manifest_path.read_bytes(), self.old)
-
-    def test_cas_refuses_changed_selector(self):
-        self.c.manifest_path.write_bytes(b'changed')
-        with self.assertRaisesRegex(s.SelectionRefused, 'CAS'):
-            self.run_select()
-        self.assertEqual(self.c.manifest_path.read_bytes(), b'changed')
-
-    def test_candidate_revoked(self):
-        self.c.reject_candidate = True
-        with self.assertRaisesRegex(s.SelectionRefused, 'revoked'):
-            self.run_select()
-        self.assertEqual(self.c.manifest_path.read_bytes(), self.old)
-
-    def test_mutation_during_gate_refused(self):
-        def gate(*args):
-            self.c.transaction_path.write_bytes(b'changed')
-            return lambda: None
-        with self.assertRaisesRegex(s.SelectionRefused, 'Pinned input'):
-            self.run_select(route_gate=gate)
-        self.assertFalse((self.base / 'backup.json').exists())
-
-    def test_pid_change_before_publish_refused(self):
-        def gate(*args):
-            self.c.pid += 1
-            return lambda: None
-        with self.assertRaisesRegex(s.SelectionRefused, 'PIDs'):
-            self.run_select(route_gate=gate)
-        self.assertEqual(self.c.manifest_path.read_bytes(), self.old)
-
-    def test_receipt_failure_restores_exact_fallback(self):
-        def save(path, data):
-            if path.name == 'receipt.json':
-                raise OSError('receipt disk full')
-            r.save_json(path, data)
-        with self.assertRaisesRegex(OSError, 'disk full'):
-            self.run_select(save_json=save)
-        self.assertEqual(self.c.manifest_path.read_bytes(), self.old)
-        self.assertEqual(self.c.transaction_path.read_bytes(), self.transaction)
-
-    def test_receipt_write_then_failure_does_not_leave_success(self):
-        def save(path, data):
-            r.save_json(path, data)
-            if path.name == 'receipt.json':
-                raise OSError('post-write receipt failure')
-        with self.assertRaisesRegex(OSError, 'post-write'):
-            self.run_select(save_json=save)
-        self.assertEqual(self.c.manifest_path.read_bytes(), self.old)
-        receipt = self.base / 'receipt.json'
-        self.assertFalse(receipt.exists() and
-                         json.loads(receipt.read_bytes()).get('status') == 'selected_pending_user_restart')
-
-    def test_replace_then_fsync_failure_restores(self):
-        def write(path, data):
-            r.atomic_write(path, data)
-            if data == self.new:
-                raise OSError('post-rename fsync')
-        with self.assertRaisesRegex(OSError, 'post-rename'):
-            self.run_select(atomic_write=write)
-        self.assertEqual(self.c.manifest_path.read_bytes(), self.old)
-
-    def test_rollback_never_overwrites_unrelated_selector(self):
-        def write(path, data):
-            r.atomic_write(path, b'unrelated')
-            raise OSError('race')
-        with self.assertRaisesRegex(s.SelectionRefused, 'Rollback CAS refused'):
-            self.run_select(atomic_write=write)
-        self.assertEqual(self.c.manifest_path.read_bytes(), b'unrelated')
-
-    def test_existing_backup_refused(self):
-        (self.base / 'backup.json').write_bytes(b'keep')
-        with self.assertRaisesRegex(s.SelectionRefused, 'Output already'):
-            self.run_select()
-        self.assertEqual((self.base / 'backup.json').read_bytes(), b'keep')
-
-    def test_no_public_route_bypass(self):
-        root = self.base / 'source'
-        (root / 'api').mkdir(parents=True)
-        (root / 'hermes_cli').mkdir()
-        (root / 'api/routes.py').write_text('UI fixture')
-        (root / 'hermes_cli/gateway_launchd.py').write_text('refresh_ok = _gw().refresh_launchd_plist_if_needed()\nplist_path.write_text(new_plist')
-        (root / 'watchdog.py').write_text('c.listener_ownership(manifest, jobs)\nc.host.kickstart')
-        old = {'release_id': 'old', 'native_host': True, 'services': {
-            role: {'repo': str(root), 'argv': ['old']} for role in ('agent', 'webui')}}
-        new = json.loads(json.dumps(old))
-        new['services']['webui']['argv'] = ['new']
-        result = s.audit_routes(old, new, root)
-        self.assertEqual(len(result['blockers']), 3)
-        self.assertFalse(result['changed'])
-        # Even byte-preserving argv cannot bless an unaudited CLI path.
-        self.assertEqual(s.audit_routes(old, old, root)['status'], 'blocked')
+    def test_public_approval_checks_precede_bundle_import(self):
+        common=['--base',str(self.base),'--controls',str(self.controls),'--candidate',str(self.base/'missing'),
+                '--scratch',str(self.base),'--control-refresh-sha256',s.REFRESH_PIN,
+                '--expect-selected-sha256',s.OLD_PIN,'--expect-candidate-sha256',s.NEW_PIN]
+        for flags in (['--prepare'],['--select'],['--check','--approve-prepare'],['--select','--approve-select']):
+            with patch.object(s,'prehash_bundle',side_effect=AssertionError('no bundle access')), redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(s.main(common+flags),2)
+            self.assertNotIn('no bundle access',out.getvalue())
 
 
 if __name__ == '__main__':

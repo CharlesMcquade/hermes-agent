@@ -17,10 +17,12 @@ PYTHONDONTWRITEBYTECODE=1 <nonproduction-python> -B \
 
 For `prepare`, include explicit `evidence_dir` (durable local reports) and `controls`
 (installed controller source directory) in the config. It never selects/restarts.
-On the currently unsupported pending-activation boundary it returns exit **2**,
-`APP_SMOKE_PASSED_DEPLOYMENT_BLOCKED`, with a machine-readable report. This is an
-intentional safety refusal, not an invitation to bypass the gate. Exit 1 means a
-preparation/test failure. Feature-specific regression tests remain required.
+Also supply `control_refresh_sha256` to run the read-only pending adapter in a
+fresh process. App canary and pending admission are separate gates. Exit **0** /
+`APP_SMOKE_PASSED_PENDING_GATE_CHECKED` means both checks passed, **not staged or
+selected**. Missing authority or a routing failure returns exit **2** /
+`APP_SMOKE_PASSED_DEPLOYMENT_BLOCKED`. Exit 1 means a preparation/test failure.
+Feature-specific regression tests remain required.
 
 Use an explicit local JSON configuration containing `baseline`, `output`, `scratch`,
 `agent_repo`, `agent_commit`, `webui_repo`, and `webui_commit`. All paths must be
@@ -94,11 +96,10 @@ Stop on any failed gate. Do not loosen inventory exclusions, disable watchdog
 protection, overwrite approved expectations from current drift, bypass signed-host
 checks, mint fictitious provenance, or retry a restart without fresh evidence.
 
-A controller with no select-only operation is not made safe by hand-writing its
-selector. In the current native-host contract, the watchdog compares the running
-WebUI child's exact executable/argv with the selected manifest. Selecting a new
-path can therefore cause an automatic restart even while the old listener is
-healthy. A terminal activation transaction alone does not prevent this.
+A controller with no pending-ownership protocol is not made safe by hand-writing
+its selector. The reviewed pending watchdog distinguishes selected bytes from
+old/new running identities. The adapter delegates to that protocol; it does not
+create a second selection transaction, disable the watchdog, or alter rollback.
 
 The generic Agent launchd restart path may regenerate a native/external service
 plist. A test of process startup does not prove that the user's restart button
@@ -122,3 +123,74 @@ Report each achieved gate and each untested boundary. No preflight guarantees a
 future restart under all external conditions. `READY_FOR_USER_RESTART` must mean all
 pre-restart gates passed for the exact selected bytes, not “some tests were green.”
 Keep `STAGED`, `SELECTED`, `RUNNING_VERIFIED`, and `FUNCTIONALLY_VERIFIED` separate.
+
+
+## Bounded user-restart adapter
+
+Use a fresh nonproduction interpreter with `-I -B`. The adapter accepts only the
+reviewed six-module refresh receipt and exact reviewed old/new manifest pins.
+It prehashes the refresh receipt, bundle receipt, and **all six modules before
+import**, executes retained source bytes (not pyc), then calls installed refresh
+admission. A self-signed/fake bundle or caller-supplied arbitrary hash is not an
+approval. Future release/refresh pins require a new review, not an override flag.
+
+Common arguments to `select_for_user_restart.py`:
+
+```
+--base <maintenance-directory>
+--controls <installed-version-directory>
+--candidate <sealed-release.json>
+--scratch <dedicated-disposable-scratch>
+--control-refresh-sha256 <reviewed-refresh-receipt-sha256>
+--expect-selected-sha256 <exact-old-manifest-sha256>
+--expect-candidate-sha256 <exact-new-manifest-sha256>
+```
+
+Separate commands (append exactly one action to those common arguments):
+
+1. `--check`: production-read-only; may write/delete disposable route fixtures.
+   Does not prepare, select, observe, tick, recover, signal, or restart.
+2. `--prepare --approve-prepare`: explicitly approve installed `watchdog.prepare`.
+   Writes its pending receipt and transaction fence, **not** selection or processes.
+   Inspect the returned receipt and retain its exact SHA-256.
+3. `--select --approve-select --pending-receipt-sha256 <prepared-sha256>`:
+   separately approve installed `watchdog.select`. Existing receipt, CAS, identity,
+   expiry, revocation, refresh and publication guards remain authoritative.
+   It publishes only the selector; no application restart is performed.
+
+A failed write command reports `changed: null`: read the installed durable receipt,
+transaction and selector before retrying. Never infer rollback from an exception.
+There is no adapter rollback/recovery transaction. A post-handoff check of old
+identities can fail normally; reconciliation belongs to the installed pending
+protocol. Do not call `observe` as a supposedly read-only operation: it can persist
+results or restore a timed-out selector.
+
+### Current concrete blocker (v4)
+
+The reviewed controller is installed and admitted, but candidate v4 does **not**
+pin `HERMES_WEBUI_PYTHON` in its manifest environment. The launcher loads an unpinned
+`runtime.env`, then restores only explicitly declared manifest variables. Candidate
+`api/config.py::_discover_python` prioritizes `HERMES_WEBUI_PYTHON`, and
+`api/routes.py::_run_gateway_lifecycle_command` executes that interpreter.
+Therefore a clean-environment canary is not proof of the actual Gateway CLI route.
+The adapter rejects v4 before stage/selection. No credential file needs to be read
+to establish this gap. Do not mutate the sealed candidate: a corrected candidate
+needs new inventory/manifest pins and renewed review.
+
+The contained routing fixture imports the actual candidate WebUI/config and CLI,
+checks both command constructors, then runs the real CLI dispatcher with a fake
+native plist and intercepted launchctl boundary. It asserts exact print/print/
+kickstart ordering and unchanged fixture plist bytes. It proves code composition,
+**not a real native restart**, current production environment, message delivery, or
+post-handoff identity. A synthetic interpreter override was demonstrated to change
+the emitted command; an in-memory fixture with the candidate interpreter pinned
+passed. Neither experiment changes the sealed manifest or authorizes v4 staging.
+
+### Ordered human handoff, only after all gates pass
+
+The old WebUI's Gateway button is **unsafe**: its old CLI may rewrite the native
+host plist. Restart **WebUI first**, reconnect, verify the candidate WebUI's exact
+native child identity, then use **Restart Gateway from the candidate WebUI in the
+default profile**. Finally read durable results and verify both new identities.
+Do not recommend the old Gateway button, infer readiness from app-canary success,
+or promise that a future restart cannot fail. No autonomous restart is authorized.

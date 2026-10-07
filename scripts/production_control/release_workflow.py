@@ -341,6 +341,31 @@ def build(cfg):
     return verify(cfg)
 
 
+def pending_check(cfg):
+    """Fresh adapter process: never reuse the builder's imported controller names."""
+    if not cfg.get('control_refresh_sha256'):
+        return {'status': 'pending_gate_not_checked', 'changed': False,
+                'error': 'Explicit reviewed control_refresh_sha256 required'}
+    candidate = Path(cfg['output']) / 'release.json'
+    argv = [sys.executable, '-I', '-B', str(Path(__file__).with_name('select_for_user_restart.py')),
+            '--check', '--base', str(Path(cfg['baseline']).parent), '--controls', cfg['controls'],
+            '--candidate', str(candidate), '--scratch', cfg['scratch'],
+            '--control-refresh-sha256', cfg['control_refresh_sha256'],
+            '--expect-selected-sha256', digest(cfg['baseline']),
+            '--expect-candidate-sha256', digest(candidate)]
+    env = {'HOME': str(Path.home()), 'TMPDIR': cfg['scratch'], 'PATH': SAFE_PATH}
+    result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=300)
+    try:
+        report = json.loads(result.stdout)
+    except ValueError:
+        return {'status': 'blocked', 'changed': False, 'error': 'Pending adapter returned no JSON proof'}
+    if result.returncode != 0:
+        return {'status': 'blocked', 'changed': False, 'adapter': report}
+    if report.get('pending_gate', {}).get('status') != 'checked_not_staged':
+        return {'status': 'blocked', 'changed': False, 'error': 'Unexpected pending adapter result'}
+    return {'status': 'checked_not_staged', 'changed': False, 'adapter': report}
+
+
 def prepare(cfg):
     """One-command local gates. Never select, signal, or modify control-plane state."""
     validate_config_paths(cfg)
@@ -393,12 +418,10 @@ def prepare(cfg):
             raise RuntimeError('Selected release changed during preparation')
         # Preserve evidence beyond scratch's retention window.
         shutil.copytree(canary_report.parent, run_dir / 'canary')
-        from select_for_user_restart import audit_routes
-        old = launcher.load_manifest(Path(cfg['baseline']))
-        new = launcher.load_manifest(root / 'release.json')
-        report['gates']['restart_boundary'] = audit_routes(old, new, Path(cfg['controls']))
-        # Offline source evidence is negative only; it cannot authorize selection.
-        report['status'] = 'APP_SMOKE_PASSED_DEPLOYMENT_BLOCKED'
+        report['gates']['restart_boundary'] = pending_check(cfg)
+        report['status'] = ('APP_SMOKE_PASSED_PENDING_GATE_CHECKED'
+                            if report['gates']['restart_boundary']['status'] == 'checked_not_staged'
+                            else 'APP_SMOKE_PASSED_DEPLOYMENT_BLOCKED')
         return report
     except Exception as exc:
         report['error'] = str(exc)
@@ -418,7 +441,7 @@ def main():
         summary = {k: v for k, v in report.items() if k != 'gates'}
         print(json.dumps(summary, indent=2))
         if args.action == 'prepare':
-            return 2  # Selection remains intentionally inadmissible on this controller.
+            return 0 if report['status'] == 'APP_SMOKE_PASSED_PENDING_GATE_CHECKED' else 2
     except Exception as exc:
         print(json.dumps({'status': 'NOT_READY', 'error': str(exc)}), file=sys.stderr)
         return 1
