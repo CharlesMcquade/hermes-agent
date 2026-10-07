@@ -52,6 +52,23 @@ Do not infer authorization by hashing arbitrary drift and passing the hash.
 Admission must start at the currently trusted receipt/wrappers. Keep plans private
 because backups contain local paths and installation data.
 
+## Plan size contract
+
+Individual source, target and guard files remain bounded at 64 MiB. The serialized
+JSON plan has a separate 256 MiB limit to accommodate base64-embedded old/new
+receipts, journals, transactions and guard backups. This is a supported bounded
+aggregate, not an increase to the per-file limit. Larger installations must stop
+and review the format; there is no automatic cap override or blob-store fallback.
+
+Generation validates the serialized size and every embedded old/new/guard record
+before publishing `plan.json`. A refused plan can leave its private source staging
+directory, but never a published oversized plan or installed-target writes. Atomic
+writes reject oversized records before creating a temporary file. Import uses the
+same aggregate cap, explicit SHA pin, and per-record checks before apply/recover
+can import management code or write any target. No-follow, ownership/mode and
+mid-read mutation checks apply unchanged to both file classes. The plan remains
+private and immutable; recovery retains the existing known-byte CAS checks.
+
 ## Verification contract
 
 The test suite uses real isolated Git repositories and real helper subprocesses

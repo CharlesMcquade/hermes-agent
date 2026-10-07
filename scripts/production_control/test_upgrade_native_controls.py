@@ -96,6 +96,84 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(self.before,{n:u.record(self.base/n) for n in u.TARGETS})
         u.check_guards(self.unchanged)
 
+    def test_large_aggregate_plan_read_apply_recover(self):
+        # Realistic nested receipt/journal backups: individually below 64 MiB,
+        # but base64 old/new records produce a plan above the former reader cap.
+        receipt = json.loads(u.data(self.before[u.RECEIPT]))
+        receipt['backup'] = 'x' * (17 * 1024 * 1024)
+        self.pin = u.sha(u.encoded(receipt))
+        u.atomic(self.base/u.RECEIPT, u.packed(u.encoded(receipt)))
+        u.atomic(self.base/u.JOURNAL, u.packed(u.encoded({'receipt': receipt})))
+        txn = json.loads(u.data(self.before[u.TRANSACTION]))
+        txn['control_refresh_sha256'] = self.pin
+        u.atomic(self.base/u.TRANSACTION, u.packed(u.encoded(txn), 0o600))
+        for n, text in u.wrappers(self.base, self.pin, self.old_version, self.old_version).items():
+            u.atomic(self.base/n, u.packed(text.encode(), self.before[n]['mode']))
+        self.before = {n: u.record(self.base/n) for n in u.TARGETS}
+        self.plan()
+        self.assertGreater(self.plan_path.stat().st_size, 64 * 1024 * 1024)
+        _, plan, _ = u.read_plan(self.plan_path, self.plan_pin)
+        self.unchanged_before()
+        with self.assertRaisesRegex(ValueError, 'pin mismatch'):
+            u.read_plan(self.plan_path, '0' * 64)
+        self.assertEqual(u.apply_plan(self.plan_path, self.plan_pin, approval=True)['status'],
+                         'installed_controls_no_restart')
+        self.assertEqual({n: u.record(self.base/n) for n in u.TARGETS}, plan['new'])
+        u.apply_plan(self.plan_path, self.plan_pin, recover=True, approval=True)
+        self.unchanged_before()
+
+    def test_plan_limits_and_malformed_records_refuse_before_writes_or_imports(self):
+        self.plan()
+        original = self.plan_path.read_bytes()
+        # Staging six source files is allowed; no plan or installed-target write
+        # may occur after the aggregate limit is exceeded.
+        with patch.object(u, 'MAX_PLAN_BYTES', len(original) - 1), \
+                patch.object(u, 'atomic', wraps=u.atomic) as write:
+            with self.assertRaisesRegex(ValueError, 'Plan too large'):
+                u.build_plan(self.base, self.repo, self.commit, 'another',
+                             self.root/'oversize', self.pin)
+            self.assertTrue(write.call_args_list)
+            self.assertTrue(all(call.args[0].parent == self.root/'oversize/controls'
+                                for call in write.call_args_list))
+        self.assertFalse((self.root/'oversize/plan.json').exists())
+        self.unchanged_before()
+        with patch.object(u.tempfile, 'mkstemp') as write:
+            with self.assertRaises(ValueError):
+                u.atomic(self.root/'over-cap-plan', u.packed(original), max_bytes=len(original)-1)
+            write.assert_not_called()
+        cases = [('aggregate', original, len(original) - 1, 64 * 1024 * 1024)]
+        for section in ('old', 'new', 'guards'):
+            for bad in ('oversized', 'malformed'):
+                plan = json.loads(original)
+                name = next(iter(plan[section]))
+                plan[section][name]['data'] = ('eA==' * 400 if bad == 'malformed'
+                                              else u.packed(b'x' * 4097)['data'])
+                cases.append((section + bad, u.encoded(plan), 256 * 1024 * 1024, 4096))
+        for label, raw, total_limit, file_limit in cases:
+            with self.subTest(case=label):
+                self.plan_path.chmod(0o600)
+                self.plan_path.write_bytes(raw)
+                self.plan_path.chmod(0o400)
+                with patch.object(u, 'MAX_PLAN_BYTES', total_limit), \
+                        patch.object(u, 'MAX_FILE_BYTES', file_limit), \
+                        patch.object(u, 'atomic') as write, patch.object(u, 'helper') as helper:
+                    for recover in (False, True):
+                        with self.assertRaises(ValueError):
+                            u.apply_plan(self.plan_path, u.sha(raw), approval=True, recover=recover)
+                    with self.assertRaises(ValueError):
+                        u.read_plan(self.plan_path, u.sha(raw))
+                    write.assert_not_called()
+                    helper.assert_not_called()
+                self.unchanged_before()
+                self.assertFalse((self.base/'control-refresh-versions/new').exists())
+        # Per-file source reads and ordinary writes retain their smaller bound.
+        with patch.object(u, 'MAX_FILE_BYTES', 4), patch.object(u.tempfile, 'mkstemp') as write:
+            with self.assertRaises(ValueError):
+                u.record(self.base/u.RECEIPT)
+            with self.assertRaises(ValueError):
+                u.atomic(self.root/'too-big', u.packed(b'12345'))
+            write.assert_not_called()
+
     def test_plan_only_preserves_production_bytes(self):
         p=self.plan(); self.unchanged_before()
         self.assertEqual(p['status'],'planned_not_installed')

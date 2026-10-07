@@ -34,6 +34,9 @@ RECEIPT = 'native-control-refresh-receipt.json'
 JOURNAL = 'native-control-refresh-journal.json'
 TRANSACTION = 'activation-transaction.json'
 TARGETS = (TRANSACTION, *WRAPPERS, JOURNAL, RECEIPT)
+MAX_FILE_BYTES = 64 * 1024 * 1024
+# Old/new backups and guards are base64 embedded; this is NOT a file limit.
+MAX_PLAN_BYTES = 256 * 1024 * 1024
 
 
 def require(ok, message):
@@ -49,17 +52,18 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def record(path) -> FileRecord:
+def record(path, *, max_bytes=None) -> FileRecord:
     """No-follow, bounded read; reject inode/content metadata changing mid-read."""
+    max_bytes = MAX_FILE_BYTES if max_bytes is None else max_bytes
     path = Path(path)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         s = os.fstat(fd)
         require(stat.S_ISREG(s.st_mode) and s.st_uid == os.getuid()
-                and not s.st_mode & 0o022 and s.st_size <= 64 * 1024 * 1024,
+                and not s.st_mode & 0o022 and s.st_size <= max_bytes,
                 'Unsafe input file: ' + str(path))
         with os.fdopen(fd, 'rb', closefd=False) as f:
-            raw = f.read(64 * 1024 * 1024 + 1)
+            raw = f.read(max_bytes + 1)
         t = os.fstat(fd)
         require((s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
                 == (t.st_dev, t.st_ino, t.st_size, t.st_mtime_ns, t.st_ctime_ns)
@@ -70,11 +74,16 @@ def record(path) -> FileRecord:
         os.close(fd)
 
 
-def data(rec):
+def data(rec, *, max_bytes=None):
+    max_bytes = MAX_FILE_BYTES if max_bytes is None else max_bytes
     require(isinstance(rec, dict) and set(rec) == {'data', 'mode', 'uid'}
             and rec['uid'] == os.getuid() and type(rec['mode']) is int
             and not rec['mode'] & 0o022, 'Invalid file record')
-    return base64.b64decode(rec['data'], validate=True)
+    require(isinstance(rec['data'], str)
+            and len(rec['data']) <= 4 * ((max_bytes + 2) // 3), 'File record too large or malformed')
+    raw = base64.b64decode(rec['data'], validate=True)
+    require(len(raw) <= max_bytes, 'File record too large')
+    return raw
 
 
 def packed(raw, mode: int=0o444) -> FileRecord:
@@ -98,8 +107,8 @@ def sync_dir(path):
         os.close(fd)
 
 
-def atomic(path, rec):
-    raw = data(rec)
+def atomic(path, rec, *, max_bytes=None):
+    raw = data(rec, max_bytes=max_bytes)
     fd, tmp = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as f:
@@ -109,7 +118,7 @@ def atomic(path, rec):
             os.fsync(f.fileno())
         os.replace(tmp, path)
         sync_dir(path.parent)
-        require(record(path) == rec, 'Publication readback failed')
+        require(record(path, max_bytes=max_bytes) == rec, 'Publication readback failed')
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -240,26 +249,36 @@ def build_plan(base, repo, commit, version_name, output, current_pin):
                     old=old, new=new, guards=immutable)
         check_guards(immutable)
         require(all(record(base/n) == old[n] for n in TARGETS), 'Plan baseline changed')
-        atomic(output / 'plan.json', packed(encoded(plan), 0o400))
+        raw_plan = encoded(plan)
+        require(len(raw_plan) <= MAX_PLAN_BYTES, 'Plan too large')
+        validate_plan(plan)
+        atomic(output / 'plan.json', packed(raw_plan, 0o400), max_bytes=MAX_PLAN_BYTES)
         return dict(status='planned_not_installed', plan=str(output/'plan.json'),
-                    plan_sha256=sha(encoded(plan)), new_pin=new_pin, source_commit=commit)
+                    plan_sha256=sha(raw_plan), new_pin=new_pin, source_commit=commit)
 
 
 def read_plan(path, pin):
     path = Path(path)
     safe_dir(path.parent)
-    raw = data(record(path))
+    raw = data(record(path, max_bytes=MAX_PLAN_BYTES), max_bytes=MAX_PLAN_BYTES)
     require(sha(raw) == pin, 'Explicit plan pin mismatch')
     plan = json.loads(raw)
-    require(plan.get('schema_version') == 1 and plan.get('kind') == 'post-native-management-upgrade', 'Wrong plan schema')
+    base = validate_plan(plan)
+    return path, plan, base
+
+
+def validate_plan(plan):
+    require(isinstance(plan, dict) and plan.get('schema_version') == 1
+            and plan.get('kind') == 'post-native-management-upgrade', 'Wrong plan schema')
     base = safe_dir(Path(plan['base']))
     require(set(plan['old']) == set(plan['new']) == set(TARGETS), 'Wrong publication targets')
     require(Path(plan['new_version']).parent == base/'control-refresh-versions'
             and re.fullmatch('[A-Za-z0-9_-]+', Path(plan['new_version']).name), 'Unsafe version path')
-    for mapping in (plan['old'], plan['new']):
+    for mapping in (plan['old'], plan['new'], plan['guards']):
+        require(isinstance(mapping, dict), 'Invalid plan records')
         for rec in mapping.values():
             data(rec)
-    return path, plan, base
+    return base
 
 
 def verify_bundle(version, hashes):
