@@ -251,7 +251,16 @@ def snapshot(source, sha, dest):
     dest.mkdir()
     git(dest, '-c', 'init.templateDir=', 'init', '--quiet')
     git(dest, 'fetch', '--quiet', '--depth=1', '--no-tags', str(source), sha)
-    git(dest, 'checkout', '--quiet', '--detach', 'FETCH_HEAD')
+    # Frozen-source validation compares raw Git blobs, not checkout conversions.
+    # info/attributes has highest precedence, including over nested attributes.
+    # Suppress conversion only during construction; retain genuine source metadata.
+    attributes = dest / '.git/info/attributes'
+    attributes.parent.mkdir(exist_ok=True)
+    attributes.write_text('* -text -filter -ident -working-tree-encoding\n')
+    try:
+        git(dest, 'checkout', '--quiet', '--detach', 'FETCH_HEAD')
+    finally:
+        attributes.unlink()
     if git(dest, 'rev-parse', 'HEAD') != sha:
         raise RuntimeError('Snapshot identity mismatch')
     canary.tracked_bytes(dest, sha, git_env())

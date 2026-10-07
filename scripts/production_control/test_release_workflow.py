@@ -41,6 +41,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(result['agent']['commit'], self.sha)
         self.assertTrue((self.repo / '.git/objects').is_dir())
 
+    def test_snapshot_preserves_raw_blobs_with_crlf_attributes(self):
+        (self.source / '.gitattributes').write_text('*.ps1 text eol=crlf\n')
+        (self.source / 'activate.ps1').write_bytes(b'Write-Output fixture\n')
+        self.git(self.source, 'add', '.')
+        self.git(self.source, 'commit', '-qm', 'crlf checkout fixture')
+        sha = workflow.git(self.source, 'rev-parse', 'HEAD')
+        dest = self.root / 'crlf-snapshot'
+        workflow.snapshot(self.source, sha, dest)
+        self.assertEqual((dest / 'activate.ps1').read_bytes(), b'Write-Output fixture\n')
+        self.assertFalse((dest / '.git/info/attributes').exists())
+        workflow.canary.tracked_bytes(dest, sha, workflow.git_env())
+
     def test_fabricated_ref_without_object_rejected(self):
         fake = '1' * 40
         (self.repo / '.git/HEAD').write_text(fake + '\n')
