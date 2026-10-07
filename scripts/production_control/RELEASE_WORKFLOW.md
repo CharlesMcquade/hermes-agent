@@ -174,8 +174,11 @@ pin `HERMES_WEBUI_PYTHON` in its manifest environment. The launcher loads an unp
 `api/routes.py::_run_gateway_lifecycle_command` executes that interpreter.
 Therefore a clean-environment canary is not proof of the actual Gateway CLI route.
 The adapter rejects v4 before stage/selection. No credential file needs to be read
-to establish this gap. Do not mutate the sealed candidate: a corrected candidate
-needs new inventory/manifest pins and renewed review.
+to establish this gap. The builder now explicitly pins the private interpreter in
+`HERMES_WEBUI_PYTHON` before sealing, so the existing launcher restores it after
+mutable environment files. The build regression exercises that actual launcher
+merge against conflicting inherited/file values. Do not mutate v4: a corrected
+candidate needs fresh inventory/manifest pins, contained routing proof and review.
 
 The contained routing fixture imports the actual candidate WebUI/config and CLI,
 checks both command constructors, then runs the real CLI dispatcher with a fake

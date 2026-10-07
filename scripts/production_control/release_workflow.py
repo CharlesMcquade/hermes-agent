@@ -313,6 +313,9 @@ def build(cfg):
         item['version'] = git(root / name, 'describe', '--always')
         # No inherited stale release/development entries in subprocess PATH.
         item['env']['PATH'] = str(python.parent) + ':' + cfg.get('tool_path', SAFE_PATH)
+    # The launcher reapplies manifest env after runtime.env. Pin the CLI
+    # interpreter too, not only the WebUI process argv and subprocess PATH.
+    manifest["services"]["webui"]["env"]["HERMES_WEBUI_PYTHON"] = str(python)
     (root / 'agent/.bytecode-fingerprint').write_text('git:HEAD:' + cfg['agent_commit'])
     # Boot-time CLI exposure can create these. Materialize the exact files before
     # sealing, with a narrowly scoped function that writes only the NEW repo.

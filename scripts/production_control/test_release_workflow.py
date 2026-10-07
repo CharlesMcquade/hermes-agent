@@ -244,6 +244,21 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow.canary.inventory(old), before)
         workflow.require_sealed(self.root / 'new')
         self.assertEqual(workflow.verify(cfg)['manifest_sha256'], result['manifest_sha256'])
+        built = json.loads((Path(cfg["output"]) / "release.json").read_bytes())
+        webui = built["services"]["webui"]
+        self.assertEqual(webui["env"]["HERMES_WEBUI_PYTHON"], webui["argv"][0])
+        # Exercise the actual launcher merge: mutable runtime.env cannot redirect CLI.
+        import types
+        dotenv = types.ModuleType("dotenv")
+        dotenv.dotenv_values = lambda *a, **kw: {"HERMES_WEBUI_PYTHON": "/fixture/wrong-python"}
+        webui["env_files"] = ["/fixture/runtime.env"]
+        with mock.patch.dict(os.environ, {"HERMES_WEBUI_PYTHON": "/fixture/inherited-python"}, clear=True), \
+             mock.patch.dict(sys.modules, {"dotenv": dotenv}), \
+             mock.patch.object(sys, "argv", ["entry", json.dumps(webui)]), \
+             mock.patch.object(os, "chdir"), mock.patch.object(os, "execve") as execute:
+            exec(workflow.launcher._ENTRY, {})
+            self.assertEqual(execute.call_args.args[2]["HERMES_WEBUI_PYTHON"], webui["argv"][0])
+
 
     def test_git_replacements_and_includes_do_not_redefine_provenance(self):
         tree = workflow.git(self.repo, 'rev-parse', 'HEAD^{tree}')
