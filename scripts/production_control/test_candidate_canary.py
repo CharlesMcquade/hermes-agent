@@ -136,6 +136,73 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(report['cleanup']['state_removed'])
         self.assertFalse((new / 'state').exists())
 
+    def cleanup_run(self, probe, removal_error=False):
+        runtime = self.root / 'runtime'
+        python = runtime / 'venv/bin/python'
+        python.parent.mkdir(parents=True)
+        python.write_text('not executed')
+        args = argparse.Namespace(python=str(python), runtime=str(runtime),
+                                  agent=None, webui=None, agent_sha='a' * 40,
+                                  webui_sha='b' * 40, isolation_only=True)
+        with patch.object(c, 'BASE', self.root), patch.object(c, 'prove_isolation', side_effect=probe):
+            if removal_error:
+                with patch.object(c.os, 'rmdir', side_effect=PermissionError('injected cleanup failure')):
+                    with self.assertRaisesRegex(RuntimeError, 'original probe failure'):
+                        c.run(args)
+            else:
+                c.run(args)
+        run = next(self.root.glob('canary-*'))
+        return run, json.loads((run / 'report.json').read_text())
+
+    def test_readonly_copied_skills_cleanup(self):
+        def probe(root, *unused):
+            leaf = root / 'state/skills/media/gif-search'
+            leaf.mkdir(parents=True)
+            (leaf / 'SKILL.md').write_text('fixture')
+            for directory in (leaf, leaf.parent, leaf.parent.parent):
+                directory.chmod(0o555)
+            return {'fixture': True}
+        run, report = self.cleanup_run(probe)
+        self.assertEqual(report['status'], 'isolation_proven')
+        self.assertTrue(report['cleanup']['state_removed'])
+        self.assertFalse((run / 'state').exists())
+
+    def test_cleanup_never_follows_outside_symlinks(self):
+        outside = self.root / 'outside'; outside.mkdir()
+        target = outside / 'keep'; target.write_text('unchanged')
+        outside.chmod(0o555)
+        def probe(root, *unused):
+            (root / 'state/escape').symlink_to(outside, target_is_directory=True)
+            (root / 'tmp').rmdir()
+            (root / 'tmp').symlink_to(outside, target_is_directory=True)
+            return {}
+        run, report = self.cleanup_run(probe)
+        self.assertTrue(report['cleanup']['state_removed'])
+        self.assertEqual(target.read_text(), 'unchanged')
+        self.assertEqual(outside.stat().st_mode & 0o777, 0o555)
+        self.assertFalse((run / 'tmp').is_symlink())
+
+    def test_cleanup_exception_preserves_original_and_receipt(self):
+        def probe(*unused):
+            raise RuntimeError('original probe failure')
+        run, report = self.cleanup_run(probe, removal_error=True)
+        self.assertEqual(report['status'], 'failed')
+        self.assertEqual(report['error'], 'original probe failure')
+        self.assertFalse(report['cleanup']['state_removed'])
+        self.assertEqual(set(report['cleanup']['remaining']), {'home', 'state', 'webui', 'tmp'})
+        self.assertTrue(any('injected cleanup failure' in e for e in report['cleanup']['errors']))
+
+    def test_incomplete_cleanup_cannot_certify_success(self):
+        def probe(*unused):
+            return {}
+        with patch.object(c, 'remove_disposable', side_effect=PermissionError('blocked removal')):
+            with self.assertRaisesRegex(RuntimeError, 'blocked removal'):
+                self.cleanup_run(probe)
+        run = next(self.root.glob('canary-*'))
+        report = json.loads((run / 'report.json').read_text())
+        self.assertEqual(report['status'], 'failed')
+        self.assertFalse(report['cleanup']['state_removed'])
+
     def test_sandbox_git_identity_is_not_hidden(self):
         repo = self.root / 'repo'
         repo.mkdir()

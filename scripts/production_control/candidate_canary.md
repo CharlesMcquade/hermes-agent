@@ -19,6 +19,17 @@ stop/relaunch), expected gateway runtime SHA/PID/home, deep WebUI health,
 loopback listener ownership, five served asset digests, and unchanged candidate
 inventories including Git metadata and bytecode caches. All created process groups
 are stopped; disposable application state is removed. Logs and policy are retained.
+Cleanup uses a retained descriptor for the freshly owned scratch run and only
+removes `home`, `state`, `webui`, and `tmp`. Nested read-only copied skill directories
+are made owner-writable through verified no-follow directory descriptors; files
+are never chmodded, symlinks are unlinked without following, and mount crossings
+are refused. Removal is skipped if child shutdown is not proven. Each removal is
+attempted independently, and the receipt records remaining entries and cleanup
+errors without replacing the original runtime exception. Incomplete cleanup
+forces failed status and nonzero exit, even after successful health checks.
+Receipts are atomically replaced and fsynced. If storage itself fails, certification
+still fails and the report is emitted to stderr; durable storage cannot be guaranteed
+in that case.
 This does **not** validate launchd, production restart buttons, native host integration,
 provider inference, or message delivery. It never selects a release or controls services.
 

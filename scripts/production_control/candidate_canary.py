@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import signal
 import socket
 import stat
@@ -276,6 +275,61 @@ def wait_ready(gateway, webui, root, port, expected):
     raise RuntimeError('Readiness timeout: ' + last)
 
 
+DISPOSABLE = ('home', 'state', 'webui', 'tmp')
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def remove_disposable(root_fd, name):
+    """Walk only fixed disposable entries relative to the retained owned run fd.
+
+    Never chmod files (which might be hardlinks), follow symlinks, or cross a
+    mount. Children have been stopped before this traversal. An opened directory
+    must match its no-follow stat before fchmod; replacements fail closed.
+    """
+    require(name in DISPOSABLE, 'Not a disposable canary directory')
+    device = os.fstat(root_fd).st_dev
+
+    def remove(parent, entry):
+        try:
+            before = os.stat(entry, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(before.st_mode):
+            os.unlink(entry, dir_fd=parent)
+            return
+        fd = os.open(entry, DIR_FLAGS, dir_fd=parent)
+        try:
+            opened = os.fstat(fd)
+            require((opened.st_dev, opened.st_ino) == (before.st_dev, before.st_ino)
+                    and opened.st_dev == device and opened.st_uid == os.getuid(),
+                    'Unsafe disposable directory identity')
+            os.fchmod(fd, stat.S_IMODE(opened.st_mode) | 0o700)
+            for child in os.listdir(fd):
+                remove(fd, child)
+            current = os.stat(entry, dir_fd=parent, follow_symlinks=False)
+            require((current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino),
+                    'Disposable directory replaced during cleanup')
+            os.rmdir(entry, dir_fd=parent)
+        finally:
+            os.close(fd)
+
+    remove(root_fd, name)
+
+
+def persist_report(root_fd, report):
+    # Exclusive temporary file + fd-relative replacement cannot follow a
+    # candidate-created report symlink. fsync before publishing the receipt.
+    name = '.report-' + os.urandom(16).hex()
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=root_fd)
+    with os.fdopen(fd, 'w') as f:
+        f.write(json.dumps(report, indent=2) + '\n')
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(name, 'report.json', src_dir_fd=root_fd, dst_dir_fd=root_fd)
+    os.fsync(root_fd)
+
+
 def run(args):
     # Refuse an artifact-owned scratch directory before creating any state there.
     for value in (args.runtime, args.agent, args.webui):
@@ -284,12 +338,13 @@ def run(args):
                     'Scratch directory is inside candidate payload')
     BASE.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix='canary-', dir=BASE))
-    require(len(os.fsencode(root / 'state/gateway.sock')) < 104, 'Scratch path too long for AF_UNIX')
-    initialize(root)
+    root_fd = os.open(root, DIR_FLAGS)
     report = {'status': 'failed', 'run': str(root), 'production_touched': False,
               'native_host_tested': False, 'message_delivery_tested': False, 'events': []}
     children = []; logs = []; baseline = None; roots = []
     try:
+        require(len(os.fsencode(root / 'state/gateway.sock')) < 104, 'Scratch path too long for AF_UNIX')
+        initialize(root)
         python = Path(args.python).absolute()
         runtime = Path(args.runtime).resolve(strict=True)
         require(runtime.name == 'runtime' and python == runtime / 'venv/bin/python',
@@ -351,20 +406,47 @@ def run(args):
         for p in reversed(children):
             try: stop(p)
             except Exception as e: errors.append(str(e))
-        for log in logs: log.close()
+        children_stopped = not errors
+        for log in logs:
+            try: log.close()
+            except Exception as e: errors.append('log close: ' + str(e))
         if baseline is not None:
             try:
                 report['inventory_unchanged'] = all(inventory(p) == baseline[str(p)] for p in roots)
                 if not report['inventory_unchanged']: errors.append('final inventory drift')
             except Exception as e: errors.append(str(e))
-        # Retain logs/policy/receipt; remove only disposable HOME and mutable application state.
-        for name in ('home', 'state', 'webui', 'tmp'):
-            shutil.rmtree(root / name)
-        report['cleanup'] = {'state_removed': True, 'errors': errors}
-        if errors: report['status'] = 'failed'
-        (root / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
-        print(str(root / 'report.json'), flush=True)
-        if errors: raise RuntimeError('; '.join(errors))
+        # Do not traverse mutable state while an owned child may still be alive.
+        remaining = []
+        for name in DISPOSABLE:
+            try:
+                require(children_stopped, 'Removal skipped: child cleanup incomplete')
+                remove_disposable(root_fd, name)
+            except Exception as e:
+                errors.append(name + ': ' + str(e))
+            try:
+                os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+                remaining.append(name)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                remaining.append(name)
+                errors.append(name + ' removal verification: ' + str(e))
+        report['cleanup'] = {'state_removed': not remaining, 'remaining': remaining,
+                             'children_stopped': children_stopped, 'errors': errors}
+        if errors or remaining: report['status'] = 'failed'
+        try:
+            persist_report(root_fd, report)
+            print(str(root / 'report.json'), flush=True)
+        except Exception as e:
+            # Storage failure cannot promise a durable receipt. Never certify it.
+            report['status'] = 'failed'
+            errors.append('receipt persistence: ' + str(e))
+            print(json.dumps(report), file=sys.stderr, flush=True)
+        finally:
+            os.close(root_fd)
+        # Let an in-flight original exception retain its traceback and identity.
+        if (errors or remaining) and 'error' not in report:
+            raise RuntimeError('; '.join(errors) or 'Incomplete disposable removal')
 
 
 def main():
