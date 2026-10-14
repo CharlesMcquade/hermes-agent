@@ -198,6 +198,93 @@ def check_guards(values):
             'Untouched selector/launcher/plist changed; stop and reconcile')
 
 
+def build_reseal_plan(base, repo, commit, version_name, output, current_pin):
+    """Approved recovery for control.lock st_dev rotation (volume re-id on reboot).
+
+    NOT a drift blessing for content: every control module byte must still match
+    the currently trusted receipt exactly. Only the lock identity datum is
+    refreshed, because st_dev is an OS-assigned volume identifier that rotates
+    legitimately on reboot while inode + module bytes stay stable. Publishes a
+    new receipt/wrappers/journal/transaction with the LIVE (dev, ino) under the
+    same locked, CAS-guarded, atomic publication path as an ordinary upgrade.
+    """
+    base, repo = safe_dir(base), safe_dir(repo)
+    require(re.fullmatch('[0-9a-f]{40}', commit) is not None, 'Exact source commit required')
+    obj = source_git(repo, 'cat-file', '-t', commit)
+    require(obj.returncode == 0 and obj.stdout.strip() == b'commit', 'Source object is not a genuine commit')
+    require(re.fullmatch('[A-Za-z0-9_-]+', version_name) is not None, 'Invalid version name')
+    require(re.fullmatch('[0-9a-f]{64}', current_pin) is not None, 'Exact old receipt pin required')
+    output = Path(output)
+    safe_dir(output.parent)
+    output.mkdir(mode=0o700)
+    with locked(base):
+        lock_fd_identity = os.fstat(os.open(base / 'control.lock', os.O_RDONLY | os.O_NOFOLLOW))
+        live_identity = [lock_fd_identity.st_dev, lock_fd_identity.st_ino]
+        old = {n: record(base / n) for n in TARGETS}
+        receipt = json.loads(data(old[RECEIPT]))
+        require(sha(data(old[RECEIPT])) == current_pin, 'Old receipt pin changed')
+        old_version = Path(receipt['stage']['version'])
+        # Byte-level identity proof FIRST: modules must be identical to the
+        # trusted stage. Any content difference here is drift, not re-id.
+        verify_bundle(old_version, receipt['stage']['control_sha256'])
+        stale_identity = receipt['lock_identity']
+        require(isinstance(stale_identity, list) and len(stale_identity) == 2
+                and all(type(v) is int for v in stale_identity), 'Malformed old lock identity')
+        require(stale_identity[1] == live_identity[1],
+                'Lock inode changed; this is not a benign volume re-id — stop')
+        require(stale_identity[0] != live_identity[0],
+                'Lock st_dev already matches; nothing to re-seal')
+        require(receipt['stage']['control_sha256'] == json.loads(
+            data(record(old_version / 'control-receipt.json'))), 'Stage receipt mismatch')
+        env = json.loads(data(old[TRANSACTION]))
+        require(env.get('schema_version') == 2 and env.get('control_refresh_sha256') == current_pin
+                and env['transaction']['phase'] in ('verified', 'rolled_back'), 'Terminal transaction required')
+        require(env['sha256'] == sha(json.dumps(env['transaction'], sort_keys=True,
+                                              separators=(',', ':')).encode()), 'Transaction checksum mismatch')
+        immutable = guards(base)
+        new_version = base / 'control-refresh-versions' / version_name
+        require(not new_version.exists() and not new_version.is_symlink(), 'Version already exists')
+        # The new bundle carries the SAME module bytes as the trusted stage.
+        raw_controls = {n: data(record(old_version / n)) for n in FILES}
+        hashes = {n: sha(raw) for n, raw in raw_controls.items()}
+        require(hashes == receipt['stage']['control_sha256'], 'Module bytes differ from trusted stage')
+        source = output / 'controls'
+        source.mkdir(mode=0o700)
+        for n, raw in raw_controls.items():
+            atomic(source / n, packed(raw))
+        atomic(source / 'control-receipt.json', packed(encoded(hashes)))
+        source.chmod(0o555)
+        verify_bundle(source, hashes)
+        stage = dict(receipt['stage'], version=str(new_version), control_sha256=hashes)
+        fresh = dict(receipt, stage=stage, stage_sha256=sha(encoded(stage)),
+                     lock_identity=live_identity)
+        new_pin = sha(encoded(fresh))
+        generated = wrappers(base, new_pin, new_version, source)
+        require(set(generated) == set(WRAPPERS), 'Unexpected management wrapper set')
+        new = {RECEIPT: packed(encoded(fresh), old[RECEIPT]['mode']),
+               TRANSACTION: packed(encoded(dict(env, control_refresh_sha256=new_pin)), old[TRANSACTION]['mode'])}
+        new.update({n: packed(generated[n].encode(), old[n]['mode']) for n in WRAPPERS})
+        journal = dict(schema_version=1, kind='native-control-refresh', receipt=fresh,
+                       stage_sha256=fresh['stage_sha256'], phase='committed', return_proof=None)
+        new[JOURNAL] = packed(encoded(dict(payload=journal, sha256=sha(encoded(journal)))), old[JOURNAL]['mode'])
+        plan = dict(schema_version=1, kind='post-native-management-upgrade', base=str(base),
+                    old_pin=current_pin, new_pin=new_pin, old_version=str(old_version),
+                    new_version=str(new_version), source_commit=commit, source_hashes=hashes,
+                    reseal=dict(kind='lock-identity', from_identity=stale_identity,
+                                to_identity=live_identity),
+                    old=old, new=new, guards=immutable)
+        check_guards(immutable)
+        require(all(record(base/n) == old[n] for n in TARGETS), 'Plan baseline changed')
+        raw_plan = encoded(plan)
+        require(len(raw_plan) <= MAX_PLAN_BYTES, 'Plan too large')
+        validate_plan(plan)
+        atomic(output / 'plan.json', packed(raw_plan, 0o400), max_bytes=MAX_PLAN_BYTES)
+        return dict(status='planned_not_installed', plan=str(output/'plan.json'),
+                    plan_sha256=sha(raw_plan), new_pin=new_pin, source_commit=commit,
+                    reseal=dict(kind='lock-identity', from_identity=stale_identity,
+                                to_identity=live_identity))
+
+
 def build_plan(base, repo, commit, version_name, output, current_pin):
     base, repo = safe_dir(base), safe_dir(repo)
     require(re.fullmatch('[0-9a-f]{40}', commit) is not None, 'Exact source commit required')
@@ -361,6 +448,9 @@ def main():
         b.add_argument('--'+name, type=Path, required=True)
     for name in ('commit', 'version-name', 'current-pin'):
         b.add_argument('--'+name, required=True)
+    b.add_argument('--reseal-lock-identity', action='store_true',
+                   help='Recovery mode: publish the same trusted module bytes with the '
+                        'live control.lock identity (st_dev rotation only; inode must match).')
     for command in ('apply', 'recover'):
         a = s.add_parser(command)
         a.add_argument('--plan', type=Path, required=True)
@@ -368,7 +458,12 @@ def main():
         a.add_argument('--approve', action='store_true')
     args = p.parse_args()
     if args.command == 'plan':
-        result = build_plan(args.base, args.repo, args.commit, args.version_name, args.output, args.current_pin)
+        if args.reseal_lock_identity:
+            result = build_reseal_plan(args.base, args.repo, args.commit, args.version_name,
+                                       args.output, args.current_pin)
+        else:
+            result = build_plan(args.base, args.repo, args.commit, args.version_name,
+                                args.output, args.current_pin)
     else:
         result = apply_plan(args.plan, args.plan_sha256, recover=args.command=='recover', approval=args.approve)
     print(json.dumps(result))
