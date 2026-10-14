@@ -400,6 +400,37 @@ def restore_known(base, plan):
     check_guards(plan['guards'])
 
 
+def admit_reseal_old(base, plan):
+    """Old-state admission for re-seal apply, bypassing load()'s identity gate.
+
+    load() refuses the drifted receipt by design — refusing the very drift this
+    plan heals. Instead, admit the old state directly: receipt bytes pin-match,
+    the trusted stage's bundle bytes verify, the installed wrapper set matches,
+    and the lock identity equals exactly the plan's recorded stale identity
+    (same inode, rotated st_dev). The NEW-state admission after publication
+    still runs the real subprocess load(), which must pass with the healed
+    identity.
+    """
+    require('reseal' in plan and plan['reseal']['kind'] == 'lock-identity',
+            'admit_reseal_old requires a lock-identity re-seal plan')
+    raw = data(record(base / RECEIPT))
+    require(sha(raw) == plan['old_pin'], 'Management admission receipt pin mismatch')
+    old_receipt = json.loads(raw)
+    require(old_receipt['lock_identity'] == plan['reseal']['from_identity'],
+            'Receipt identity differs from plan re-seal source')
+    require(old_receipt['stage']['version'] == plan['old_version'],
+            'Management admission version mismatch')
+    old_version = Path(plan['old_version'])
+    verify_bundle(old_version, old_receipt['stage']['control_sha256'])
+    require(plan['source_hashes'] == old_receipt['stage']['control_sha256'],
+            'Re-seal module bytes differ from trusted stage')
+    lock_info = os.stat(base / 'control.lock')
+    require([lock_info.st_dev, lock_info.st_ino] == plan['reseal']['to_identity'],
+            'Live lock identity does not match the re-seal target')
+    require(lock_info.st_ino == plan['reseal']['from_identity'][1],
+            'Lock inode changed; not a benign re-id')
+
+
 def apply_plan(path, pin, *, recover=False, approval=False):
     require(approval is True, 'Explicit --approve required')
     path, plan, base = read_plan(path, pin)
@@ -410,7 +441,10 @@ def apply_plan(path, pin, *, recover=False, approval=False):
         else:
             check_guards(plan['guards'])
             require(all(record(base/n) == plan['old'][n] for n in TARGETS), 'Installed baseline changed')
-            admit(base, plan['old_pin'], Path(plan['old_version']))
+            if 'reseal' in plan:
+                admit_reseal_old(base, plan)
+            else:
+                admit(base, plan['old_pin'], Path(plan['old_version']))
             source = path.parent/'controls'
             verify_bundle(source, plan['source_hashes'])
             target = Path(plan['new_version'])
