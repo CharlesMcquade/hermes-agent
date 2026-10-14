@@ -287,10 +287,10 @@ def build_reseal_plan(base, repo, commit, version_name, output, current_pin):
                     reseal=dict(kind='lock-identity', from_identity=stale_identity,
                                 to_identity=live_identity,
                                 from_app_identity=old_app_identity,
-                                from_launcher_identity=old_launcher_identity),
-                    old=dict(old, receipt_app_inode=app_st.st_ino,
-                             receipt_launcher_inode=launcher_st.st_ino),
-                    new=new, guards=immutable)
+                                from_launcher_identity=old_launcher_identity,
+                                app_inode=app_st.st_ino,
+                                launcher_inode=launcher_st.st_ino),
+                    old=old, new=new, guards=immutable)
         check_guards(immutable)
         require(all(record(base/n) == old[n] for n in TARGETS), 'Plan baseline changed')
         raw_plan = encoded(plan)
@@ -452,8 +452,8 @@ def admit_reseal_old(base, plan):
     # App + launcher inodes must equally have survived the volume re-id.
     app_st = (Path.home() / 'Applications/Verity.app').lstat()
     launcher_st = (base / 'production_launcher.py').lstat()
-    require(app_st.st_ino == plan['old']['receipt_app_inode']
-            and launcher_st.st_ino == plan['old']['receipt_launcher_inode'],
+    require(app_st.st_ino == plan['reseal']['app_inode']
+            and launcher_st.st_ino == plan['reseal']['launcher_inode'],
             'App/launcher inode changed; not a benign re-id')
 
 
