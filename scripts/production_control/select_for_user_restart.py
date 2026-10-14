@@ -21,7 +21,7 @@ import sys
 import tempfile
 import types
 
-REFRESH_PIN = 'ea590ad502cba1309d96ddc106f10a3072025426fe3be5c0e2d593e4eac6c18a'
+REFRESH_PIN = 'c265a14976904f14ebf037f4d5b5b84c10a5850c56672f4ece290d337ee442c3'
 OLD_PIN = '81e8bbbe26d629ee8137445d6334b04ccc9cc3597f088e5ff965debd712194f3'
 NEW_PIN = '72fb5888fdf571d403412e5478897e79ae849f03313de358f35c7affd81c6629'
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
