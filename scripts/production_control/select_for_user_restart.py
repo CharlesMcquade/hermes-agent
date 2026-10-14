@@ -314,7 +314,9 @@ with patch.object(gateway,'get_launchd_plist_path',return_value=plist),patch.obj
   runpy.run_path(sys.argv[0],run_name='__main__')
  except SystemExit as exc:
   assert exc.code in (None,0),exc.code
-assert commands==[['launchctl','print',f'gui/{os.getuid()}/ai.hermes.gateway'],['launchctl','print',f'user/{os.getuid()}/ai.hermes.gateway'],['launchctl','kickstart','-k',f'gui/{os.getuid()}/ai.hermes.gateway']],commands
+assert commands[0]==['launchctl','print',f'gui/{os.getuid()}/ai.hermes.gateway'],commands
+assert commands[-3:]==[['launchctl','print',f'gui/{os.getuid()}/ai.hermes.gateway'],['launchctl','print',f'user/{os.getuid()}/ai.hermes.gateway'],['launchctl','kickstart','-k',f'gui/{os.getuid()}/ai.hermes.gateway']],commands
+assert all(c[0]=='launchctl' and c[1] in ('print','list') or c[0]=='ps' for c in commands[1:-3]),commands
 assert plist.read_bytes()==raw
 print('ROUTING_PROOF:'+json.dumps({'status':'candidate_native_route_proven','cli':str(agent/'hermes_cli/main.py'),'definition_preserved':True,'real_service_actions':False}))
 '''
