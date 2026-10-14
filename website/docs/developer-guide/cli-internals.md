@@ -112,7 +112,6 @@ weeks, months and years. The combined timeout is capped below the native signed
 unit limits cannot overflow subprocess polling. Zero/unknown/infinite phase
 limits use the bounded fallback. This does not change active-turn drain settings.
 
-<<<<<<< HEAD
 ## Nous free tier sign-in
 
 Sign-in completion is one function, `settle_after_upgrade`, called by every caller that persists an
@@ -141,7 +140,7 @@ contextvars. `upgrade_guest` (`hermes auth upgrade`), the CLI `/login` handler a
 promotion poller are renderers over it; a surface that needs the cancel check and the save to be
 atomic passes `persist_guard`. The desktop's plain "connect another Nous account" device-code login
 is a separate path (`_nous_plain_poller`) and must stay one.
-=======
+
 ## Externally owned macOS services
 
 A canonical launchd label does not make its plist CLI-owned. App-associated or
@@ -173,7 +172,6 @@ account lookup, home and disposable `launchctl` executable. They do not establis
 live macOS restart success or application health; deployment verification must
 still check the new processes and the owning application's health after the
 user initiates the restart.
->>>>>>> e13341dcd2 (fix: preserve external launchd ownership on gateway restart)
 
 ## Process identity: never infer it from argv substrings
 
