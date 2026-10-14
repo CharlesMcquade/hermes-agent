@@ -203,4 +203,3 @@ class TestProtectedTailPressure61932:
             assert rid in call_ids, f"orphaned tool result {rid!r}"
         for cid in call_ids:
             assert cid in tool_result_ids, f"orphaned tool call {cid!r}"
-

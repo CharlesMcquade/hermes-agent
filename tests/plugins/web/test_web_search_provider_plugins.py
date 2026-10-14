@@ -242,5 +242,3 @@ class TestRegistryResolution:
         result = _resolve(None, capability="search")
         if result is not None:
             assert result.is_available() or result.is_keyless_available()
-
-

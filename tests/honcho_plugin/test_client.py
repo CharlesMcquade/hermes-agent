@@ -648,4 +648,3 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
         assert passed_base_url == expected, (
             f"Expected {expected!r}, got {passed_base_url!r}"
         )
-

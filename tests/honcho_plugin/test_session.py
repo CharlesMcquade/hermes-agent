@@ -1392,4 +1392,3 @@ class TestObservationPerSessionScoping:
         }
 
         assert mgr._ai_observes_others(session_c) is True
-

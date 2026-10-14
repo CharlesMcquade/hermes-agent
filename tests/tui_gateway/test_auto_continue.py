@@ -510,4 +510,3 @@ def test_failed_agent_build_leaves_marker_for_retry(
 
 
 # ── End to end: continuation runs a real turn and clears the marker ────
-

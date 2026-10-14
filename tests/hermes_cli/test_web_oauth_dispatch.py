@@ -702,7 +702,3 @@ def test_status_falls_through_to_generic_dispatcher_for_catalog_only_provider():
     assert out["token_preview"] and "sk-future-secret-token-xyz" not in out["token_preview"]
     assert out["expires_at"] == "2026-12-01T00:00:00Z"
     assert out["has_refresh_token"] is True
-
-
-
-

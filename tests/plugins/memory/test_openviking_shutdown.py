@@ -68,5 +68,3 @@ def test_shutdown_waits_for_runtime_start_thread():
 
     assert finished.is_set()
     assert not t.is_alive()
-
-

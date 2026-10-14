@@ -210,5 +210,3 @@ class TestWecomCallbackBodySizeLimit:
         oversized = b"<xml>" + b"A" * (_MAX_BODY + 1) + b"</xml>"
         response = await adapter._handle_callback(self._request(oversized))
         assert response.status == 413
-
-

@@ -144,13 +144,3 @@ def _project(tmp_path: Path, *, pyproject: bool = True) -> Path:
             encoding="utf-8",
         )
     return root
-
-
-
-
-
-
-
-
-
-

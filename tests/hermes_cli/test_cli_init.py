@@ -777,6 +777,3 @@ class TestPluginToolsetStartupValidation:
         assert len(printed) == 1
         assert "voice_stak" in printed[0]
         assert "voice_stack" not in printed[0]
-
-
-

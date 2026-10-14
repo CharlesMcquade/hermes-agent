@@ -307,5 +307,3 @@ def test_scrub_never_touches_providers_base_url_alias(hermes_home):
 # ---------------------------------------------------------------------------
 # Suppression round-trip: delete sticks, re-add lifts it
 # ---------------------------------------------------------------------------
-
-

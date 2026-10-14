@@ -601,4 +601,3 @@ class TestProfilePeerUniqueness:
             "Profiles pinned to distinct peer names must not collapse to "
             "the same Honcho peer — otherwise profile isolation is fictional."
         )
-

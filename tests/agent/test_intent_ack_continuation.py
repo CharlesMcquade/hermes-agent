@@ -109,11 +109,3 @@ def test_all_path_drops_workspace_requirement():
 
 
 # ── detector: guardrails that hold regardless of workspace ───────────────────
-
-
-
-
-
-
-
-

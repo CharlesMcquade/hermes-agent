@@ -10,5 +10,3 @@ def test_parse_model_flags_detailed_supports_once():
     assert parsed.force_refresh is False
     assert parsed.is_session is False
     assert parsed.is_once is True
-
-

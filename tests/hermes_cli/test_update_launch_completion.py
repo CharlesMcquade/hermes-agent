@@ -290,4 +290,3 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert venv_sync.prepare_launch(root, []) is None
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
-

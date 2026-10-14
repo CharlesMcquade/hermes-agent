@@ -474,5 +474,3 @@ def test_cached_only_dynamic_pricing_is_profile_scoped(tmp_path, monkeypatch):
     assert in_profile(tmp_path / "b", endpoint_b, cached_only=False) == expected_b
     assert in_profile(tmp_path / "a", endpoint_b, cached_only=True) == expected_a
     assert in_profile(tmp_path / "b", endpoint_a, cached_only=True) == expected_b
-
-

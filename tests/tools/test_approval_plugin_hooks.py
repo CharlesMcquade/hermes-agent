@@ -333,5 +333,3 @@ class TestSmartModeFiresHooks:
             "smart_approve",
             "smart_deny",
         ]
-
-

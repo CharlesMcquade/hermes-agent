@@ -239,5 +239,3 @@ async def test_fatal_handler_outer_timeout_still_queues_platform(monkeypatch, tm
     finally:
         release.set()
         await asyncio.wait({operation}, timeout=0.2)
-
-

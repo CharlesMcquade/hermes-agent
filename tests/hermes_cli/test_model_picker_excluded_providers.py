@@ -115,5 +115,3 @@ def test_cli_picker_hides_excluded_provider_by_alias(config_home):
         f"excluding alias {target_alias!r} should hide {target_slug}; "
         f"labels={excluded_labels}"
     )
-
-

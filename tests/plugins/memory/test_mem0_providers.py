@@ -75,4 +75,3 @@ class TestValidation:
         }
         errors = validate_oss_config(cfg)
         assert any("user" in e.lower() for e in errors)
-

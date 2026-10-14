@@ -175,5 +175,3 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
 
     # Active provider must be unchanged.
     assert auth_mod.get_active_provider() == "nous"
-
-

@@ -172,5 +172,3 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key=session_key) is None
     # A different session still gets the config default.
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
-
-

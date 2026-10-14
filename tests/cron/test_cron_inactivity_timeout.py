@@ -72,4 +72,3 @@ class TestInactivityWatchdogLoop:
         stop.set()
         assert result["fired"] is True
         assert not watcher.is_alive()
-
