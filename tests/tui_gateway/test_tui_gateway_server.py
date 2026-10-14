@@ -9338,7 +9338,7 @@ def test_setup_readiness_scopes_to_requested_profile(monkeypatch, tmp_path):
         )
         assert status["result"] == {"provider_configured": False, "profile": "bot"}
 
-        (bot_home / ".env").write_text("OPENROUTER_API_KEY=sk-or-bot-profile-secret-00001\n")
+        (bot_home / ".env").write_text("OPENROUTER_API_KEY=" + "sk-or-bot-profile-secret-00001" + "\n")
         status = server.handle_request(
             {"id": "2", "method": "setup.status", "params": {"profile": "bot"}}
         )

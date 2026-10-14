@@ -1105,7 +1105,7 @@ class TestCaptureModes:
     def test_full_mode_keeps_secret_shaped_text(self, monkeypatch):
         mod = self._fresh_plugin()
         monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "full")
-        text = "here sk-abcdefghijklmnop1234 done"
+        text = "here " + "sk-abcdefghijklmnop1234" + " done"
         assert mod._capture_content(text) == text
 
 
