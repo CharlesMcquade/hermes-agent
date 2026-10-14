@@ -87,6 +87,49 @@ def test_cronjob_tool_rejects_stale_past_one_shot(cron_env, monkeypatch):
 class TestRunJobScript:
     """Test the _run_job_script() function."""
 
+    @pytest.mark.platforms("posix")
+    def test_missing_source_venv_uses_verified_sibling_runtime(self, tmp_path, monkeypatch):
+        from cron import scheduler_script
+        from hermes_cli import _launchers
+        from pm import environments
+
+        agent = tmp_path / "agent"
+        agent.mkdir()
+        runtime = tmp_path / "runtime" / "venv"
+        (runtime / "bin").mkdir(parents=True)
+        (runtime / "pyvenv.cfg").write_text("version = 3.11\n")
+        python = runtime / "bin" / "python"
+        python.touch()
+        script = tmp_path / "check.py"
+        monkeypatch.setattr(scheduler_script, "__file__", str(agent / "cron" / "scheduler_script.py"))
+        monkeypatch.setattr(_launchers, "resolve_store_python", lambda _repo: tmp_path / "store-python")
+        monkeypatch.setattr(environments, "project_python", lambda _repo: agent / "venv/bin/python")
+        monkeypatch.setattr(scheduler_script.sys, "executable", str(python))
+        monkeypatch.setattr(scheduler_script.sys, "prefix", str(runtime))
+        monkeypatch.setattr(scheduler_script.sys, "base_prefix", str(tmp_path / "base"))
+
+        argv, overlay = scheduler_script._posix_cron_script_argv(script)
+        assert argv[:2] == [str(python), "-c"]
+        assert argv[-2:] == [str(agent), str(script)]
+        assert overlay == {"HERMES_DISABLE_LAZY_INSTALLS": "1"}
+
+        # A present PM-selected environment wins over the sibling runtime.
+        selected = tmp_path / "selected" / "bin" / "python"
+        selected.parent.mkdir(parents=True)
+        selected.touch()
+        monkeypatch.setattr(environments, "project_python", lambda _repo: selected)
+        argv, _ = scheduler_script._posix_cron_script_argv(script)
+        assert argv[0] == str(selected)
+
+        # A bare store interpreter or an unrelated venv must not bypass a missing selection.
+        monkeypatch.setattr(environments, "project_python", lambda _repo: agent / "venv/bin/python")
+        monkeypatch.setattr(scheduler_script.sys, "prefix", str(tmp_path / "base"))
+        with pytest.raises(RuntimeError, match="dependency environment interpreter is missing"):
+            scheduler_script._posix_cron_script_argv(script)
+        monkeypatch.setattr(scheduler_script.sys, "prefix", str(tmp_path / "other-venv"))
+        with pytest.raises(RuntimeError, match="dependency environment interpreter is missing"):
+            scheduler_script._posix_cron_script_argv(script)
+
     def test_successful_script(self, cron_env):
         from cron.scheduler_script import _run_job_script
 
