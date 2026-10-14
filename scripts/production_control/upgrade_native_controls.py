@@ -234,6 +234,18 @@ def build_reseal_plan(base, repo, commit, version_name, output, current_pin):
                 'Lock inode changed; this is not a benign volume re-id — stop')
         require(stale_identity[0] != live_identity[0],
                 'Lock st_dev already matches; nothing to re-seal')
+        # Verity.app and the stable launcher live on the same rotated volume; their
+        # identity datums must be refreshed too (same re-id class, inodes must hold).
+        app = Path.home() / 'Applications/Verity.app'
+        launcher = base / 'production_launcher.py'
+        app_st, launcher_st = app.lstat(), launcher.lstat()
+        old_app_identity = receipt['stage']['app_identity']
+        old_launcher_identity = receipt['stage']['launcher_identity']
+        require(old_app_identity[1] == app_st.st_ino and old_app_identity[0] != app_st.st_dev,
+                'Verity.app identity is not a benign volume re-id — stop')
+        require(old_launcher_identity[1] == launcher_st.st_ino
+                and old_launcher_identity[0] != launcher_st.st_dev,
+                'Stable launcher identity is not a benign volume re-id — stop')
         require(receipt['stage']['control_sha256'] == json.loads(
             data(record(old_version / 'control-receipt.json'))), 'Stage receipt mismatch')
         env = json.loads(data(old[TRANSACTION]))
@@ -255,7 +267,9 @@ def build_reseal_plan(base, repo, commit, version_name, output, current_pin):
         atomic(source / 'control-receipt.json', packed(encoded(hashes)))
         source.chmod(0o555)
         verify_bundle(source, hashes)
-        stage = dict(receipt['stage'], version=str(new_version), control_sha256=hashes)
+        stage = dict(receipt['stage'], version=str(new_version), control_sha256=hashes,
+                     app_identity=[app_st.st_dev, app_st.st_ino],
+                     launcher_identity=[launcher_st.st_dev, launcher_st.st_ino])
         fresh = dict(receipt, stage=stage, stage_sha256=sha(encoded(stage)),
                      lock_identity=live_identity)
         new_pin = sha(encoded(fresh))
@@ -271,8 +285,12 @@ def build_reseal_plan(base, repo, commit, version_name, output, current_pin):
                     old_pin=current_pin, new_pin=new_pin, old_version=str(old_version),
                     new_version=str(new_version), source_commit=commit, source_hashes=hashes,
                     reseal=dict(kind='lock-identity', from_identity=stale_identity,
-                                to_identity=live_identity),
-                    old=old, new=new, guards=immutable)
+                                to_identity=live_identity,
+                                from_app_identity=old_app_identity,
+                                from_launcher_identity=old_launcher_identity),
+                    old=dict(old, receipt_app_inode=app_st.st_ino,
+                             receipt_launcher_inode=launcher_st.st_ino),
+                    new=new, guards=immutable)
         check_guards(immutable)
         require(all(record(base/n) == old[n] for n in TARGETS), 'Plan baseline changed')
         raw_plan = encoded(plan)
@@ -282,7 +300,9 @@ def build_reseal_plan(base, repo, commit, version_name, output, current_pin):
         return dict(status='planned_not_installed', plan=str(output/'plan.json'),
                     plan_sha256=sha(raw_plan), new_pin=new_pin, source_commit=commit,
                     reseal=dict(kind='lock-identity', from_identity=stale_identity,
-                                to_identity=live_identity))
+                                to_identity=live_identity,
+                                from_app_identity=old_app_identity,
+                                from_launcher_identity=old_launcher_identity))
 
 
 def build_plan(base, repo, commit, version_name, output, current_pin):
@@ -429,6 +449,12 @@ def admit_reseal_old(base, plan):
             'Live lock identity does not match the re-seal target')
     require(lock_info.st_ino == plan['reseal']['from_identity'][1],
             'Lock inode changed; not a benign re-id')
+    # App + launcher inodes must equally have survived the volume re-id.
+    app_st = (Path.home() / 'Applications/Verity.app').lstat()
+    launcher_st = (base / 'production_launcher.py').lstat()
+    require(app_st.st_ino == plan['old']['receipt_app_inode']
+            and launcher_st.st_ino == plan['old']['receipt_launcher_inode'],
+            'App/launcher inode changed; not a benign re-id')
 
 
 def apply_plan(path, pin, *, recover=False, approval=False):
