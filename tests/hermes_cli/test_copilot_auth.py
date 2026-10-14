@@ -9,7 +9,7 @@ class TestTokenValidation:
 
     def test_classic_pat_rejected(self):
         from hermes_cli.copilot_auth import validate_copilot_token
-        valid, _msg = validate_copilot_token("ghp_abcdefghijklmnop1234")
+        valid, msg = validate_copilot_token("ghp_" + "abcdefghijklmnop1234")
         assert valid is False
 
     @pytest.mark.parametrize("token", ["gho_abcdefghijklmnop1234", "github_pat_abcdefghijklmnop1234", "ghu_abcdefghijklmnop1234"])
