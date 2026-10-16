@@ -122,3 +122,21 @@ def test_bounded_repair_preserves_fallback_and_manual_authority(tmp_path, ending
         assert len(failures) == (1 if ending in ('invalid', 'error') else 0)
     finally:
         db.close()
+
+
+def test_prompt_routes_human_greetings_away_from_test():
+    """A human greeting is small talk ([Fam]); [Test] is machine probes only.
+
+    Regression: 'ayyy, what's good?' was titled '[Test] Bare echo
+    acknowledgment probe' because the Test rule ('no real question or work')
+    also matched taskless greetings, and the model parroted the registry
+    description as the name.
+    """
+    from agent.title_policy import TAG_DESCRIPTIONS, title_prompt
+
+    prompt = title_prompt()
+    assert "machine/scripted probe" in prompt
+    assert "human greeting or small talk with no task is Fam, NOT Test" in prompt
+    assert "'ayyy, what's good?' -> Fam" in prompt
+    assert "bare human greetings and small talk" in TAG_DESCRIPTIONS["Fam"]
+    assert "never a human greeting or small talk" in TAG_DESCRIPTIONS["Test"]
