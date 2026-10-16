@@ -27,11 +27,13 @@ TAG_DESCRIPTIONS = {
     "SmartHome": "Home automation and homelab LAN: Hue, Home Assistant, Rain Bird, Pi-hole",
     "Shop": "Shopping, local stores/services/venues/clubs, weather",
     "Food": "Recipes, grilling, cooking technique, groceries",
-    "Fam": "Family coordination, reminders, health, school/education; bare greetings",
+    "Fam": "Family coordination, reminders, health; bare greetings",
+    "Education": "UT/MSAI coursework, studying, practice tests, certifications, tutoring",
     "Travel": "Trips, flights, hotels, airlines, destination/bachelor-party bookings (even with family)",
     "Tech": "Consumer devices, phones, Mac/iOS, gadgets, car/EV news (not a game's performance on a device)",
     "Email": "Email/inbox triage, unsubscribe scans, iMessage automation",
     "SysOps": "Mac/Windows/SSH/Tailscale/disk administration outside the domains above",
+    "Misc": "Real topics with no closer tag: news, politics, philosophy, TV/film, general research; ONLY when nothing else fits",
     "G": "General gaming, multiple games, or a game without an allowed game-specific tag",
 }
 
@@ -54,6 +56,9 @@ GAME_ALIASES = {
     "CrimsonDesert": ("CrimsonDesert", "Crimson Desert"),
     "Subnautica2": ("Subnautica2", "Subnautica 2"),
     "FF7Rebirth": ("FF7Rebirth", "FF7 Rebirth", "Final Fantasy VII Rebirth", "Final Fantasy 7 Rebirth"),
+    "TGFoA": ("TGFoA", "Tainted Grail Fall of Avalon", "Tainted Grail: Fall of Avalon", "Fall of Avalon", "Tainted Grail"),
+    "W3": ("W3", "Witcher 3", "Witcher III"),
+    "ACBlackFlag": ("ACBlackFlag", "Black Flag", "Assassin's Creed Black Flag", "Assassins Creed Black Flag"),
 }
 TAG_DESCRIPTIONS.update({tag: "Game: " + ", ".join(aliases) for tag, aliases in GAME_ALIASES.items()})
 CANONICAL_TAGS = tuple(TAG_DESCRIPTIONS)
@@ -71,7 +76,7 @@ _TAG_ALIASES.update({
     _alias_key(alias): tag for tag, aliases in GAME_ALIASES.items() for alias in aliases
 })
 _TAG_ALIASES.update({
-    "gaming": "G", "games": "G", "family": "Fam", "education": "Fam",
+    "gaming": "G", "games": "G", "family": "Fam",
     "fantasy football": "FF", "coreweave": "CRWV", "shopping": "Shop",
     "smart home": "SmartHome", "sysadmin": "SysOps", "system ops": "SysOps",
     "technology": "Tech", "3d printing": "Printer",
@@ -117,15 +122,18 @@ def title_prompt(language: str = "") -> str:
         "even on PS5/Switch/Steam Deck. Unknown games and multi-game comparisons use G. "
         "ImprovedCameraSF is a Starfield mod, NOT Skyrim. Fixing/installing ImprovedCameraSF "
         "uses Starfield, NOT Hermes. Comparing game mods uses G, NOT LLM. "
+        "Misc is a last resort for real topics with no closer tag: news, politics, philosophy, "
+        "TV/film, general research -> Misc, NOT LLM or Tech. "
         "Hermes is ONLY work on the Hermes software itself, never a generic request to fix something. "
-        "Test is ONLY a bare echo/acknowledgment; a question about practice tests is Fam, NOT Test. "
+        "Test is ONLY a bare echo/acknowledgment; a question about practice tests is Education, NOT Test. "
         "Do not infer BOTW from Switch alone "
         "or Wolverine from Marvel alone. Game names used for LLM codenames or Hermes title "
         "fixtures do not turn those tasks into gaming.\n"
-        "Examples of intent: War Dogs game hype -> WARDOGS; Marvel Wolverine PS5 impressions "
+        "Examples of intent: War Dogs game hype -> WARDOGS; Tainted Grail shader fix -> TGFoA; "
+        "Marvel Wolverine PS5 impressions "
         "-> Wolverine; BOTW Switch performance -> BOTW; Vegas bachelor-party hotel booking "
         "-> Travel; Hermes title tagging for Starfield -> Hermes; CoreWeave RSU taxes -> Finance; "
-        "practice test requirements -> Fam; Reply with exactly GLMOK -> Test.\n"
+        "practice test requirements -> Education; Reply with exactly GLMOK -> Test.\n"
         f"Use a short sentence-case name, preferably 2-6 words (at most {MAX_NAME_WORDS}); "
         f"the final [Tag] Name must fit {MAX_TITLE_CHARS} characters. "
         "One word is fine for greetings or languages without spaces. Preserve technical names, "

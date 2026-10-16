@@ -1,5 +1,6 @@
 """The model cannot expand the taxonomy or persist an invalid upgrade."""
 
+import itertools
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -23,6 +24,12 @@ def response(content):
         ("Subnautica 2 release", '[G] Subnautica 2 release', '[Subnautica2] Subnautica 2 release'),
         ("Final Fantasy VII Rebirth builds", '[Final Fantasy VII Rebirth] Party builds', '[FF7Rebirth] Party builds'),
         ("FF7 Rebirth builds", '[G] FF7 Rebirth party builds', '[FF7Rebirth] FF7 Rebirth party builds'),
+        ("Tainted Grail shader fix", '[G] Tainted Grail shader fix', '[TGFoA] Tainted Grail shader fix'),
+        ("Fall of Avalon build guide", '[G] Fall of Avalon builds', '[TGFoA] Fall of Avalon builds'),
+        ("Witcher 3 mod cleanup", '[G] Witcher 3 mod cleanup', '[W3] Witcher 3 mod cleanup'),
+        ("Black Flag ending recap", '[G] Black Flag ending recap', '[ACBlackFlag] Black Flag ending recap'),
+        ("UT MSAI course schedule", '{"tag":"Education","name":"MSAI course schedule"}', '[Education] MSAI course schedule'),
+        ("Trump policy effect research", '{"tag":"Misc","name":"Policy research"}', '[Misc] Policy research'),
         ("Fantasy football waivers", '[FF] Week 2 waivers', '[FF] Week 2 waivers'),
         ("Hermes Gothic title fixtures", '[Hermes] Gothic title fixtures', '[Hermes] Gothic title fixtures'),
         ("Switch performance", '[G] Switch performance', '[G] Switch performance'),
@@ -77,7 +84,7 @@ def test_only_canonical_short_titles_can_be_upgraded(opening, raw, expected):
         schema = call.kwargs['extra_body']['response_format']['json_schema']['schema']
         assert set(schema['properties']['tag']['enum']) == set(CANONICAL_TAGS)
         roles = [message['role'] for message in call.kwargs['messages']]
-        assert all(a != b for a, b in zip(roles, roles[1:]))
+        assert all(a != b for a, b in itertools.pairwise(roles))
 
 
 @pytest.mark.parametrize('ending', ['valid', 'invalid', 'error', 'stale'])
