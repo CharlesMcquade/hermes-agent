@@ -13,7 +13,7 @@ from typing import Optional
 
 # Explicit, finite taxonomy. Add games here, never ask a model to invent tags.
 TAG_DESCRIPTIONS = {
-    "Test": "Bare echo/acknowledgment probes ONLY, with no real question or work",
+    "Test": "Automated probe scripts only: canned echo/acknowledge/ping instructions like 'Reply with exactly X' or 'Acknowledge request'; never a human greeting or small talk",
     "Kanban": "Kanban task-ID scaffolding or board operations",
     "Codex": "An opening Codex: cross-agent handoff",
     "Hermes": "Hermes Agent/WebUI/desktop development, skills, plugins, config, session naming, its PRs/CI",
@@ -27,7 +27,7 @@ TAG_DESCRIPTIONS = {
     "SmartHome": "Home automation and homelab LAN: Hue, Home Assistant, Rain Bird, Pi-hole",
     "Shop": "Shopping, local stores/services/venues/clubs, weather",
     "Food": "Recipes, grilling, cooking technique, groceries",
-    "Fam": "Family coordination, reminders, health; bare greetings",
+    "Fam": "Family coordination, reminders, health; bare human greetings and small talk",
     "Education": "UT/MSAI coursework, studying, practice tests, certifications, tutoring",
     "Travel": "Trips, flights, hotels, airlines, destination/bachelor-party bookings (even with family)",
     "Tech": "Consumer devices, phones, Mac/iOS, gadgets, car/EV news (not a game's performance on a device)",
@@ -125,7 +125,9 @@ def title_prompt(language: str = "") -> str:
         "Misc is a last resort for real topics with no closer tag: news, politics, philosophy, "
         "TV/film, general research -> Misc, NOT LLM or Tech. "
         "Hermes is ONLY work on the Hermes software itself, never a generic request to fix something. "
-        "Test is ONLY a bare echo/acknowledgment; a question about practice tests is Education, NOT Test. "
+        "Test is ONLY a machine/scripted probe demanding a canned response ('Reply with exactly GLMOK', "
+        "'Acknowledge request', 'ping'). A casual human greeting or small talk with no task is Fam, NOT Test. "
+        "A question about practice tests is Education, NOT Test. "
         "Do not infer BOTW from Switch alone "
         "or Wolverine from Marvel alone. Game names used for LLM codenames or Hermes title "
         "fixtures do not turn those tasks into gaming.\n"
@@ -133,7 +135,8 @@ def title_prompt(language: str = "") -> str:
         "Marvel Wolverine PS5 impressions "
         "-> Wolverine; BOTW Switch performance -> BOTW; Vegas bachelor-party hotel booking "
         "-> Travel; Hermes title tagging for Starfield -> Hermes; CoreWeave RSU taxes -> Finance; "
-        "practice test requirements -> Education; Reply with exactly GLMOK -> Test.\n"
+        "practice test requirements -> Education; Reply with exactly GLMOK -> Test; "
+        "'ayyy, what's good?' -> Fam (human greeting, not a probe).\n"
         f"Use a short sentence-case name, preferably 2-6 words (at most {MAX_NAME_WORDS}); "
         f"the final [Tag] Name must fit {MAX_TITLE_CHARS} characters. "
         "One word is fine for greetings or languages without spaces. Preserve technical names, "
