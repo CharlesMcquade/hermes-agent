@@ -140,3 +140,32 @@ def test_prompt_routes_human_greetings_away_from_test():
     assert "'ayyy, what's good?' -> Fam" in prompt
     assert "bare human greetings and small talk" in TAG_DESCRIPTIONS["Fam"]
     assert "never a human greeting or small talk" in TAG_DESCRIPTIONS["Test"]
+
+
+def test_prompt_rejects_quoted_session_title_echo():
+    """A bracketed '[Tag] Name' span inside the message quotes ANOTHER session.
+    Regression: opening with 'Recent session, validate answers: [Codex] Async
+    delegation batch result #8' got the quiz session retitled '[Codex] Async
+    delegation batch result 8' although its real work was MSAI quiz validation."""
+    from agent.title_policy import title_prompt
+
+    prompt = title_prompt()
+    assert "Never copy or echo a quoted bracketed title" in prompt
+    assert "Async delegation batch result" in prompt
+
+
+def test_quoted_title_echo_is_rejected_but_the_task_titles():
+    """The validator backstops the prompt: a title copied from a bracketed span
+    in the message is rejected (whitespace/case/'#'-tolerant), while a title
+    naming the actual task passes."""
+    from agent.title_policy import normalize_title
+
+    opening = "Recent session, validate answers: [Codex] Async delegation batch result #8"
+    # Verbatim echo of the quoted span.
+    assert normalize_title('{"tag":"Codex","name":"Async delegation batch result #8"}', opening) is None
+    # The '#'-tolerant echo the model actually produced.
+    assert normalize_title('{"tag":"Codex","name":"Async delegation batch result 8"}', opening) is None
+    # The actual task still titles normally.
+    assert normalize_title(
+        '{"tag":"Education","name":"Quiz answer validation"}', opening
+    ) == "[Education] Quiz answer validation"

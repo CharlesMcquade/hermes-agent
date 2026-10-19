@@ -128,6 +128,10 @@ def title_prompt(language: str = "") -> str:
         "Test is ONLY a machine/scripted probe demanding a canned response ('Reply with exactly GLMOK', "
         "'Acknowledge request', 'ping'). A casual human greeting or small talk with no task is Fam, NOT Test. "
         "A question about practice tests is Education, NOT Test. "
+        "A bracketed '[Tag] Name' string inside the message is usually a quoted title of a DIFFERENT "
+        "session being referenced (a wake report, a 'validate answers' or 'continue from' pointer). "
+        "Never copy or echo a quoted bracketed title as this session's name; name what the user asks "
+        "to do in THIS session. "
         "Do not infer BOTW from Switch alone "
         "or Wolverine from Marvel alone. Game names used for LLM codenames or Hermes title "
         "fixtures do not turn those tasks into gaming.\n"
@@ -136,7 +140,9 @@ def title_prompt(language: str = "") -> str:
         "-> Wolverine; BOTW Switch performance -> BOTW; Vegas bachelor-party hotel booking "
         "-> Travel; Hermes title tagging for Starfield -> Hermes; CoreWeave RSU taxes -> Finance; "
         "practice test requirements -> Education; Reply with exactly GLMOK -> Test; "
-        "'ayyy, what's good?' -> Fam (human greeting, not a probe).\n"
+        "'ayyy, what's good?' -> Fam (human greeting, not a probe); "
+        "'Recent session, validate answers: [Codex] Async delegation batch result #8' -> the quiz-validation "
+        "task itself (Education), never 'Async delegation batch result'.\n"
         f"Use a short sentence-case name, preferably 2-6 words (at most {MAX_NAME_WORDS}); "
         f"the final [Tag] Name must fit {MAX_TITLE_CHARS} characters. "
         "One word is fine for greetings or languages without spaces. Preserve technical names, "
@@ -187,6 +193,26 @@ def _title_parts(raw: str) -> Optional[tuple[str, str]]:
     return (match.group(1), match.group(2)) if match else None
 
 
+def _echoes_quoted_title(title: str, user_message: str) -> bool:
+    """True when the model's title was copied from a bracketed span in the message.
+
+    A '[Tag] Name' string inside the user's text is normally a quoted title of a
+    DIFFERENT session (a cross-reference like "validate answers: [Codex] Async
+    delegation batch result #8"). Echoing it rebrands this session after the
+    reference instead of its own task. Comparison collapses whitespace, case and
+    '#' so "result #8" in the message still catches a "result 8" echo; a genuine
+    title almost never reproduces a bracketed span verbatim.
+    """
+    if not isinstance(user_message, str) or not user_message:
+        return False
+
+    def _norm(value: str) -> str:
+        return " ".join(value.replace("#", " ").split()).casefold()
+
+    needle = _norm(title)
+    return bool(needle) and needle in _norm(user_message)
+
+
 def normalize_title(content: str, user_message: str = "") -> Optional[str]:
     """Accept structured tag/name or legacy [Tag] name; reject invalid output.
 
@@ -215,4 +241,6 @@ def normalize_title(content: str, user_message: str = "") -> Optional[str]:
         if len(source_games) == 1 and source_games == name_games:
             tag = next(iter(source_games))
     title = f"[{tag}] {name}"
+    if _echoes_quoted_title(title, user_message):
+        return None
     return title if len(title) <= MAX_TITLE_CHARS else None
