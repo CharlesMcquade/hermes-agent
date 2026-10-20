@@ -409,6 +409,46 @@ def resolve_billing_route(
     provider_name = (provider or "").strip().lower()
     base = (base_url or "").strip().lower()
     model = (model_name or "").strip()
+
+    # Routed billing tokens ("@provider:model", #61170 residual): the declared
+    # provider is embedded in the model string. A malformed token (missing
+    # colon, empty provider or model, a second embedded "@", a declared
+    # provider conflicting with an explicit one) is NEVER repaired into a
+    # successful lookup — it resolves to an unknown route so an unknown rate
+    # stays unknown.
+    if model.startswith("@"):
+        malformed = ":" not in model
+        declared_l = ""
+        rest = ""
+        if not malformed:
+            declared, rest = model[1:].split(":", 1)
+            declared_l = declared.strip().lower()
+            malformed = not declared_l or not rest.strip() or "@" in rest
+        if not malformed and declared_l == "custom" and ":" in rest:
+            # A routed custom endpoint names itself in the model token
+            # ("@custom:<endpoint>:<model>"); the endpoint name belongs to the
+            # provider, not the model, so org/model identity is preserved.
+            custom_name, custom_model = rest.split(":", 1)
+            if not custom_name.strip() or not custom_model.strip() or "@" in custom_model:
+                malformed = True
+            else:
+                declared_l = f"custom:{custom_name.strip().lower()}"
+                rest = custom_model
+        if not malformed and provider_name:
+            # Explicit provider wins — but only when it agrees with the token's
+            # declared provider. A bare "custom" declaration is compatible with
+            # an explicit "custom:<endpoint>".
+            compatible = provider_name == declared_l or (
+                provider_name.startswith("custom:") and declared_l == "custom"
+            )
+            if not compatible:
+                malformed = True
+        if malformed:
+            return BillingRoute(provider="unknown", model=model, base_url=base_url or "", billing_mode="unknown")
+        if not provider_name:
+            provider_name = declared_l
+        model = rest
+
     if not provider_name and "/" in model:
         inferred_provider, bare_model = model.split("/", 1)
         if inferred_provider in {"anthropic", "openai", "google"}:
@@ -442,9 +482,17 @@ def resolve_billing_route(
         if snapshot_provider == "openai" and (not url or host("api.openai.com")):
             bare = strip_codex_context_variant_suffix(bare)
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
-    if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
+    if (
+        provider_name == "custom" or provider_name.startswith("custom:") or provider_name in {"local"}
+        or (base and base_url_hostname(base) in ("localhost", "127.0.0.1"))
+    ):
+        # Custom endpoints keep the FULL model id (org/model paths, revisions):
+        # no snapshot provider key applies, so identity must not be collapsed.
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=url, billing_mode="unknown")
-    return BillingRoute(provider=provider_name or "unknown", model=bare if model else "", base_url=url, billing_mode="unknown")
+    # Unresolvable route: keep the FULL model id — collapsing the provider
+    # prefix here would conflate two providers' identically named models and
+    # could be read as a repair. Unknown rate stays unknown either way.
+    return BillingRoute(provider=provider_name or "unknown", model=model if model else "", base_url=url, billing_mode="unknown")
 
 
 _BEDROCK_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af.")
