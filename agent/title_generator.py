@@ -458,6 +458,10 @@ def derive_title(user_message: str, title_preview: str | None = None) -> Optiona
     return line or None
 
 
+def _strip_title_prefix(text: str) -> str:
+    return text[6:].strip() if text.lower().startswith("title:") else text
+
+
 def _first_line(text: str) -> str:
     return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
 

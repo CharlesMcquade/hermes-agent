@@ -899,3 +899,12 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+def test_prose_fallback_strips_title_prefix_without_name_error():
+    """Regression: fc5bf96e1e dropped _strip_title_prefix's definition while two
+    call sites kept using it, so every non-JSON title reply raised NameError."""
+    from agent.title_generator import _extract_title_text, _clean_title
+
+    assert _extract_title_text("Title: Pi-hole blocklist swap\nmore") == "Pi-hole blocklist swap"
+    assert _clean_title("title: Release sweep.") == "Release sweep"
