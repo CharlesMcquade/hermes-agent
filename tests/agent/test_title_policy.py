@@ -124,6 +124,47 @@ def test_bounded_repair_preserves_fallback_and_manual_authority(tmp_path, ending
         db.close()
 
 
+@pytest.mark.parametrize("opening", [
+    "I voted early today Travis county but I only had candidates on the ballot no propositions",
+    "Is Raspberry Pi inaccessible to SSH again?",
+    "How much of a PITA is the new E:D community goal?",
+    "Please check both fantasy teams and optimize my lineup",
+    "Why is the canary ping failing?",
+    "Please investigate why 'reply with exactly X' prompts fail",
+    "Explain the test input: Reply with exactly X",
+])
+def test_real_requests_cannot_be_labeled_as_probe(opening):
+    from agent.title_policy import normalize_title
+
+    assert normalize_title('{"tag":"Test","name":"Bare echo acknowledgment"}', opening) is None
+    assert normalize_title('{"tag":"Misc","name":"Early voting ballot"}', opening) == "[Misc] Early voting ballot"
+
+
+@pytest.mark.parametrize("opening", [
+    "Reply with exactly: CANARY-OK",
+    "PPC canary ping - please reply with exactly: CANARY-OK",
+    "Acknowledge request",
+    "Smoke test from Verity Sidecar. Reply with exactly: sidecar-ok",
+])
+def test_explicit_canned_response_probes_keep_test_tag(opening):
+    from agent.title_policy import normalize_title
+
+    assert normalize_title('{"tag":"Test","name":"Canned response check"}', opening) == "[Test] Canned response check"
+
+
+def test_repair_repeats_original_request_not_the_feedback():
+    opener = "I voted early today Travis county but I only had candidates on the ballot no propositions"
+    outputs = [response('{"tag":"Election","name":"Early voting ballot"}'),
+               response('{"tag":"Misc","name":"Early voting ballot"}')]
+    with patch('agent.title_generator.call_llm', side_effect=outputs) as llm:
+        assert generate_title(opener) == "[Misc] Early voting ballot"
+    repair_messages = llm.call_args_list[1].kwargs['messages']
+    assert repair_messages[-1]['role'] == 'user'
+    assert opener in repair_messages[-1]['content']
+    assert "not this correction" in repair_messages[-1]['content'].lower()
+    assert "never real questions" in repair_messages[-1]['content'].lower()
+
+
 def test_prompt_routes_human_greetings_away_from_test():
     """A human greeting is small talk ([Fam]); [Test] is machine probes only.
 

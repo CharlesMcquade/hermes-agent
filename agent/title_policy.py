@@ -87,10 +87,32 @@ _GAME_PATTERNS = {
 }
 
 TITLE_REPAIR_INSTRUCTION = (
-    'Invalid title. Return only {"tag":"allowed canonical tag","name":"short name"}. '
-    f"Use the registry and original task, no invented tags, 1-{MAX_NAME_WORDS} name words, "
-    f"{MAX_TITLE_CHARS} characters including [Tag], no explanation."
+    "Invalid output. Name the ORIGINAL USER REQUEST below, not this correction or the previous "
+    "response. Return JSON only with an allowed tag from the system registry. If no specific tag "
+    "fits a real topic, choose Misc. Test is strictly for explicit canned echo/acknowledgment "
+    "probes, never real questions. Do not invent a tag or name the feedback. "
+    f"Use 1-{MAX_NAME_WORDS} name words and at most {MAX_TITLE_CHARS} characters including [Tag]. "
+    "Original user request: "
 )
+
+# [Test] is a machine-input category, not a catch-all for uncertain or invalid
+# classifications. Requiring an explicit canned-response instruction makes
+# model confusion fail closed to a derived title rather than mislabel real work.
+_CANNED_RESPONSE_RE = re.compile(
+    r"(?:^|[.!?]\s+|-\s+)(?:please\s+)?"
+    r"(?:(?:reply|respond|say|print|output|return)\s+(?:(?:with|only)\s+)?exactly\b"
+    r"|(?:acknowledge|echo)\s+(?:(?:the|this|my)\s+)?(?:request|instruction|message|receipt)\b)",
+    re.IGNORECASE,
+)
+_QUESTION_OPENER_RE = re.compile(
+    r"^(?:why|how|what|when|where|who|is|are|can|could|do|does|should|would|will)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_canned_response_probe(user_message: str) -> bool:
+    text = user_message.strip()
+    return not _QUESTION_OPENER_RE.match(text) and bool(_CANNED_RESPONSE_RE.search(text))
 
 TITLE_RESPONSE_FORMAT = {
     "type": "json_schema",
@@ -234,6 +256,8 @@ def normalize_title(content: str, user_message: str = "") -> Optional[str]:
     if not tag or not name or any(c in name for c in "[]{}\"`"):
         return None
     if not any(c.isalnum() for c in name) or len(name.split()) > MAX_NAME_WORDS:
+        return None
+    if tag == "Test" and not _is_canned_response_probe(user_message):
         return None
     if tag == "G" or tag in GAME_ALIASES:
         source_games = _game_entities(user_message)

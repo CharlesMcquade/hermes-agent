@@ -636,7 +636,7 @@ def generate_title(
                 # A separate auxiliary conversation, not a mutation of the main chat.
                 messages = messages + [
                     {"role": "assistant", "content": str(content)[:1000]},
-                    {"role": "user", "content": TITLE_REPAIR_INSTRUCTION},
+                    {"role": "user", "content": TITLE_REPAIR_INSTRUCTION + user_snippet},
                 ]
         raise ValueError("Title model returned invalid output after bounded repair")
     except Exception as e:
