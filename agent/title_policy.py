@@ -13,7 +13,7 @@ from typing import Optional
 
 # Explicit, finite taxonomy. Add games here, never ask a model to invent tags.
 TAG_DESCRIPTIONS = {
-    "Test": "Bare echo/acknowledgment probes ONLY, with no real question or work",
+    "Test": "Automated probe scripts only: canned echo/acknowledge/ping instructions like 'Reply with exactly X' or 'Acknowledge request'; never a human greeting or small talk",
     "Kanban": "Kanban task-ID scaffolding or board operations",
     "Codex": "An opening Codex: cross-agent handoff",
     "Hermes": "Hermes Agent/WebUI/desktop development, skills, plugins, config, session naming, its PRs/CI",
@@ -27,11 +27,13 @@ TAG_DESCRIPTIONS = {
     "SmartHome": "Home automation and homelab LAN: Hue, Home Assistant, Rain Bird, Pi-hole",
     "Shop": "Shopping, local stores/services/venues/clubs, weather",
     "Food": "Recipes, grilling, cooking technique, groceries",
-    "Fam": "Family coordination, reminders, health, school/education; bare greetings",
+    "Fam": "Family coordination, reminders, health; bare human greetings and small talk",
+    "Education": "UT/MSAI coursework, studying, practice tests, certifications, tutoring",
     "Travel": "Trips, flights, hotels, airlines, destination/bachelor-party bookings (even with family)",
     "Tech": "Consumer devices, phones, Mac/iOS, gadgets, car/EV news (not a game's performance on a device)",
     "Email": "Email/inbox triage, unsubscribe scans, iMessage automation",
     "SysOps": "Mac/Windows/SSH/Tailscale/disk administration outside the domains above",
+    "Misc": "Real topics with no closer tag: news, politics, philosophy, TV/film, general research; ONLY when nothing else fits",
     "G": "General gaming, multiple games, or a game without an allowed game-specific tag",
 }
 
@@ -54,6 +56,9 @@ GAME_ALIASES = {
     "CrimsonDesert": ("CrimsonDesert", "Crimson Desert"),
     "Subnautica2": ("Subnautica2", "Subnautica 2"),
     "FF7Rebirth": ("FF7Rebirth", "FF7 Rebirth", "Final Fantasy VII Rebirth", "Final Fantasy 7 Rebirth"),
+    "TGFoA": ("TGFoA", "Tainted Grail Fall of Avalon", "Tainted Grail: Fall of Avalon", "Fall of Avalon", "Tainted Grail"),
+    "W3": ("W3", "Witcher 3", "Witcher III"),
+    "ACBlackFlag": ("ACBlackFlag", "Black Flag", "Assassin's Creed Black Flag", "Assassins Creed Black Flag"),
 }
 TAG_DESCRIPTIONS.update({tag: "Game: " + ", ".join(aliases) for tag, aliases in GAME_ALIASES.items()})
 CANONICAL_TAGS = tuple(TAG_DESCRIPTIONS)
@@ -71,7 +76,7 @@ _TAG_ALIASES.update({
     _alias_key(alias): tag for tag, aliases in GAME_ALIASES.items() for alias in aliases
 })
 _TAG_ALIASES.update({
-    "gaming": "G", "games": "G", "family": "Fam", "education": "Fam",
+    "gaming": "G", "games": "G", "family": "Fam",
     "fantasy football": "FF", "coreweave": "CRWV", "shopping": "Shop",
     "smart home": "SmartHome", "sysadmin": "SysOps", "system ops": "SysOps",
     "technology": "Tech", "3d printing": "Printer",
@@ -82,10 +87,32 @@ _GAME_PATTERNS = {
 }
 
 TITLE_REPAIR_INSTRUCTION = (
-    'Invalid title. Return only {"tag":"allowed canonical tag","name":"short name"}. '
-    f"Use the registry and original task, no invented tags, 1-{MAX_NAME_WORDS} name words, "
-    f"{MAX_TITLE_CHARS} characters including [Tag], no explanation."
+    "Invalid output. Name the ORIGINAL USER REQUEST below, not this correction or the previous "
+    "response. Return JSON only with an allowed tag from the system registry. If no specific tag "
+    "fits a real topic, choose Misc. Test is strictly for explicit canned echo/acknowledgment "
+    "probes, never real questions. Do not invent a tag or name the feedback. "
+    f"Use 1-{MAX_NAME_WORDS} name words and at most {MAX_TITLE_CHARS} characters including [Tag]. "
+    "Original user request: "
 )
+
+# [Test] is a machine-input category, not a catch-all for uncertain or invalid
+# classifications. Requiring an explicit canned-response instruction makes
+# model confusion fail closed to a derived title rather than mislabel real work.
+_CANNED_RESPONSE_RE = re.compile(
+    r"(?:^|[.!?]\s+|-\s+)(?:please\s+)?"
+    r"(?:(?:reply|respond|say|print|output|return)\s+(?:(?:with|only)\s+)?exactly\b"
+    r"|(?:acknowledge|echo)\s+(?:(?:the|this|my)\s+)?(?:request|instruction|message|receipt)\b)",
+    re.IGNORECASE,
+)
+_QUESTION_OPENER_RE = re.compile(
+    r"^(?:why|how|what|when|where|who|is|are|can|could|do|does|should|would|will)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_canned_response_probe(user_message: str) -> bool:
+    text = user_message.strip()
+    return not _QUESTION_OPENER_RE.match(text) and bool(_CANNED_RESPONSE_RE.search(text))
 
 TITLE_RESPONSE_FORMAT = {
     "type": "json_schema",
@@ -117,15 +144,27 @@ def title_prompt(language: str = "") -> str:
         "even on PS5/Switch/Steam Deck. Unknown games and multi-game comparisons use G. "
         "ImprovedCameraSF is a Starfield mod, NOT Skyrim. Fixing/installing ImprovedCameraSF "
         "uses Starfield, NOT Hermes. Comparing game mods uses G, NOT LLM. "
+        "Misc is a last resort for real topics with no closer tag: news, politics, philosophy, "
+        "TV/film, general research -> Misc, NOT LLM or Tech. "
         "Hermes is ONLY work on the Hermes software itself, never a generic request to fix something. "
-        "Test is ONLY a bare echo/acknowledgment; a question about practice tests is Fam, NOT Test. "
+        "Test is ONLY a machine/scripted probe demanding a canned response ('Reply with exactly GLMOK', "
+        "'Acknowledge request', 'ping'). A casual human greeting or small talk with no task is Fam, NOT Test. "
+        "A question about practice tests is Education, NOT Test. "
+        "A bracketed '[Tag] Name' string inside the message is usually a quoted title of a DIFFERENT "
+        "session being referenced (a wake report, a 'validate answers' or 'continue from' pointer). "
+        "Never copy or echo a quoted bracketed title as this session's name; name what the user asks "
+        "to do in THIS session. "
         "Do not infer BOTW from Switch alone "
         "or Wolverine from Marvel alone. Game names used for LLM codenames or Hermes title "
         "fixtures do not turn those tasks into gaming.\n"
-        "Examples of intent: War Dogs game hype -> WARDOGS; Marvel Wolverine PS5 impressions "
+        "Examples of intent: War Dogs game hype -> WARDOGS; Tainted Grail shader fix -> TGFoA; "
+        "Marvel Wolverine PS5 impressions "
         "-> Wolverine; BOTW Switch performance -> BOTW; Vegas bachelor-party hotel booking "
         "-> Travel; Hermes title tagging for Starfield -> Hermes; CoreWeave RSU taxes -> Finance; "
-        "practice test requirements -> Fam; Reply with exactly GLMOK -> Test.\n"
+        "practice test requirements -> Education; Reply with exactly GLMOK -> Test; "
+        "'ayyy, what's good?' -> Fam (human greeting, not a probe); "
+        "'Recent session, validate answers: [Codex] Async delegation batch result #8' -> the quiz-validation "
+        "task itself (Education), never 'Async delegation batch result'.\n"
         f"Use a short sentence-case name, preferably 2-6 words (at most {MAX_NAME_WORDS}); "
         f"the final [Tag] Name must fit {MAX_TITLE_CHARS} characters. "
         "One word is fine for greetings or languages without spaces. Preserve technical names, "
@@ -176,6 +215,26 @@ def _title_parts(raw: str) -> Optional[tuple[str, str]]:
     return (match.group(1), match.group(2)) if match else None
 
 
+def _echoes_quoted_title(title: str, user_message: str) -> bool:
+    """True when the model's title was copied from a bracketed span in the message.
+
+    A '[Tag] Name' string inside the user's text is normally a quoted title of a
+    DIFFERENT session (a cross-reference like "validate answers: [Codex] Async
+    delegation batch result #8"). Echoing it rebrands this session after the
+    reference instead of its own task. Comparison collapses whitespace, case and
+    '#' so "result #8" in the message still catches a "result 8" echo; a genuine
+    title almost never reproduces a bracketed span verbatim.
+    """
+    if not isinstance(user_message, str) or not user_message:
+        return False
+
+    def _norm(value: str) -> str:
+        return " ".join(value.replace("#", " ").split()).casefold()
+
+    needle = _norm(title)
+    return bool(needle) and needle in _norm(user_message)
+
+
 def normalize_title(content: str, user_message: str = "") -> Optional[str]:
     """Accept structured tag/name or legacy [Tag] name; reject invalid output.
 
@@ -198,10 +257,14 @@ def normalize_title(content: str, user_message: str = "") -> Optional[str]:
         return None
     if not any(c.isalnum() for c in name) or len(name.split()) > MAX_NAME_WORDS:
         return None
+    if tag == "Test" and not _is_canned_response_probe(user_message):
+        return None
     if tag == "G" or tag in GAME_ALIASES:
         source_games = _game_entities(user_message)
         name_games = _game_entities(name)
         if len(source_games) == 1 and source_games == name_games:
             tag = next(iter(source_games))
     title = f"[{tag}] {name}"
+    if _echoes_quoted_title(title, user_message):
+        return None
     return title if len(title) <= MAX_TITLE_CHARS else None

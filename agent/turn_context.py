@@ -207,14 +207,22 @@ def _maybe_title_session_at_turn_start(
         return
     try:
         from agent.message_content import flatten_message_text
-        from agent.title_generator import apply_subagent_title, maybe_auto_title
+        from agent.title_generator import apply_subagent_title, is_titleable_user_message, maybe_auto_title
 
         # Turn's user message as text; image-only turns yield "" and are skipped.
         user_text = ""
         title_preview = None
         for msg in reversed(messages or []):
             if isinstance(msg, dict) and msg.get("role") == "user":
-                user_text = flatten_message_text(msg.get("content")).strip()
+                candidate = flatten_message_text(msg.get("content")).strip()
+                # Machine-authored rows (delegation wake reports, background
+                # notices) sit at the end of the list when a batch returns; the
+                # titling input is the most recent REAL user request, never the
+                # wake row that rebranded sessions "[Codex] Async delegation
+                # batch result #N".
+                if not candidate or not is_titleable_user_message(candidate):
+                    continue
+                user_text = candidate
                 metadata = msg.get("display_metadata")
                 if isinstance(metadata, dict) and isinstance(metadata.get("title_preview"), str):
                     title_preview = metadata["title_preview"]

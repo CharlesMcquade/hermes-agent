@@ -541,3 +541,39 @@ def test_prologue_forwards_the_submit_title_preview_to_the_titler():
               "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
         )
     assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"
+
+
+def test_prologue_skips_wake_rows_and_titles_from_the_last_real_request():
+    """A delegation wake report lands as the LAST role="user" row when a batch
+    returns. Titling from it rebranded real work sessions "[Codex] Async
+    delegation batch result #8"; the titling input must walk back to the most
+    recent real user request instead."""
+    from agent import turn_context
+
+    wake = ("[ASYNC DELEGATION BATCH COMPLETE — deleg_3052c261] A background fan-out unit "
+            "you dispatched earlier — 3 subagent(s) — has finished; its consolidated results are below.")
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent("cli"),
+            [
+                {"role": "user", "content": "Time for the next quiz. Should be a tab open for canvas"},
+                {"role": "user", "content": wake},
+            ],
+        )
+    assert titler.called
+    assert titler.call_args.args[2] == "Time for the next quiz. Should be a tab open for canvas"
+
+
+def test_prologue_does_not_title_from_a_wake_row_alone():
+    """A session opened by nothing but a wake report stays untitled until a
+    real user request arrives."""
+    from agent import turn_context
+
+    wake = ("[ASYNC DELEGATION BATCH COMPLETE — deleg_3052c261] A background fan-out unit "
+            "you dispatched earlier has finished; its consolidated results are below.")
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent("cli"),
+            [{"role": "user", "content": wake}],
+        )
+    assert not titler.called

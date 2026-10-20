@@ -198,6 +198,12 @@ _MACHINE_PREFIXES = (
     # message titled the session "[System: The active model for this chat has…" instead of the user's actual
     # question.
     "[System: The active model for this chat has changed to ",
+    # Delegation wake reports and background-process completion notices are
+    # machine-authored role="user" rows persisted mid-session. Titling from
+    # them rebranded real work sessions "[Codex] Async delegation batch
+    # result #N" after the batch returned, so they are never titleable input.
+    "[ASYNC DELEGATION COMPLETE", "[ASYNC DELEGATION BATCH COMPLETE",
+    "[IMPORTANT: Background process",
 )
 
 
@@ -358,12 +364,18 @@ _TITLE_ATTACHMENT_SUFFIX = re.compile(
     r"(?:\A|\n\n)\[Attached files: [^\r\n]+\](?:\s*\[screenshot\])*\s*\Z"
 )
 _TITLE_SCREENSHOT_SUFFIX = re.compile(r"(?:\A|\n)\[screenshot\](?:\s*\[screenshot\])*\s*\Z")
+# Mid-turn steering marker ([OUT-OF-BAND USER MESSAGE — …] body [/OUT-OF-BAND USER
+# MESSAGE]): the marker is transport, the body is the user's own words and stays.
+_TITLE_OOB_MARKER_RE = re.compile(
+    r"\[/?OUT-OF-BAND USER MESSAGE[^\]\r\n]*\]"
+)
 
 
 def _strip_title_metadata(text: str) -> str:
     text = _TITLE_METADATA_PREFIX.sub("", text.strip())
     text = _TITLE_ATTACHMENT_SUFFIX.sub("", text)
-    return _TITLE_SCREENSHOT_SUFFIX.sub("", text).strip()
+    text = _TITLE_SCREENSHOT_SUFFIX.sub("", text)
+    return _TITLE_OOB_MARKER_RE.sub(" ", text).strip()
 
 
 def _summarize_user_message(user_message: str) -> str:
@@ -430,9 +442,13 @@ def is_titleable_user_message(user_message: str) -> bool:
 
 def derive_title(user_message: str, title_preview: str | None = None) -> Optional[str]:
     """Instant title: first meaningful line trimmed to a word boundary. No model, never fails."""
-    # Attachment-only opener, no paste preview: a file drop has no topic —
-    # refuse rather than name the session after the truncated path (#92068).
-    if not title_preview and _attachment_only_opener(user_message):
+    # Without a paste preview, refuse openers that reduce to scaffolding: an
+    # attachment-only file drop would be named after its truncated path (#92068),
+    # and machine-authored rows (delegation wake reports, background-process
+    # notices) would name the session after the machinery. Callers guard today,
+    # but the invariant belongs at the boundary. With a preview the preview IS
+    # the topic, so it leads instead.
+    if not title_preview and not is_titleable_user_message(user_message):
         return None
     line = " ".join(_first_line(build_title_input(user_message, title_preview)).split())
     if len(line) > MAX_DERIVED_TITLE_CHARS:
@@ -545,8 +561,7 @@ def _notify_title(title_callback: Optional[TitleCallback], title: str, source: s
 def _is_provisional_greeting_title(title: str) -> bool:
     """The prompt's greeting placeholder (also "Friendly greeting in chat" and quoted/bracketed variants)."""
     normalized = re.sub(r"^[\W_]+|[\W_]+$", "", title.strip(), flags=re.UNICODE).lower()
-    if normalized.startswith("fam] "):
-        normalized = normalized[5:]
+    normalized = normalized.removeprefix("fam] ")
     return normalized in (_PROVISIONAL_GREETING_TITLE, _PROVISIONAL_GREETING_TITLE + " in chat")
 
 
@@ -588,6 +603,11 @@ def generate_title(
         not title_preview and _attachment_only_opener(user_snippet)
     ):
         return None
+    if not is_titleable_user_message(user_message):
+        # Machine-authored rows (delegation wake reports, background-process
+        # notices, compaction handoffs) reach the shared WebUI route too; the
+        # turn-level guard does not cover direct callers.
+        return None
     prompt = title_prompt(_title_language())
     messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}]
     try:
@@ -616,7 +636,7 @@ def generate_title(
                 # A separate auxiliary conversation, not a mutation of the main chat.
                 messages = messages + [
                     {"role": "assistant", "content": str(content)[:1000]},
-                    {"role": "user", "content": TITLE_REPAIR_INSTRUCTION},
+                    {"role": "user", "content": TITLE_REPAIR_INSTRUCTION + user_snippet},
                 ]
         raise ValueError("Title model returned invalid output after bounded repair")
     except Exception as e:

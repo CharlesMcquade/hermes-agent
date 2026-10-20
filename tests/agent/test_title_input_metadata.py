@@ -77,3 +77,31 @@ def test_metadata_cannot_create_a_title_or_consume_opening_turn(monkeypatch, tmp
         ])
         assert db.get_session_title("metadata-test") == "Book Vegas flights"
         start.assert_called_once()
+
+
+@pytest.mark.parametrize("machine", [
+    "[ASYNC DELEGATION BATCH COMPLETE — deleg_3052c261] A background fan-out unit you dispatched "
+    "earlier — 3 subagent(s) — has finished; its consolidated results are below.",
+    "[ASYNC DELEGATION COMPLETE — deleg_abc123] A background subagent you dispatched earlier has finished.",
+    "[IMPORTANT: Background process proc_c59079bf95ee completed (exit_code=0). Command: cd ~/msai",
+])
+def test_delegation_and_background_rows_are_never_titleable(monkeypatch, machine):
+    """Delegation wake reports and background-process notices are machine-authored
+    role="user" rows persisted mid-session. Titling from them rebranded real work
+    sessions "[Codex] Async delegation batch result #N" the moment a batch returned."""
+    llm = Mock()
+    monkeypatch.setattr(titles, "call_llm", llm)
+    assert not titles.is_titleable_user_message(machine)
+    assert titles.derive_title(machine) is None
+    assert titles.generate_title(machine) is None
+    llm.assert_not_called()
+
+
+def test_out_of_band_marker_is_transport_and_body_stays_titleable():
+    """Mid-turn steering wraps the user's words in [OUT-OF-BAND USER MESSAGE …]
+    markers; the markers are transport, the body is the user's own request."""
+    wrapped = ("[OUT-OF-BAND USER MESSAGE — a direct message from the user]\n"
+               "Remember, don't fill in questions\n"
+               "[/OUT-OF-BAND USER MESSAGE]")
+    assert titles.is_titleable_user_message(wrapped)
+    assert titles.derive_title(wrapped) == "Remember, don't fill in questions"
