@@ -91,6 +91,14 @@ def sandbox_policy(root, reads, port, executables):
               '(allow file-write* (literal "/dev/null"))',
               f'(allow network-bind (local ip "localhost:{port}"))',
               f'(allow network-inbound (local ip "localhost:{port}"))',
+              # The gateway runtime API binds an ephemeral loopback port at
+              # startup (gateway/run_api.py start_gateway_api, host 127.0.0.1
+              # port 0). Bind/inbound on loopback generally is required for the
+              # candidate to boot; outbound and non-loopback network stay denied
+              # (verified: ephemeral loopback bind OK, connect to a live
+              # loopback listener denied, external connect denied).
+              '(allow network-bind (local ip "localhost:*"))',
+              '(allow network-inbound (local ip "localhost:*"))',
               f'(allow network* (subpath {q(root)}))']
     # Python mimetypes consults this public OS database on first static request.
     lines.append('(allow file-read-data (literal "/private/etc/apache2/mime.types"))')
