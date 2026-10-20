@@ -42,6 +42,9 @@ def main():
     ap.add_argument('--controls', required=True, type=Path)
     ap.add_argument('--control-refresh-sha256', required=True)
     ap.add_argument('--approve', action='store_true')
+    ap.add_argument('--restore-transaction', type=Path, default=None,
+                    help='Recovery: restore activation-transaction.json from this '
+                         'byte-exact archived copy if it is missing, then exit.')
     args = ap.parse_args()
 
     def require(cond, msg):
@@ -59,6 +62,26 @@ def main():
         with c.locked():
             refresh = c.refresh_admission()
             refresh()
+
+            if args.restore_transaction:
+                txn_path = base / 'activation-transaction.json'
+                require(not txn_path.exists(), 'Transaction file already exists')
+                restore_raw = args.restore_transaction.read_bytes()
+                import base64 as _b64
+                envelope = json.loads(restore_raw)
+                payload = json.dumps(envelope['transaction'], sort_keys=True,
+                                     separators=(',', ':')).encode()
+                require(hashlib.sha256(payload).hexdigest() == envelope['sha256'],
+                        'Restored envelope corrupt')
+                require(envelope.get('control_refresh_sha256') == args.control_refresh_sha256,
+                        'Restored envelope control pin mismatch')
+                require(not os.path.lexists(base / watchdog.RECEIPT),
+                        'Refusing restore while a pending receipt exists')
+                txn_path.write_bytes(restore_raw)
+                require(c.retained_file(txn_path)[0] == restore_raw, 'Restore readback mismatch')
+                c.read_transaction()
+                print('RESTORED transaction from', args.restore_transaction)
+                return
 
             receipt_path = base / watchdog.RECEIPT
             require(os.path.lexists(receipt_path), 'No pending receipt to retire')
@@ -131,12 +154,11 @@ def main():
             require(sha256((archive_dir / watchdog.RESULT).read_bytes()) == sha256(result_raw),
                     'Archived result bytes differ from live bytes')
             if clear_txn:
-                txn_archive = base / f'transaction-archive-{stamp}'
-                txn_archive.mkdir(mode=0o700)
-                shutil.copy2(base / 'activation-transaction.json', txn_archive / 'activation-transaction.json')
-                require(sha256((txn_archive / 'activation-transaction.json').read_bytes()) == sha256(txn_raw),
-                        'Archived transaction bytes differ from live bytes')
-                os.remove(base / 'activation-transaction.json')
+                # The transaction FILE must persist (refresh executors require
+                # it); only the consumed round's fence key is removed.
+                txn.pop('pending_restart_sha256')
+                c.save_transaction(txn, txn['phase'])
+                require(c.read_transaction() == txn, 'Fence removal readback failed')
             os.remove(receipt_path)
             os.remove(result_path)
             print('RETIRED: receipt+result archived to', archive_dir)
