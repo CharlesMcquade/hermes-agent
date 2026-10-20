@@ -22,8 +22,8 @@ import tempfile
 import types
 
 REFRESH_PIN = 'c265a14976904f14ebf037f4d5b5b84c10a5850c56672f4ece290d337ee442c3'
-OLD_PIN = '5a76bdcf251d6cfc0aede89c51c6c13e64014560863636cd03ee5d45ca4e2aad'
-NEW_PIN = 'b3c2b9c50db7aa27dba01e1749d6d46bb74eb9562314f74a6d8e9301e45dd263'
+OLD_PIN = 'b3c2b9c50db7aa27dba01e1749d6d46bb74eb9562314f74a6d8e9301e45dd263'
+NEW_PIN = '4327ab447d75dbd59bd378ac9cb266cdad64502536e128f30f77263c091f769e'
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
            'control_refresh', 'watchdog', 'approved_restart_job')
 ORDER = ['Restart WebUI', 'Reconnect and verify candidate WebUI native identity',
