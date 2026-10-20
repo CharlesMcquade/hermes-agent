@@ -78,14 +78,46 @@ print(json.dumps({e.name:e.value for d in importlib.metadata.distributions() for
     return executable
 
 
-def seal(root):
-    """Discourage in-place edits; deployment produces another directory instead."""
-    for directory, dirs, files in os.walk(root):
+def _chmod_readonly(root, skip=None):
+    for directory, dirs, files in os.walk(root, topdown=True):
+        if skip is not None:
+            dirs[:] = [d for d in dirs if Path(directory) / d != skip]
         for name in files:
             path = Path(directory) / name
             if not path.is_symlink():
                 path.chmod(path.stat().st_mode & ~0o222)
         Path(directory).chmod(Path(directory).stat().st_mode & ~0o222)
+
+
+def _refresh_git_index(root):
+    """Re-stat tracked files so cheap probes (diff-index) agree with the bytes.
+
+    Sealing changes every file's ctime, which leaves the index's cached stat
+    data stale: `git diff-index --quiet HEAD` then reports all files modified
+    and version badges read `-dirty` on a byte-identical checkout. Must run
+    after the work tree is sealed (no further ctime changes) and before .git
+    is sealed (the refresh rewrites .git/index).
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+    env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+    subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', 'update-index', '-q', '--refresh'],
+                   cwd=root, env=env, capture_output=True, check=False)
+    dirty = subprocess.run(['git', 'diff-index', '--quiet', 'HEAD', '--'],
+                           cwd=root, env=env, capture_output=True)
+    if dirty.returncode != 0:
+        raise RuntimeError(f'Sealed checkout is not clean against HEAD: {root}')
+
+
+def seal(root):
+    """Discourage in-place edits; deployment produces another directory instead."""
+    root = Path(root)
+    git_dir = root / '.git'
+    if git_dir.is_dir() and not git_dir.is_symlink():
+        _chmod_readonly(root, skip=git_dir)
+        _refresh_git_index(root)
+        _chmod_readonly(git_dir)
+    else:
+        _chmod_readonly(root)
 
 
 def build(args):
