@@ -126,6 +126,7 @@ def read_plan(path, pin):
     data = stable(lambda: raw(path))
     require(re.fullmatch("[0-9a-f]{64}", pin) and sha(data) == pin, "Plan pin mismatch")
     plan = json.loads(data)
+    require("gateway_active_agents_advisory" not in plan, "Unproven gateway idle override refused")
     require(plan.get("schema") == 1 and plan.get("approval", {}).get("scope") == SCOPE,
             "Missing scoped approval")
     expires = plan["approval"].get("expires_at")
@@ -258,7 +259,7 @@ def settlement_health(c, pending, pin, baseline):
     return stable(observe)
 
 
-def services_idle(c, pending, pin, *, report=None, advisory=None):
+def services_idle(c, pending, pin, *, report=None):
     def observe():
         refresh = c.refresh_admission()
         _, old, new, unchanged = pending.load(c, pin, allow_unfenced=True)
@@ -275,40 +276,28 @@ def services_idle(c, pending, pin, *, report=None, advisory=None):
             "webui_active_streams": health.get("active_streams"),
             "gateway_active_agents": state.get("active_agents"),
         }
-        # The aggregate has a known completion-path accounting gap that can latch
-        # a stale count (see the operation's diagnosis report). Advisory status
-        # applies ONLY to the exact diagnosed process AND the exact diagnosed
-        # count AND the hash-pinned report; any drift re-arms the hard block.
-        advisory_accepted = False
-        if (advisory and observation["gateway_active_agents"] == advisory.get("observed_agents")
-                and state.get("pid") == advisory.get("gateway_pid")):
-            advisory_accepted = (advisory.get("report_sha256") ==
-                                 sha(Path(advisory["report_path"]).read_bytes()))
-        observation["gateway_active_agents_advisory"] = advisory_accepted
         if report is not None:
             report(observation)
         idle = (health.get("status") == "ok" and not state.get("active_work") and
                 all(type(observation[k]) is int and observation[k] == 0 for k in
-                    ("webui_active_runs", "webui_active_streams")) and
-                ((type(observation["gateway_active_agents"]) is int and
-                  observation["gateway_active_agents"] == 0) or advisory_accepted))
+                    ("webui_active_runs", "webui_active_streams", "gateway_active_agents")))
         refresh(); unchanged()
         require(pending.effective_pair(c, old, new)[2] == identities, "Idle owners changed")
         return idle
     return stable(observe)
 
 
-def idle_checkpoint(c, pending, pin, checkpoint, *, guard=None, advisory=None):
+def idle_checkpoint(c, pending, pin, checkpoint, *, guard=None):
     def guarded(phase, **fields):
         checkpoint(phase, **fields)
         if phase in ("before_kick", "before_restore_selection"):
             if guard is not None:
                 guard()
-            require(services_idle(c, pending, pin, advisory=advisory), "Work appeared before service action")
+            require(services_idle(c, pending, pin), "Work appeared before service action")
     return guarded
 
 
-def wait_idle(c, pending, pin, timeout=60, stable_seconds=10, *, guard=None, advisory=None, binding_probe=None):
+def wait_idle(c, pending, pin, timeout=60, stable_seconds=10, *, guard=None, binding_probe=None):
     """Observe 10s of continuous idle AND a settled binding digest; report blockers."""
     deadline = c.monotonic() + timeout
     idle_since, last_report_at, last_report = None, None, None
@@ -317,7 +306,7 @@ def wait_idle(c, pending, pin, timeout=60, stable_seconds=10, *, guard=None, adv
         if guard is not None:
             guard()
         with patient_locked(c):
-            idle = services_idle(c, pending, pin, report=observed.update, advisory=advisory)
+            idle = services_idle(c, pending, pin, report=observed.update)
             revision = binding_probe() if binding_probe is not None else "unprobed"
         now = c.monotonic()
         stable = idle and revision is not None and revision == last_revision
@@ -340,6 +329,7 @@ def wait_idle(c, pending, pin, timeout=60, stable_seconds=10, *, guard=None, adv
 
 
 def execute(plan, candidate, checkpoint):
+    require("gateway_active_agents_advisory" not in plan, "Unproven gateway idle override refused")
     from safe_pending_activation import run_activation, rollback_pending
     from safe_pending_retirement import retire
     base, controls = Path(plan["base"]), Path(plan["controls"])
@@ -349,7 +339,6 @@ def execute(plan, candidate, checkpoint):
         consumer = continuation.load_consumer(candidate)
         deployment = continuation.deployment_binding(candidate)
         authorization_guard = lambda: verify_authorization(plan)
-        advisory = plan.get("gateway_active_agents_advisory")
         if checkpoint.value.get("outcome") in ("worker_entered", "rolled_back", "failed_before_selection", "ambiguous"):
             return checkpoint.value
         # A terminal write may have reached disk before its checkpoint. It is
@@ -388,11 +377,11 @@ def execute(plan, candidate, checkpoint):
             binding = verify_binding(consumer, plan, binding)
             recovery_pin = plan.get("recovery_pending_sha256")
             if recovery_pin and not recovery_done:
-                wait_idle(c, pending, recovery_pin, guard=authorization_guard, advisory=advisory)
+                wait_idle(c, pending, recovery_pin, guard=authorization_guard)
                 authorization_guard()
                 checkpoint("baseline_recovery_started")
                 stable(lambda: rollback_pending(c, pending, recovery_pin,
-                    idle_checkpoint(c, pending, recovery_pin, checkpoint, guard=authorization_guard, advisory=advisory)))
+                    idle_checkpoint(c, pending, recovery_pin, checkpoint, guard=authorization_guard)))
                 stable(lambda: retire(c, pending, recovery_pin,
                                       Path(plan["operation_dir"]) / "previous-receipt",
                                       checkpoint=checkpoint))
@@ -447,7 +436,7 @@ def execute(plan, candidate, checkpoint):
                     if str(exc) == "pending durable work":
                         return None
                     raise
-            wait_idle(c, pending, pending_pin, guard=authorization_guard, advisory=advisory, binding_probe=binding_probe)
+            wait_idle(c, pending, pending_pin, guard=authorization_guard, binding_probe=binding_probe)
             if request is None:
                 binding = verify_binding(consumer, plan, binding)
                 checkpoint("binding_refreshed", binding=binding)

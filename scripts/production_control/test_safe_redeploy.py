@@ -180,18 +180,20 @@ class OrchestratorTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'owner mismatch'): runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
         self.gateway(); runner.wait_idle(self.c, self.pending, 'pin', timeout=12)
 
-    def test_gateway_advisory_attestation_allows_diagnosed_state_only(self):
-        report = self.root / 'diagnosis.md'; report.write_bytes(b'evidence')
-        advisory = {'observed_agents': 1, 'gateway_pid': 123,
-                    'report_path': str(report), 'report_sha256': runner.sha(b'evidence')}
+    def test_diagnostic_report_cannot_authorize_nonzero_gateway_work(self):
+        report = self.root / 'diagnosis.md'; report.write_bytes(b'unknown whether stale')
+        self.plan['gateway_active_agents_advisory'] = {
+            'observed_agents': 1, 'gateway_pid': 123,
+            'report_path': str(report), 'report_sha256': runner.sha(report.read_bytes())}
         self.gateway(active_agents=1, active_work=None)
-        runner.wait_idle(self.c, self.pending, 'pin', timeout=14, advisory=advisory)
-        for bad in ({'gateway_pid': 999}, {'report_sha256': 'nope'}, {'observed_agents': 2}):
-            with self.assertRaisesRegex(RuntimeError, 'active work'):
-                runner.wait_idle(self.c, self.pending, 'pin', timeout=2, advisory=dict(advisory, **bad))
-        self.gateway(active_agents=2, active_work=None)
+        with self.assertRaisesRegex(RuntimeError, 'Unproven gateway idle override refused'):
+            self.execute()
+        self.pending.prepare.assert_not_called()
+        self.pending.select.assert_not_called()
+        self.engine.run_activation.assert_not_called()
+        self.engine.rollback_pending.assert_not_called()
         with self.assertRaisesRegex(RuntimeError, 'active work'):
-            runner.wait_idle(self.c, self.pending, 'pin', timeout=2, advisory=advisory)
+            runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
 
     def test_binding_probe_requires_settled_revision_before_authorization(self):
         self.gateway()
