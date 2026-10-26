@@ -87,6 +87,57 @@ class EngineTests(unittest.TestCase):
                 self.run_engine()
         self.assertFalse((self.c.base / pending.RESULT).exists())
 
+    def test_waiting_for_watchdog_leaves_real_process_lock_available(self):
+        import subprocess
+        import sys
+
+        self.stage()
+        self.f.launch('webui')
+        self.f.launch('agent')
+        self.scheduled = False
+        retained = self.c.retained_file
+        lock_results = []
+
+        def probe_result(path):
+            if path == self.c.base / pending.RESULT:
+                # A separate OS process, not the simulated scheduler's sleep
+                # hook: result polling must not monopolize the publisher lock.
+                probe = subprocess.run([
+                    sys.executable, '-I', '-B', '-c',
+                    'import fcntl,sys; f=open(sys.argv[1], "rb"); '
+                    'fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)',
+                    str(self.c.base / 'control.lock'),
+                ], capture_output=True, timeout=10)
+                lock_results.append(probe.returncode)
+            return retained(path)
+
+        for observation in (None, {'status': 'candidate_observed'},
+                            {'status': 'verified', 'receipt_sha256': 'foreign'}):
+            with self.subTest(observation=observation):
+                if observation is not None:
+                    save_json(self.c.base / pending.RESULT, observation)
+                lock_results.clear()
+                with patch.object(self.c, 'retained_file', side_effect=probe_result), \
+                     patch.object(self.c, 'preflight', wraps=self.c.preflight) as preflight, \
+                     patch.object(self.c, 'snapshot', wraps=self.c.snapshot) as snapshot:
+                    with self.assertRaisesRegex(RuntimeError, 'settlement timeout'):
+                        engine._settle(self.c, pending, self.pin, 'new', 4, 1)
+                self.assertTrue(lock_results)
+                self.assertEqual(set(lock_results), {0}, 'watchdog publisher was locked out')
+                preflight.assert_not_called()
+                snapshot.assert_not_called()
+
+    def test_missing_watchdog_proof_has_visible_phase_and_observation(self):
+        self.stage()
+        self.scheduled = False
+        with self.assertRaisesRegex(RuntimeError, 'settlement timeout'):
+            self.run_engine()
+        waiting = [fields for phase, fields in self.events if phase == 'awaiting_watchdog']
+        self.assertTrue(waiting, 'post-restart settlement must not be a silent phase')
+        self.assertEqual(waiting[0]['observation'], 'missing')
+        self.assertGreaterEqual(waiting[-1]['elapsed_seconds'], 0)
+        self.assertEqual(self.host.calls, [('kickstart', 'webui'), ('kickstart', 'agent')])
+
     def test_partial_resumption_skips_exact_webui(self):
         self.stage()
         self.f.launch('webui')

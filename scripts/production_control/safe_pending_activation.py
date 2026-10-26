@@ -157,10 +157,38 @@ def _ordered(c, pending, pin, checkpoint, selected, timeout):
     return report
 
 
-def _settle(c, pending, pin, selected, timeout, stable_seconds):
-    deadline = c.monotonic() + timeout
+def _settle(c, pending, pin, selected, timeout, stable_seconds, *, progress=None):
+    started = c.monotonic()
+    deadline = started + timeout
     stable, stable_at, error = None, None, 'No stable sample'
+    last_observation, last_report = None, started
     while c.monotonic() < deadline:
+        if selected == 'new':
+            # This is ONLY a wake-up hint, not authority. The scheduled writer
+            # needs control.lock: repeatedly doing two release preflights under
+            # that lock before looking for its result starves its natural ticks.
+            # Stay entirely outside the lock until a matching terminal appears;
+            # then re-read and validate EVERYTHING under the lock below.
+            try:
+                hint = json.loads(c.retained_file(c.base / pending.RESULT)[0])
+                ready = (isinstance(hint, dict) and hint.get('status') == 'verified'
+                         and hint.get('receipt_sha256') == pin
+                         and hint.get('selected') == 'new')
+                observation = 'terminal_available' if ready else 'not_verified'
+                error = 'Waiting for exact scheduled verification'
+            except FileNotFoundError:
+                ready, observation, error = False, 'missing', 'Scheduled result missing'
+            except Exception as exc:
+                ready, observation, error = False, 'unreadable', str(exc)
+            if progress is not None and (observation != last_observation
+                                        or c.monotonic() - last_report >= 30):
+                progress('awaiting_watchdog', observation=observation,
+                         elapsed_seconds=round(c.monotonic() - started, 1))
+                last_observation, last_report = observation, c.monotonic()
+            if not ready:
+                stable, stable_at = None, None
+                c.sleep(1)
+                continue
         with c.locked():
             r, old, new = _guard(c, pending, pin, selected)
             target = new if selected == 'new' else old
@@ -200,7 +228,8 @@ def run_activation(c, pending, pin, checkpoint, *, service_timeout=180,
         require(type(value) in (int, float) and math.isfinite(value) and value > 0,
                 'Timeouts and stable_seconds must be finite and positive')
     services = _ordered(c, pending, pin, checkpoint, 'new', service_timeout)
-    result = _settle(c, pending, pin, 'new', settle_timeout, stable_seconds)
+    result = _settle(c, pending, pin, 'new', settle_timeout, stable_seconds,
+                     progress=checkpoint)
     return dict(result, services=services, receipt_sha256=pin)
 
 
