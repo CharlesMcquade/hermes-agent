@@ -64,6 +64,19 @@ def human_anchor(state_home, session_id):
     and must not trip the anchor between dispatch and continuation.
     """
     path = Path(state_home) / "state.db"
+    for attempt in range(5):
+        try:
+            return _human_anchor_once(path, session_id)
+        except sqlite3.OperationalError as exc:
+            # Read-only opens on the WAL-mode state.db can transiently fail while
+            # the owning process checkpoints; the anchor is re-read on every
+            # settlement tick, so a single collision must not abort the run.
+            if attempt == 4 or "unable to open" not in str(exc) and "locked" not in str(exc):
+                raise
+            time.sleep(0.5 * (attempt + 1))
+
+
+def _human_anchor_once(path, session_id):
     with sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA query_only=ON")
