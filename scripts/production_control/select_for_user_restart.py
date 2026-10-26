@@ -21,9 +21,11 @@ import sys
 import tempfile
 import types
 
-REFRESH_PIN = 'c265a14976904f14ebf037f4d5b5b84c10a5850c56672f4ece290d337ee442c3'
-OLD_PIN = '4327ab447d75dbd59bd378ac9cb266cdad64502536e128f30f77263c091f769e'
-NEW_PIN = 'f01c89452b7d80d9bb3112af8b77df814f939fb605dddb338adf146abd85e491'
+# Reviewed transition: certifi-security -> duo-ready-r2. Pins are deliberately
+# explicit: a subsequent rebuild or control refresh requires fresh admission.
+REFRESH_PIN = '37936f249fb61da2310d5b638beffad91d6de2fdda85a031a0df3bdb492bfc45'
+OLD_PIN = 'e9e20da8549dbbc7e68948d6a1a2bf51a5d97c247fe36477db5bff38e7ffdc36'
+NEW_PIN = 'c63697cb67768ef9514501893d4c1ff33fe6fbc3c4fe184cb54e938230c54389'
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
            'control_refresh', 'watchdog', 'approved_restart_job')
 ORDER = ['Restart WebUI', 'Reconnect and verify candidate WebUI native identity',
