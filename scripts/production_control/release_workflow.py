@@ -409,11 +409,20 @@ def pending_check(cfg):
             '--expect-selected-sha256', digest(cfg['baseline']),
             '--expect-candidate-sha256', digest(candidate)]
     env = {'HOME': str(Path.home()), 'TMPDIR': cfg['scratch'], 'PATH': SAFE_PATH}
-    result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=300)
-    try:
-        report = json.loads(result.stdout)
-    except ValueError:
-        return {'status': 'blocked', 'changed': False, 'error': 'Pending adapter returned no JSON proof'}
+    report = None
+    for attempt in range(4):
+        result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=300)
+        try:
+            report = json.loads(result.stdout)
+        except ValueError:
+            return {'status': 'blocked', 'changed': False, 'error': 'Pending adapter returned no JSON proof'}
+        if result.returncode == 0:
+            break
+        # The running WebUI's watchdog tick holds control.lock briefly; a check
+        # colliding with one tick is transient, not an admission verdict.
+        if 'owns control.lock' not in str(report.get('error', '')):
+            break
+        time.sleep(15 * (attempt + 1))
     if result.returncode != 0:
         recovery_pin = cfg.get('recovery_pending_sha256')
         if (recovery_pin and report.get('error') == 'Existing pending state requires its exact receipt pin'
