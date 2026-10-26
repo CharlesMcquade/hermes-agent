@@ -127,7 +127,7 @@ def read_plan(path, pin):
     env = candidate["services"]["webui"]["env"]
     require(env.get("HERMES_WEBUI_CONTINUATION_DIR") == plan["continuation_dir"] and
             env.get("HERMES_WEBUI_CHAT_BACKEND") == "legacy" and
-            env.get("HERMES_WEBUI_RUNTIME_ADAPTER") == "legacy-journal", "Candidate continuation settings mismatch")
+            env.get("HERMES_WEBUI_RUNTIME_ADAPTER") == "legacy-direct", "Candidate continuation settings mismatch")
     require(candidate["state_dir"] == plan["state_home"], "Candidate state ownership mismatch")
     return plan, candidate
 
@@ -309,7 +309,7 @@ def execute(plan, candidate, checkpoint):
                 verify_binding(consumer, plan, binding)
                 request = continuation.publish_request(consumer, plan["continuation_dir"],
                     admission_id=plan["operation_id"], controller_operation_id=r["operation_id"],
-                    deployment=deployment, binding=binding, message=plan["resume_message"], runtime_adapter="legacy-journal")
+                    deployment=deployment, binding=binding, message=plan["resume_message"], runtime_adapter="legacy-direct")
                 checkpoint("resume_request_published", request=request)
             # Do not revalidate a claimed session as if its resumed messages were
             # human intervention. The immutable claim is the replay fence.

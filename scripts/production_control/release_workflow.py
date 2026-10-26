@@ -87,7 +87,7 @@ def overlaps(a, b):
 def validate_config_paths(cfg):
     paths = {k: canonical_path(cfg[k], k) for k in
              ('baseline', 'output', 'scratch', 'agent_repo', 'webui_repo')}
-    for key in ('evidence_dir', 'controls'):
+    for key in ('evidence_dir', 'controls', 'continuation_dir'):
         if key in cfg:
             paths[key] = canonical_path(cfg[key], key)
     output = paths['output']
@@ -109,6 +109,19 @@ def validate_config_paths(cfg):
             raise RuntimeError('tool_path entries must be absolute paths')
         if entry not in SAFE_PATH.split(os.pathsep) and any((Path(entry) / name).exists() for name in ('python', 'python3')):
             raise RuntimeError('tool_path contains another Python runtime')
+
+
+def continuation_environment(cfg):
+    """Finite opt-in settings, applied before sealing; never arbitrary env overrides."""
+    if 'continuation_dir' not in cfg:
+        return {}
+    directory = canonical_path(cfg['continuation_dir'], 'continuation_dir')
+    for key in ('output', 'agent_repo', 'webui_repo', 'scratch', 'controls'):
+        if key in cfg and overlaps(directory, canonical_path(cfg[key], key)):
+            raise RuntimeError('continuation_dir overlaps ' + key)
+    return {'HERMES_WEBUI_CONTINUATION_DIR': str(directory),
+            'HERMES_WEBUI_RUNTIME_ADAPTER': 'legacy-direct',
+            'HERMES_WEBUI_CHAT_BACKEND': 'legacy'}
 
 
 def config_read(path):
@@ -236,6 +249,9 @@ def verify(cfg):
         if manifest['source_commits'][name] != cfg[name + '_commit']:
             raise RuntimeError(f'{name}: manifest differs from requested commit')
     check_placement(cfg, launcher.load_manifest(Path(cfg['baseline'])))
+    expected_env = continuation_environment(cfg)
+    if any(manifest['services']['webui']['env'].get(k) != v for k, v in expected_env.items()):
+        raise RuntimeError('Continuation environment differs from requested configuration')
     release_layout(manifest, Path(cfg['output']))
     require_sealed(Path(cfg['output']))
     before = canary.inventory(Path(cfg['output']))
@@ -323,6 +339,7 @@ def build(cfg):
     # The launcher reapplies manifest env after runtime.env. Pin the CLI
     # interpreter too, not only the WebUI process argv and subprocess PATH.
     manifest["services"]["webui"]["env"]["HERMES_WEBUI_PYTHON"] = str(python)
+    manifest["services"]["webui"]["env"].update(continuation_environment(cfg))
     (root / 'agent/.bytecode-fingerprint').write_text('git:HEAD:' + cfg['agent_commit'])
     # Boot-time CLI exposure can create these. Materialize the exact files before
     # sealing, with a narrowly scoped function that writes only the NEW repo.

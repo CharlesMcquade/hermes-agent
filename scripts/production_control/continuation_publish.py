@@ -107,7 +107,7 @@ def initialize(consumer, directory, deployment):
 
 
 def publish_request(consumer, directory, *, admission_id, controller_operation_id,
-                    deployment, binding, message, runtime_adapter):
+                    deployment, binding, message, runtime_adapter="legacy-direct"):
     request = {"operation_admission_id": admission_id,
                "controller_operation_id": controller_operation_id,
                "deployment": deployment, "binding": binding, "message": message,
