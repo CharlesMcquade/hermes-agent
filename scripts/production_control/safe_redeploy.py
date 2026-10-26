@@ -159,29 +159,30 @@ def initial_inspection(c, pending, plan, candidate):
     require(sha(selected) == plan["selected_sha256"], "Initial selected manifest changed")
     old = c.validate_manifest(json.loads(selected))
     profile_guard = routing.profile_routing_guard(candidate)
-    with c.locked():
-        refresh = c.refresh_admission()
-        for manifest in (old, candidate):
-            c.check_revocation(manifest); c.preflight(manifest)
-        recovery_pin = plan.get("recovery_pending_sha256")
-        if recovery_pin:
-            def observe_recovery():
+
+    def observe_admission():
+        with c.locked():
+            refresh = c.refresh_admission()
+            for manifest in (old, candidate):
+                c.check_revocation(manifest); c.preflight(manifest)
+            recovery_pin = plan.get("recovery_pending_sha256")
+            if recovery_pin:
                 r, previous, newer, unchanged = pending.load(c, recovery_pin)
                 require(c.clock() > r["deadline"], "Recovery pending operation has not expired")
                 require(selected == pending.decode(r["old"]), "Recovery selector is not its retained fallback")
                 effective, running, identities = pending.effective_pair(c, previous, newer)
                 c.snapshot(effective, c.definitions(effective))
                 unchanged()
-                return r, running, identities
-            r, running, identities = stable(observe_recovery)
-            state = {"status": "requires_verified_baseline_recovery", "running": running, "process_identity": identities}
-        else:
-            require(not os.path.lexists(base / pending.RECEIPT), "Unapproved pending operation exists")
-            txn = c.read_transaction()
-            require(txn and txn["phase"] in ("verified", "rolled_back") and "pending_restart_sha256" not in txn,
-                    "Nonterminal or fenced baseline")
-            state = {"status": "baseline_verified", "proof": c.snapshot(old, c.definitions(old))}
-        refresh(); profile_guard()
+                state = {"status": "requires_verified_baseline_recovery", "running": running, "process_identity": identities}
+            else:
+                require(not os.path.lexists(base / pending.RECEIPT), "Unapproved pending operation exists")
+                txn = c.read_transaction()
+                require(txn and txn["phase"] in ("verified", "rolled_back") and "pending_restart_sha256" not in txn,
+                        "Nonterminal or fenced baseline")
+                state = {"status": "baseline_verified", "proof": c.snapshot(old, c.definitions(old))}
+            refresh(); profile_guard()
+            return state
+    state = stable(observe_admission)
     state["routing"] = routing.prove_routes(candidate, Path(plan["scratch"]))
     return old, profile_guard, state
 
@@ -298,7 +299,9 @@ def execute(plan, candidate, checkpoint):
                 checkpoint("baseline_recovery_started")
                 stable(lambda: rollback_pending(c, pending, recovery_pin,
                                                 idle_checkpoint(c, pending, recovery_pin, checkpoint)))
-                retire(c, pending, recovery_pin, Path(plan["operation_dir"]) / "previous-receipt", checkpoint=checkpoint)
+                stable(lambda: retire(c, pending, recovery_pin,
+                                      Path(plan["operation_dir"]) / "previous-receipt",
+                                      checkpoint=checkpoint))
                 checkpoint("baseline_recovered")
             profile_guard()
             verify_binding(consumer, plan, binding)
@@ -316,8 +319,8 @@ def execute(plan, candidate, checkpoint):
                     unchanged()
                 prepared = {"receipt_sha256": recovered_pin}
             else:
-                prepared = pending.prepare(c, Path(plan["candidate"]),
-                    expected_old_sha256=plan["selected_sha256"], expected_new_sha256=plan["candidate_sha256"])
+                prepared = stable(lambda: pending.prepare(c, Path(plan["candidate"]),
+                    expected_old_sha256=plan["selected_sha256"], expected_new_sha256=plan["candidate_sha256"]))
             pending_pin = prepared["receipt_sha256"]
             with c.locked():
                 r, _, _, unchanged = pending.load(c, pending_pin)
@@ -356,23 +359,25 @@ def execute(plan, candidate, checkpoint):
             proof = stable(lambda: run_activation(c, pending, pending_pin,
                                                   idle_checkpoint(c, pending, pending_pin, checkpoint)))
             profile_guard(); verify_binding(consumer, plan, binding)
-            with c.locked():
-                refresh = c.refresh_admission()
-                r, _, new, unchanged = pending.load(c, pending_pin)
-                result = stable(lambda: json.loads(c.retained_file(base / pending.RESULT)[0]))
-                require(result.get("status") == "verified" and result.get("operation_id") == r["operation_id"]
-                        and result.get("receipt_sha256") == pending_pin and result.get("selected") == "new",
-                        "Missing exact terminal controller outcome")
-                require(sha(c.retained_file(c.manifest_path)[0]) == plan["candidate_sha256"], "Terminal selection drift")
-                fresh = stable(lambda: c.snapshot(new, c.definitions(new)))
-                require(result.get("candidate_identity") == fresh["process_identity"] and
-                        result.get("process_identity") == fresh["process_identity"] and
-                        proof.get("proof", {}).get("process_identity") == fresh["process_identity"],
-                        "Terminal owner changed after settlement")
-                health = c.health(new)
-                refresh(); unchanged(); profile_guard()
-                verify_binding(consumer, plan, binding)
-                terminal = continuation.publish_terminal(consumer, plan["continuation_dir"], request, fresh, health)
+            def publish_verified_terminal():
+                with c.locked():
+                    refresh = c.refresh_admission()
+                    r, _, new, unchanged = pending.load(c, pending_pin)
+                    result = json.loads(c.retained_file(base / pending.RESULT)[0])
+                    require(result.get("status") == "verified" and result.get("operation_id") == r["operation_id"]
+                            and result.get("receipt_sha256") == pending_pin and result.get("selected") == "new",
+                            "Missing exact terminal controller outcome")
+                    require(sha(c.retained_file(c.manifest_path)[0]) == plan["candidate_sha256"], "Terminal selection drift")
+                    fresh = c.snapshot(new, c.definitions(new))
+                    require(result.get("candidate_identity") == fresh["process_identity"] and
+                            result.get("process_identity") == fresh["process_identity"] and
+                            proof.get("proof", {}).get("process_identity") == fresh["process_identity"],
+                            "Terminal owner changed after settlement")
+                    health = c.health(new)
+                    refresh(); unchanged(); profile_guard()
+                    verify_binding(consumer, plan, binding)
+                    return continuation.publish_terminal(consumer, plan["continuation_dir"], request, fresh, health)
+            terminal = stable(publish_verified_terminal)
             checkpoint("resume_terminal_published", terminal=terminal)
             until = time.monotonic() + 60
             while time.monotonic() < until:
