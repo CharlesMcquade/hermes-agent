@@ -34,26 +34,28 @@ def require(ok, message):
 
 
 def stable(action, *, attempts=10):
-    """Bounded retry for live observational files rewritten outside our lock.
+    """Bounded retry for live state rewritten outside our lock.
 
-    The gateway maintains gateway_state.json and the running WebUI's watchdog
-    rewrites watchdog-state.json outside the controller lock; stat-read-stability
-    reads can lose those races (both the tooling's and the installed controller's
-    stability checks). Content checks still gate everything — only the transient
-    rewrite races are absorbed. Non-stability errors and exhausted attempts
-    propagate.
+    Transient conditions absorbed: the gateway rewrites gateway_state.json, the
+    running WebUI's embedded watchdog rewrites watchdog-state.json and holds
+    control.lock during ticks (BlockingIOError on non-blocking acquisition), and
+    both stability checks (tooling + installed controller) can lose a rewrite
+    race. Content checks still gate everything — only these transient races are
+    absorbed. Non-stability errors and exhausted attempts propagate.
     """
-    transient = {'Input changed during read', 'Retained file changed while reading'}
+    transient_msgs = {'Input changed during read', 'Retained file changed while reading'}
     last = None
     for attempt in range(attempts):
         try:
             return action()
         except RuntimeError as exc:
-            if str(exc) not in transient:
+            if str(exc) not in transient_msgs:
                 raise
             last = exc
-            time.sleep(0.25 * (attempt + 1))
-    raise RuntimeError('Observational state did not stabilize')
+        except BlockingIOError:
+            last = RuntimeError('control.lock busy (watchdog tick or concurrent runner)')
+        time.sleep(0.25 * (attempt + 1))
+    raise RuntimeError('Observational state did not stabilize: ' + str(last))
 
 
 def sha(raw):
@@ -119,7 +121,7 @@ def operation_lock(directory):
 
 
 def read_plan(path, pin):
-    data = raw(path)
+    data = stable(lambda: raw(path))
     require(re.fullmatch("[0-9a-f]{64}", pin) and sha(data) == pin, "Plan pin mismatch")
     plan = json.loads(data)
     require(plan.get("schema") == 1 and plan.get("approval", {}).get("scope") == SCOPE,
@@ -440,5 +442,7 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as error:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         print(json.dumps({"status": "blocked_or_failed", "error": str(error)}), file=sys.stderr)
         raise SystemExit(2)

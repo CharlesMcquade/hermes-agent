@@ -39,8 +39,10 @@ def _stable_gateway_state(c, manifest):
             if str(exc) not in transient:
                 raise
             last = exc
-            time.sleep(0.25 * (attempt + 1))
-    raise RuntimeError('Gateway state did not stabilize')
+        except BlockingIOError:
+            last = RuntimeError('control.lock busy')
+        time.sleep(0.25 * (attempt + 1))
+    raise RuntimeError('Gateway state did not stabilize: ' + str(last))
 
 
 def _guard(c, pending, pin, selected, *, expiring=False):
