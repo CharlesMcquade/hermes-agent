@@ -32,6 +32,23 @@ sys.path.insert(0, str(TOOLS))
 import select_for_user_restart as selector  # noqa: E402
 
 
+# A verified result older than this is retireable before its receipt deadline.
+VERIFIED_SETTLE_SECONDS = 120
+
+
+def no_activation_in_flight(result, deadline, now=None):
+    """True when this terminal round can be retired without waiting out the deadline.
+
+    verified + settle margin elapsed -> retire now; anything else (rolled_back,
+    or a verification seconds old) still waits for the receipt deadline.
+    """
+    now = time.time() if now is None else now
+    completed = result.get('completed_at')
+    if result.get('status') == 'verified' and isinstance(completed, (int, float)):
+        if now > completed + VERIFIED_SETTLE_SECONDS:
+            return True
+    return now > deadline
+
 def sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -125,9 +142,15 @@ def main():
             else:
                 clear_txn = False
 
-            # 4. Receipt must be expired or consumed long enough ago that no
-            #    activation is plausibly in flight (deadline passed).
-            require(time.time() > deadline, 'Receipt deadline not yet passed')
+            # 4. No activation may plausibly be in flight. Checks 1-3 already
+            #    prove this round reached a terminal, unfenced state; the
+            #    deadline only has to be waited out when the watchdog has NOT
+            #    verified (e.g. a result left at rolled_back by a crashed run).
+            #    A verified round is retireable after a short settle margin;
+            #    the old unconditional wait throttled back-to-back deploys to
+            #    one per receipt lifetime (~55 min) for no safety gain.
+            require(no_activation_in_flight(result, deadline),
+                    'Receipt deadline not yet passed and result not settled-verified')
 
             stamp = time.strftime('%Y%m%d-%H%M%S')
             archive_dir = base / f'pending-receipt-archive-{stamp}'
