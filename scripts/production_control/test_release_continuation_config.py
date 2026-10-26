@@ -58,12 +58,13 @@ class RecoveryFenceStateTests(unittest.TestCase):
         self.base = root / 'maintenance'; self.base.mkdir()
         self.output = root / 'releases' / 'r2'; self.output.mkdir(parents=True)
         self.old = b'{"release_id":"old"}'
-        self.new = b'{"release_id":"foreign-new"}'
+        self.foreign_new = b'{"release_id":"foreign-new"}'
+        self.candidate = b'{"release_id":"my-candidate"}'
         (self.base / 'production-release.json').write_bytes(self.old)
-        (self.output / 'release.json').write_bytes(self.new)
+        (self.output / 'release.json').write_bytes(self.candidate)
         self.receipt = {'operation_id': 'op-x', 'deadline': 1.0,
                         'old': {'data': base64.b64encode(self.old).decode()},
-                        'new': {'data': base64.b64encode(self.new).decode()}}
+                        'new': {'data': base64.b64encode(self.foreign_new).decode()}}
         raw = json.dumps(self.receipt).encode()
         self.pin = hashlib.sha256(raw).hexdigest()
         (self.base / 'pending-user-restart.json').write_bytes(raw)
@@ -88,7 +89,7 @@ class RecoveryFenceStateTests(unittest.TestCase):
         (self.base / 'production-release.json').write_bytes(b'{"release_id":"other"}')
         self.assertIsNone(workflow.recovery_fence_state(self.cfg, self.pin))
         (self.base / 'production-release.json').write_bytes(self.old)
-        (self.output / 'release.json').write_bytes(self.new)
+        (self.output / 'release.json').write_bytes(self.foreign_new)
         self.assertIsNone(workflow.recovery_fence_state(self.cfg, self.pin))
         (self.output / 'release.json').write_bytes(b'{"release_id":"distinct"}')
         self.txn['transaction']['pending_restart_sha256'] = 'f' * 64
