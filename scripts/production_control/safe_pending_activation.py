@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import time
 import urllib.parse
 
 
@@ -18,6 +19,26 @@ ORDER = ('webui', 'agent')
 def require(ok, message):
     if not ok:
         raise RuntimeError(message)
+
+
+def _stable_gateway_state(c, manifest):
+    """Read gateway-maintained state through its rewrite races, bounded.
+
+    The gateway rewrites gateway_state.json outside the controller lock; a
+    stat-read-stability read can lose that race. Content checks still gate
+    everything downstream — only the transient rewrite race is absorbed.
+    """
+    path = Path(manifest['state_dir']) / 'gateway_state.json'
+    last = None
+    for attempt in range(10):
+        try:
+            return json.loads(c.retained_file(path)[0])
+        except RuntimeError as exc:
+            if str(exc) != 'Input changed during read':
+                raise
+            last = exc
+            time.sleep(0.25 * (attempt + 1))
+    raise last if last is not None else RuntimeError('Input changed during read')
 
 
 def _guard(c, pending, pin, selected, *, expiring=False):
@@ -44,7 +65,7 @@ def _identity(c, manifest, service):
         require(len(listeners) == 1, 'Ambiguous WebUI listener')
         child = next(iter(listeners))
     else:
-        state = json.loads(c.retained_file(Path(manifest['state_dir']) / 'gateway_state.json')[0])
+        state = _stable_gateway_state(c, manifest)
         child = state.get('pid')
     identity = pair(manifest, service, jobs[service]['pid'], child, c.host, c.clock())
     unchanged({service: identity}, c.host)
@@ -67,7 +88,7 @@ def _ready(c, manifest, service):
             actual = hashlib.sha256(c.host.fetch(root + '/static/' + name)).digest()
             require(actual == expected, 'Served asset mismatch: ' + name)
     else:
-        state = json.loads(c.retained_file(Path(manifest['state_dir']) / 'gateway_state.json')[0])
+        state = _stable_gateway_state(c, manifest)
         require(state.get('pid') == identity['child']['pid']
                 and state.get('gateway_state') == 'running'
                 and state.get('code_sha') == manifest['services']['agent']['commit'],

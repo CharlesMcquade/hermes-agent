@@ -33,6 +33,26 @@ def require(ok, message):
         raise RuntimeError(message)
 
 
+def stable(action, *, attempts=10):
+    """Bounded retry for live observational files rewritten outside our lock.
+
+    The gateway maintains gateway_state.json continuously; a stat-read-stat
+    stability read can lose that race. Content checks still gate everything —
+    only the transient rewrite race is absorbed. Non-stability errors and
+    exhausted attempts propagate.
+    """
+    last = None
+    for attempt in range(attempts):
+        try:
+            return action()
+        except RuntimeError as exc:
+            if str(exc) != 'Input changed during read':
+                raise
+            last = exc
+            time.sleep(0.25 * (attempt + 1))
+    raise RuntimeError('Input changed during read')
+
+
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
@@ -145,12 +165,15 @@ def initial_inspection(c, pending, plan, candidate):
             c.check_revocation(manifest); c.preflight(manifest)
         recovery_pin = plan.get("recovery_pending_sha256")
         if recovery_pin:
-            r, previous, newer, unchanged = pending.load(c, recovery_pin)
-            require(c.clock() > r["deadline"], "Recovery pending operation has not expired")
-            require(selected == pending.decode(r["old"]), "Recovery selector is not its retained fallback")
-            effective, running, identities = pending.effective_pair(c, previous, newer)
-            c.snapshot(effective, c.definitions(effective))
-            unchanged()
+            def observe_recovery():
+                r, previous, newer, unchanged = pending.load(c, recovery_pin)
+                require(c.clock() > r["deadline"], "Recovery pending operation has not expired")
+                require(selected == pending.decode(r["old"]), "Recovery selector is not its retained fallback")
+                effective, running, identities = pending.effective_pair(c, previous, newer)
+                c.snapshot(effective, c.definitions(effective))
+                unchanged()
+                return r, running, identities
+            r, running, identities = stable(observe_recovery)
             state = {"status": "requires_verified_baseline_recovery", "running": running, "process_identity": identities}
         else:
             require(not os.path.lexists(base / pending.RECEIPT), "Unapproved pending operation exists")
@@ -174,30 +197,35 @@ def verify_binding(consumer, plan, binding):
 def settlement_health(c, pending, pin, baseline):
     if not pin:
         return c.health(baseline)
-    with c.locked():
-        refresh = c.refresh_admission()
-        _, old, new, unchanged = pending.load(c, pin)
-        effective, _, identities = pending.effective_pair(c, old, new)
-        health = c.health(effective)
-        refresh(); unchanged()
-        require(pending.effective_pair(c, old, new)[2] == identities, "Settlement owners changed")
-        return health
+
+    def observe():
+        with c.locked():
+            refresh = c.refresh_admission()
+            _, old, new, unchanged = pending.load(c, pin)
+            effective, _, identities = pending.effective_pair(c, old, new)
+            health = c.health(effective)
+            refresh(); unchanged()
+            require(pending.effective_pair(c, old, new)[2] == identities, "Settlement owners changed")
+            return health
+    return stable(observe)
 
 
 def services_idle(c, pending, pin):
-    refresh = c.refresh_admission()
-    _, old, new, unchanged = pending.load(c, pin, allow_unfenced=True)
-    effective, _, identities = pending.effective_pair(c, old, new)
-    health = c.health(effective)
-    state = json.loads(c.retained_file(Path(effective["state_dir"]) / "gateway_state.json")[0])
-    require(state.get("pid") == identities["agent"]["child"]["pid"] and
-            state.get("gateway_state") == "running", "Gateway idle owner mismatch")
-    idle = (health.get("status") == "ok" and health.get("active_runs") == 0 and
-            health.get("active_streams") == 0 and type(state.get("active_agents")) is int and
-            state["active_agents"] == 0 and "active_work" in state and not state["active_work"])
-    refresh(); unchanged()
-    require(pending.effective_pair(c, old, new)[2] == identities, "Idle owners changed")
-    return idle
+    def observe():
+        refresh = c.refresh_admission()
+        _, old, new, unchanged = pending.load(c, pin, allow_unfenced=True)
+        effective, _, identities = pending.effective_pair(c, old, new)
+        health = c.health(effective)
+        state = json.loads(c.retained_file(Path(effective["state_dir"]) / "gateway_state.json")[0])
+        require(state.get("pid") == identities["agent"]["child"]["pid"] and
+                state.get("gateway_state") == "running", "Gateway idle owner mismatch")
+        idle = (health.get("status") == "ok" and health.get("active_runs") == 0 and
+                health.get("active_streams") == 0 and type(state.get("active_agents")) is int and
+                state["active_agents"] == 0 and "active_work" in state and not state["active_work"])
+        refresh(); unchanged()
+        require(pending.effective_pair(c, old, new)[2] == identities, "Idle owners changed")
+        return idle
+    return stable(observe)
 
 
 def idle_checkpoint(c, pending, pin, checkpoint):
@@ -268,7 +296,8 @@ def execute(plan, candidate, checkpoint):
             if recovery_pin and not recovery_done:
                 wait_idle(c, pending, recovery_pin)
                 checkpoint("baseline_recovery_started")
-                rollback_pending(c, pending, recovery_pin, idle_checkpoint(c, pending, recovery_pin, checkpoint))
+                stable(lambda: rollback_pending(c, pending, recovery_pin,
+                                                idle_checkpoint(c, pending, recovery_pin, checkpoint)))
                 retire(c, pending, recovery_pin, Path(plan["operation_dir"]) / "previous-receipt", checkpoint=checkpoint)
                 checkpoint("baseline_recovered")
             profile_guard()
@@ -324,17 +353,18 @@ def execute(plan, candidate, checkpoint):
             require(sha(c.retained_file(c.manifest_path)[0]) == plan["candidate_sha256"], "Selection readback mismatch")
             checkpoint("selected")
             profile_guard()
-            proof = run_activation(c, pending, pending_pin, idle_checkpoint(c, pending, pending_pin, checkpoint))
+            proof = stable(lambda: run_activation(c, pending, pending_pin,
+                                                  idle_checkpoint(c, pending, pending_pin, checkpoint)))
             profile_guard(); verify_binding(consumer, plan, binding)
             with c.locked():
                 refresh = c.refresh_admission()
                 r, _, new, unchanged = pending.load(c, pending_pin)
-                result = json.loads(c.retained_file(base / pending.RESULT)[0])
+                result = stable(lambda: json.loads(c.retained_file(base / pending.RESULT)[0]))
                 require(result.get("status") == "verified" and result.get("operation_id") == r["operation_id"]
                         and result.get("receipt_sha256") == pending_pin and result.get("selected") == "new",
                         "Missing exact terminal controller outcome")
                 require(sha(c.retained_file(c.manifest_path)[0]) == plan["candidate_sha256"], "Terminal selection drift")
-                fresh = c.snapshot(new, c.definitions(new))
+                fresh = stable(lambda: c.snapshot(new, c.definitions(new)))
                 require(result.get("candidate_identity") == fresh["process_identity"] and
                         result.get("process_identity") == fresh["process_identity"] and
                         proof.get("proof", {}).get("process_identity") == fresh["process_identity"],
@@ -365,7 +395,8 @@ def execute(plan, candidate, checkpoint):
             if selected or sha(c.retained_file(c.manifest_path)[0]) == plan["candidate_sha256"]:
                 wait_idle(c, pending, pending_pin)
                 checkpoint("rollback_started")
-                rollback_pending(c, pending, pending_pin, idle_checkpoint(c, pending, pending_pin, checkpoint))
+                stable(lambda: rollback_pending(c, pending, pending_pin,
+                                                idle_checkpoint(c, pending, pending_pin, checkpoint)))
                 checkpoint("rollback_verified", outcome="rolled_back")
             else:
                 checkpoint("stopped_before_selection", outcome="failed_before_selection")
