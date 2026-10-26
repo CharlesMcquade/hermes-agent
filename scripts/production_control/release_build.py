@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import time
 
@@ -42,6 +43,86 @@ def ignore_runtime(directory, names):
             name.startswith('__editable__')]
 
 
+def _clear_runtime_flags(fd, flags):
+    if not flags:
+        return
+    # CPython on macOS exposes chflags(path), but not fchflags(fd). Never
+    # fall back to a path operation after opening and validating an inode.
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    fchflags = libc.fchflags
+    fchflags.argtypes = (ctypes.c_int, ctypes.c_uint)
+    fchflags.restype = ctypes.c_int
+    if fchflags(fd, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def normalize_runtime_copy(path):
+    """Unseal only owned destination inodes, never symlinks or shared files.
+
+    The caller must supply an exclusively held disposable copy under trusted
+    ancestors (no concurrent same-UID/privileged writers, hostile mounts or
+    ACL-granted writers). POSIX modes cannot establish that trust. Failures
+    leave a partially normalized *destination* and must abort the build.
+    Symlinks are preserved untouched; later inventory admission owns their
+    target policy. copytree creates independent files, so reject ALL hardlinks.
+    """
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    path = Path(path).absolute()
+    if '..' in path.parts or path == Path(path.anchor):
+        raise RuntimeError('Runtime copy must be a concrete destination directory')
+
+    def validate(info, device):
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise RuntimeError('Unsupported runtime copy entry')
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise RuntimeError('Runtime copy entry is not exclusively owned')
+        if info.st_dev != device:
+            raise RuntimeError('Runtime copy crosses a filesystem boundary')
+        if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+            raise RuntimeError('Hardlinked runtime copy entry')
+
+    def normalize(fd, device):
+        info = os.fstat(fd)
+        validate(info, device)
+        _clear_runtime_flags(fd, getattr(info, 'st_flags', 0))
+        mode = stat.S_IMODE(info.st_mode) | stat.S_IWUSR
+        os.fchmod(fd, mode)
+        after = os.fstat(fd)
+        if stat.S_IMODE(after.st_mode) != mode or getattr(after, 'st_flags', 0):
+            raise RuntimeError('Runtime copy normalization did not take effect')
+        if not stat.S_ISDIR(info.st_mode):
+            return
+        for name in os.listdir(fd):
+            entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if stat.S_ISLNK(entry.st_mode):
+                continue
+            validate(entry, device)
+            flags = directory_flags if stat.S_ISDIR(entry.st_mode) else (
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+            child = os.open(name, flags, dir_fd=fd)
+            try:
+                opened = os.fstat(child)
+                if (opened.st_dev, opened.st_ino) != (entry.st_dev, entry.st_ino):
+                    raise RuntimeError('Runtime copy entry changed during traversal')
+                normalize(child, device)
+            finally:
+                os.close(child)
+
+    # Open every ancestor without following links, retaining the final handle.
+    # Ancestors are never chmodded; a symlink anywhere in the input fails closed.
+    fd = os.open(path.anchor, directory_flags)
+    try:
+        for component in path.parts[1:]:
+            child = os.open(component, directory_flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        normalize(fd, os.fstat(fd).st_dev)
+    finally:
+        os.close(fd)
+
+
 def private_python(source_python, root, *, runner=None, source_root=None):
     runner = runner or run
     info = json.loads(runner([str(source_python), '-B', '-s', '-c',
@@ -52,6 +133,7 @@ def private_python(source_python, root, *, runner=None, source_root=None):
                 raise RuntimeError('Interpreter metadata escapes source runtime')
     base = root / 'python'
     shutil.copytree(Path(info['base']).resolve(), base, symlinks=True, ignore=ignore_runtime)
+    normalize_runtime_copy(base)
     python = base / 'bin' / 'python3'
     venv = root / 'venv'
     runner([str(python), '-B', '-s', '-m', 'venv', '--without-pip', str(venv)], env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
@@ -60,6 +142,7 @@ def private_python(source_python, root, *, runner=None, source_root=None):
     if not site.resolve().is_relative_to(root.resolve()):
         raise RuntimeError('Interpreter site path escapes destination runtime')
     shutil.copytree(info['site'], site, dirs_exist_ok=True, symlinks=True, ignore=ignore_runtime)
+    normalize_runtime_copy(site)
     # Replace all console-script launchers with the preserved package entry points
     # so child tools cannot fall through to a development interpreter on PATH.
     command = '''import importlib.metadata,json

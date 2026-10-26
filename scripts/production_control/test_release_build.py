@@ -23,6 +23,9 @@ class BuilderTests(unittest.TestCase):
             # distribution copy after query succeeds. No synthetic query result.
             def copy(src, dest, **kwargs):
                 if dest == root / 'private/python':
+                    # Model copytree's directory creation so the real no-follow
+                    # normalizer validates an actual owned destination.
+                    dest.mkdir(parents=True)
                     return
                 if dest.name == 'site-packages':
                     self.assertEqual(Path(src), site)
