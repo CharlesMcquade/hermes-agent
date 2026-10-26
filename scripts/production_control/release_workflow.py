@@ -7,6 +7,7 @@ Use a new output directory for each build. Verification never repairs sealed byt
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -368,6 +369,33 @@ def build(cfg):
     return verify(cfg)
 
 
+def recovery_fence_state(cfg, pin):
+    """Read-only proof that the exact expired foreign fence is the runner's to reconcile.
+
+    The adapter's own receipt-pin path covers same-candidate resumption; this only
+    admits a distinct, expired, selected-restoring fence that the authorized runner
+    reconciles (restore processes to the selected pair, then retire) before prepare.
+    """
+    base = Path(cfg['baseline']).parent
+    receipt_raw = (base / 'pending-user-restart.json').read_bytes()
+    if hashlib.sha256(receipt_raw).hexdigest() != pin:
+        return None
+    receipt = json.loads(receipt_raw)
+    selected = Path(cfg['baseline']).read_bytes()
+    if base64.b64decode(receipt['old']['data'], validate=True) != selected:
+        return None
+    new_raw = (Path(cfg['output']) / 'release.json').read_bytes()
+    if base64.b64decode(receipt['new']['data'], validate=True) == new_raw:
+        return None
+    if not (isinstance(receipt.get('deadline'), (int, float)) and time.time() > receipt['deadline']):
+        return None
+    txn = json.loads((base / 'activation-transaction.json').read_bytes())
+    txn = txn.get('transaction', txn)
+    if txn.get('pending_restart_sha256') != pin:
+        return None
+    return {'operation_id': receipt.get('operation_id'), 'deadline': receipt['deadline']}
+
+
 def pending_check(cfg):
     """Fresh adapter process: never reuse the builder's imported controller names."""
     if not cfg.get('control_refresh_sha256'):
@@ -387,6 +415,11 @@ def pending_check(cfg):
     except ValueError:
         return {'status': 'blocked', 'changed': False, 'error': 'Pending adapter returned no JSON proof'}
     if result.returncode != 0:
+        recovery_pin = cfg.get('recovery_pending_sha256')
+        if (recovery_pin and report.get('error') == 'Existing pending state requires its exact receipt pin'
+                and recovery_fence_state(cfg, recovery_pin)):
+            return {'status': 'checked_not_staged_recovery_authorized', 'changed': False,
+                    'recovery_pending_sha256': recovery_pin, 'adapter': report}
         return {'status': 'blocked', 'changed': False, 'adapter': report}
     if report.get('pending_gate', {}).get('status') != 'checked_not_staged':
         return {'status': 'blocked', 'changed': False, 'error': 'Unexpected pending adapter result'}
@@ -447,7 +480,8 @@ def prepare(cfg):
         shutil.copytree(canary_report.parent, run_dir / 'canary')
         report['gates']['restart_boundary'] = pending_check(cfg)
         report['status'] = ('APP_SMOKE_PASSED_PENDING_GATE_CHECKED'
-                            if report['gates']['restart_boundary']['status'] == 'checked_not_staged'
+                            if report['gates']['restart_boundary']['status'] in
+                            ('checked_not_staged', 'checked_not_staged_recovery_authorized')
                             else 'APP_SMOKE_PASSED_DEPLOYMENT_BLOCKED')
         return report
     except Exception as exc:
