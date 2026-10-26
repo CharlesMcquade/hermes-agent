@@ -26,6 +26,7 @@ import continuation_publish as continuation
 import select_for_user_restart as routing
 
 SCOPE = ["prepare", "select", "restart-webui", "restart-gateway", "verified-fallback", "resume-origin-session"]
+HARD_RUN_SECONDS = 2400
 
 
 def require(ok, message):
@@ -448,18 +449,30 @@ def main(argv=None):
     parser.add_argument("--plan-sha256", required=True)
     parser.add_argument("--approve", action="store_true")
     args = parser.parse_args(argv)
+
+    def _alarm(signum, frame):
+        raise RuntimeError(f"Hard runner timeout after {HARD_RUN_SECONDS}s — no phase progress")
+
+    if args.action == "run":
+        import signal
+        signal.signal(signal.SIGALRM, _alarm)
+        signal.alarm(HARD_RUN_SECONDS)
+    print(json.dumps({"step": "read_plan"}), flush=True)
     plan, candidate = read_plan(args.plan, args.plan_sha256)
     if args.action == "check":
         require(not args.approve, "Check accepts no approval flag")
         base, controls = Path(plan["base"]), Path(plan["controls"])
+        print(json.dumps({"step": "prehash"}), flush=True)
         bytes_ = admission.prehash_bundle(base, controls, plan["control_refresh_sha256"])
         with admission.installed_modules(controls, bytes_) as (controller, pending):
             c = controller.Controller(base, control_refresh_sha256=plan["control_refresh_sha256"])
+            print(json.dumps({"step": "inspection"}), flush=True)
             _, _, result = initial_inspection(c, pending, plan, candidate)
             print(json.dumps(result, indent=2))
         return 0
     require(args.approve and os.getppid() == 1, "Run requires explicit approval and a launchd-owned independent process")
     require(os.getpgrp() == os.getpid(), "Runner must own its process group")
+    print(json.dumps({"step": "prehash"}), flush=True)
     with operation_lock(plan["operation_dir"]):
         checkpoint = Checkpoint(plan["operation_dir"], args.plan_sha256)
         result = execute(plan, candidate, checkpoint)
