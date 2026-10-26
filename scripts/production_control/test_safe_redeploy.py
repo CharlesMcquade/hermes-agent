@@ -52,15 +52,20 @@ class OrchestratorTests(unittest.TestCase):
         self.stack.enter_context(patch.object(runner.admission, 'prehash_bundle', return_value={}))
         self.stack.enter_context(patch.object(runner.admission, 'installed_modules',
             side_effect=lambda *a: nullcontext((SimpleNamespace(Controller=lambda *a, **k: self.c), self.pending))))
-        self.stack.enter_context(patch.object(runner.continuation, 'load_consumer', return_value=object()))
+        self.consumer = SimpleNamespace(Refused=type('Refused', (Exception,), {}),
+                                        inspect_binding=Mock(return_value={'session_revision': 'rev'}))
+        self.stack.enter_context(patch.object(runner.continuation, 'load_consumer', return_value=self.consumer))
         self.stack.enter_context(patch.object(runner.continuation, 'deployment_binding', return_value={}))
         self.stack.enter_context(patch.object(runner.continuation, 'initialize'))
-        self.stack.enter_context(patch.object(runner.continuation, 'publish_request', return_value={'request': True}))
-        self.stack.enter_context(patch.object(runner, 'verify_binding', return_value={'session_id': 's'}))
+        self.stack.enter_context(patch.object(runner.continuation, 'publish_request',
+            side_effect=lambda *args, **kw: {'binding': kw['binding']}))
+        self.stack.enter_context(patch.object(runner, 'verify_authorization'))
+        self.stack.enter_context(patch.object(runner, 'verify_binding',
+            return_value={'session_id': 's', 'profile': 'default', 'workspace': '/work'}))
         self.stack.enter_context(patch.object(runner.routing, 'profile_routing_guard', return_value=lambda: None))
         self.inspection = self.stack.enter_context(patch.object(runner, 'initial_inspection',
             return_value=(self.manifest, lambda: None, {})))
-        self.state('session_settled', binding={'session_id': 's'})
+        self.state('session_settled', binding={'session_id': 's', 'profile': 'default', 'workspace': '/work'})
 
     def sleep(self, seconds): self.now += seconds
 
@@ -162,19 +167,40 @@ class OrchestratorTests(unittest.TestCase):
         self.prepared(); (self.root / 'state.json.writing').write_text('partial')
         resumed = runner.Checkpoint(self.root, 'plan'); resumed('other')
         self.assertEqual(resumed.value['pending_pin'], 'pin')
-        self.assertEqual(resumed.value['binding'], {'session_id': 's'})
+        self.assertEqual(resumed.value['binding'], {'session_id': 's', 'profile': 'default', 'workspace': '/work'})
         self.assertEqual((self.root / 'state.json.writing').read_text(), 'partial')
 
     def test_idle_bounded_wait_and_owner_validation(self):
-        # active_agents counts cached agents and does NOT gate; active_work does.
-        self.gateway(active_agents=1)
-        runner.wait_idle(self.c, self.pending, 'pin', timeout=12)
-        for change in ({'active_work': {'other': 'task'}}, {'active_work': {'x': 1}}):
+        # The runtime aggregate remains authoritative even when drain detail is null.
+        for change in ({'active_agents': 1, 'active_work': None}, {'active_agents': None},
+                       {'active_agents': False}, {'active_work': {'other': 'task'}}):
             self.gateway(**change)
             with self.assertRaisesRegex(RuntimeError, 'active work'): runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
         self.gateway(pid=999)
         with self.assertRaisesRegex(RuntimeError, 'owner mismatch'): runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
         self.gateway(); runner.wait_idle(self.c, self.pending, 'pin', timeout=12)
+
+    def test_gateway_advisory_attestation_allows_diagnosed_state_only(self):
+        report = self.root / 'diagnosis.md'; report.write_bytes(b'evidence')
+        advisory = {'observed_agents': 1, 'gateway_pid': 123,
+                    'report_path': str(report), 'report_sha256': runner.sha(b'evidence')}
+        self.gateway(active_agents=1, active_work=None)
+        runner.wait_idle(self.c, self.pending, 'pin', timeout=14, advisory=advisory)
+        for bad in ({'gateway_pid': 999}, {'report_sha256': 'nope'}, {'observed_agents': 2}):
+            with self.assertRaisesRegex(RuntimeError, 'active work'):
+                runner.wait_idle(self.c, self.pending, 'pin', timeout=2, advisory=dict(advisory, **bad))
+        self.gateway(active_agents=2, active_work=None)
+        with self.assertRaisesRegex(RuntimeError, 'active work'):
+            runner.wait_idle(self.c, self.pending, 'pin', timeout=2, advisory=advisory)
+
+    def test_binding_probe_requires_settled_revision_before_authorization(self):
+        self.gateway()
+        runner.wait_idle(self.c, self.pending, 'pin', timeout=14, binding_probe=lambda: 'rev')
+        with self.assertRaisesRegex(RuntimeError, 'active work'):
+            runner.wait_idle(self.c, self.pending, 'pin', timeout=4, binding_probe=lambda: None)
+        flip = iter(['a', 'b', 'a', 'b'])
+        with self.assertRaisesRegex(RuntimeError, 'active work'):
+            runner.wait_idle(self.c, self.pending, 'pin', timeout=4, binding_probe=lambda: next(flip, 'z'))
 
     def test_mixed_baseline_settlement_uses_effective_pair_not_old_release(self):
         runner.settlement_health(self.c, self.pending, 'old-pin', {'wrong': 'baseline'})
@@ -191,6 +217,110 @@ class OrchestratorTests(unittest.TestCase):
         self.prepared(); self.gateway(active_agents=1)
         with self.assertRaisesRegex(RuntimeError, 'active work'): self.execute()
         self.pending.select.assert_not_called(); self.engine.rollback_pending.assert_not_called()
+
+    def test_settled_binding_is_refreshed_before_immutable_publication(self):
+        self.terminal_fixture()
+        fresh = {'session_id': 's', 'session_revision': 'new'}
+        events = []
+        def verify(consumer, plan, binding, *, exact=False):
+            events.append('exact' if exact else 'refresh')
+            if exact:
+                self.assertEqual(binding, fresh)
+            return fresh
+        def publish(*args, **kw):
+            events.append('publish')
+            self.assertEqual(kw['binding'], fresh)
+            self.assertGreaterEqual(self.now, 10)
+            return {'binding': dict(kw['binding'])}
+        with patch.object(runner, 'verify_binding', side_effect=verify), \
+             patch.object(runner.continuation, 'publish_request', side_effect=publish), \
+             patch.object(runner.continuation, 'publish_terminal', return_value={}), \
+             patch.object(runner.continuation, 'receipt_status', return_value={'status': 'worker_entered', 'stream_id': 'stream'}):
+            self.execute()
+        self.assertEqual(events[:3], ['refresh', 'publish', 'exact'])
+        self.assertEqual(self.state.value['request']['binding'], fresh)
+
+    def test_published_revision_change_refuses_selection(self):
+        self.prepared()
+        def verify(consumer, plan, binding, *, exact=False):
+            if exact:
+                raise RuntimeError('Published session revision changed')
+            return binding
+        with patch.object(runner, 'verify_binding', side_effect=verify):
+            with self.assertRaisesRegex(RuntimeError, 'Published session revision'):
+                self.execute()
+        self.pending.select.assert_not_called()
+        self.engine.run_activation.assert_not_called()
+
+    def test_existing_request_is_never_rebound_to_checkpoint(self):
+        self.prepared()
+        pinned = {'session_id': 's', 'session_revision': 'published'}
+        self.state('resume_request_published', request={'binding': pinned})
+        with patch.object(runner, 'verify_binding', side_effect=RuntimeError('stop')) as verify, \
+             patch.object(runner.continuation, 'publish_request') as publish:
+            with self.assertRaisesRegex(RuntimeError, 'stop'):
+                self.execute()
+        publish.assert_not_called()
+        self.assertEqual(verify.call_args.args[2], pinned)
+        self.assertTrue(verify.call_args.kwargs['exact'])
+        self.pending.select.assert_not_called()
+
+    def test_busy_observation_resets_ten_second_window(self):
+        def health(*args):
+            return {'status': 'ok', 'active_runs': int(self.now == 5), 'active_streams': 0}
+        self.c.health.side_effect = health
+        runner.wait_idle(self.c, self.pending, 'pin', timeout=18)
+        self.assertEqual(self.now, 16)
+
+    def test_intervention_during_wait_aborts_without_waiting_for_timeout(self):
+        def guard():
+            if self.now == 3:
+                raise RuntimeError('User intervened')
+        with self.assertRaisesRegex(RuntimeError, 'User intervened'):
+            runner.wait_idle(self.c, self.pending, 'pin', timeout=60, guard=guard)
+        self.assertEqual(self.now, 3)
+
+    def test_intervention_at_service_edge_refuses_action(self):
+        guard = Mock(side_effect=RuntimeError('User intervened'))
+        guarded = runner.idle_checkpoint(self.c, self.pending, 'pin', lambda *a, **kw: None, guard=guard)
+        with self.assertRaisesRegex(RuntimeError, 'User intervened'):
+            guarded('before_kick', service='agent')
+        guard.assert_called_once()
+
+
+class BindingTests(unittest.TestCase):
+    def setUp(self):
+        self.binding = dict(session_id='s', profile='default', workspace='/work',
+                            model='model', model_provider='provider', session_revision='old')
+        self.current = dict(self.binding, session_revision='new')
+        self.consumer = SimpleNamespace(inspect_binding=Mock(side_effect=lambda *a, **kw: dict(self.current)))
+        self.plan: dict = dict(session={'session_id': 's'}, session_dir='/state/webui', state_home='/state',
+                         human_anchor='anchor', approval={'expires_at': 200})
+        self.stack = ExitStack(); self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.object(runner.time, 'time', return_value=100))
+        self.anchor = self.stack.enter_context(patch.object(runner.continuation, 'human_anchor', return_value='anchor'))
+
+    def test_refresh_accepts_only_same_identity_before_publication(self):
+        self.assertEqual(runner.verify_binding(self.consumer, self.plan, self.binding), self.current)
+        self.current['model'] = 'other'
+        with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+            runner.verify_binding(self.consumer, self.plan, self.binding)
+
+    def test_exact_postpublication_revision_refuses_even_identity_equal(self):
+        with self.assertRaisesRegex(RuntimeError, 'Published session revision changed'):
+            runner.verify_binding(self.consumer, self.plan, self.binding, exact=True)
+        self.current = dict(self.binding)
+        self.assertEqual(runner.verify_binding(self.consumer, self.plan, self.binding, exact=True), self.binding)
+
+    def test_human_intervention_and_expiry_remain_fail_closed(self):
+        self.anchor.return_value = 'different'
+        with self.assertRaisesRegex(RuntimeError, 'User intervened'):
+            runner.verify_binding(self.consumer, self.plan, self.binding)
+        self.consumer.inspect_binding.assert_not_called()
+        self.anchor.return_value = 'anchor'
+        self.plan['approval']['expires_at'] = 99
+        with self.assertRaisesRegex(RuntimeError, 'approval expired'):
+            runner.verify_binding(self.consumer, self.plan, self.binding)
 
 
 if __name__ == '__main__': unittest.main()

@@ -1,0 +1,83 @@
+{
+  "approval": {
+    "authorized_by": "Charles Inglis, 2026-10-26 (session d79b625cf373): one live deployment of the tested WebUI continuation work incl. WebUI->Gateway restarts and verified fallback; expired fence 7a5088e7 reconciled through the reviewed pending recovery path; no Mac reboot, no iMessage proxy restart, no other profiles.",
+    "expires_at": 1793064149.931077,
+    "scope": [
+      "prepare",
+      "select",
+      "restart-webui",
+      "restart-gateway",
+      "verified-fallback",
+      "resume-origin-session"
+    ],
+    "user_preapproved": true
+  },
+  "base": "/Users/charles/.hermes",
+  "candidate": "/Users/charles/.hermes/releases/hermes-20261026-redeploy-continuation/release.json",
+  "candidate_sha256": "90adb9c11daef392379f0a103f17d70d5d16aff4ac0563b03cded85d9ce95558",
+  "continuation_dir": "/Users/charles/hermes-dev/redeploy/20261026/op-fb5f448ce44442ff9049dd29399f3f56/continuation",
+  "control_refresh_sha256": "37936f249fb61da2310d5b638beffad91d6de2fdda85a031a0df3bdb492bfc45",
+  "controls": "/Users/charles/.hermes/maintenance/control-refresh-versions/verity-runtime-drift-20261022",
+  "evidence": [
+    {
+      "path": "/Users/charles/notes/security/hermes-release-evidence-20261026-redeploy-continuation/1793035244540247000/report.json",
+      "sha256": "81e5426e522465b34213134a394153a62b3915acc90995ad327b35552c16fc22"
+    },
+    {
+      "path": "/Users/charles/notes/security/hermes-release-evidence-20261026-redeploy-continuation/1793035244540247000/workflow-tests.log",
+      "sha256": "101ecbdd156ecc372a24102baf91fb2c4584338a194e82396eba20aa91d43471"
+    },
+    {
+      "path": "/Users/charles/notes/security/hermes-release-evidence-20261026-redeploy-continuation/1793035244540247000/canary-command.log",
+      "sha256": "2096461c575de7749c585ead30b7b67ecc699eb1a9b037892e5fed79ccdb79e1"
+    },
+    {
+      "path": "/Users/charles/notes/security/hermes-release-evidence-20261026-redeploy-continuation/1793035244540247000/canary/cold_start-gateway.log",
+      "sha256": "88ecede0f71404f3c883572468ca95463cba3bbfcb731cb9386b8062b8bb2294"
+    },
+    {
+      "path": "/Users/charles/notes/security/hermes-release-evidence-20261026-redeploy-continuation/1793035244540247000/canary/cold_start-webui.log",
+      "sha256": "6d8c35b746452d0fbee8d05cfd9f86a4f3ccdc65646d03a513c1a7a643245472"
+    },
+    {
+      "path": "/Users/charles/notes/security/hermes-release-evidence-20261026-redeploy-continuation/1793035244540247000/canary/process_restart-gateway.log",
+      "sha256": "6eccbc4daac2a817abe8ffb7000b150aced5ea49b04303f41fd433d198a7db4e"
+    },
+    {
+      "path": "/Users/charles/notes/security/hermes-release-evidence-20261026-redeploy-continuation/1793035244540247000/canary/process_restart-webui.log",
+      "sha256": "952795c339fcd61ef105697b28316d25fe34d87c6a72effbb2517f51327a881d"
+    },
+    {
+      "path": "/Users/charles/notes/security/hermes-release-evidence-20261026-redeploy-continuation/1793035244540247000/canary/report.json",
+      "sha256": "172994261b94aed3ce722da69a37b14c513a6b519a000f54aa67b5c6a59c5209"
+    },
+    {
+      "path": "/Users/charles/notes/security/hermes-release-evidence-20261026-redeploy-continuation/1793035244540247000/canary/sandbox.sb",
+      "sha256": "a928e707ac0eda28f146c8b63add92f383623818ebcded10345a08e4d3174b6d"
+    }
+  ],
+  "human_anchor": "a6f482fb9bf93a9bb19197b7a668562cff6f72a7fa4b605c7ebbae6748beabbb",
+  "operation_dir": "/Users/charles/hermes-dev/redeploy/20261026/op-fb5f448ce44442ff9049dd29399f3f56",
+  "operation_id": "fb5f448ce44442ff9049dd29399f3f56",
+  "recovery_pending_sha256": "376682462dfd10268c274fc7178da7d0833ddb616c93ba3f2ef0882aeb623ed8",
+  "resume_message": "Automatic redeploy continuation (operation fb5f448ce44442ff9049dd29399f3f56). The trusted runner completed the /safe-hermes-redeploy deployment steps and resumed this session. Read /Users/charles/hermes-dev/redeploy/20261026/op-fb5f448ce44442ff9049dd29399f3f56/state.json and /Users/charles/hermes-dev/redeploy/20261026/checkpoint.md, independently verify the running release, service identities, health and receipts against them, finish the pending verification, and report. Do not deploy again.",
+  "schema": 1,
+  "scratch": "/Users/charles/.hermes/cache/scratch",
+  "selected_sha256": "e9e20da8549dbbc7e68948d6a1a2bf51a5d97c247fe36477db5bff38e7ffdc36",
+  "session": {
+    "profile": "default",
+    "session_id": "d79b625cf373",
+    "workspace": "/Users/charles/hermes-dev"
+  },
+  "session_dir": "/Users/charles/.hermes/webui/sessions",
+  "state_home": "/Users/charles/.hermes",
+  "tool_sha256": {
+    "activate_pending.py": "bd2deacef1777eaa6c6cfbbe67e9f3c43e3cde058dc8e7af89dc04b8e03ced9c",
+    "candidate_canary.py": "5a1e963ea61cf587b6ffffca99936592cee41209abb805f9b9f8dae2ef3c9932",
+    "continuation_publish.py": "23e40f4e4b639f60eacd45608aa3503c52dc063f09273eb08effe7d05eb22e26",
+    "safe_pending_activation.py": "e390cd878e189ac6c24242dded3108d447fb6d127f5f23eee5f3c1eb0b94e001",
+    "safe_pending_retirement.py": "ccec3189149430d3b8b3dc56bd5598683112226bc2b5acfefc90eac3d12aace7",
+    "safe_redeploy.py": "48a70c023c0e336f5965b1e6447337f51a2fe82e2d1c0cc2f899d1f26f04b4b8",
+    "select_for_user_restart.py": "d9ff3f70b8f40bbe603067cc020d4abf104b0dfc19b5690f3423304dab91d2ee"
+  }
+}

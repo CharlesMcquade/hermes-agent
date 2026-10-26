@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import time
 from urllib.parse import quote
@@ -66,14 +67,19 @@ def human_anchor(state_home, session_id):
     with sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA query_only=ON")
-        row = db.execute(
-            "SELECT message_uid, content FROM messages WHERE session_id=? AND role='user' "
-            "AND content NOT LIKE '[IMPORTANT: Background process%' "
-            "AND content NOT LIKE '[ASYNC DELEGATION BATCH%' "
-            "ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
-    if row is None or not row["message_uid"]:
-        raise RuntimeError("Missing durable user anchor")
-    return digest(dict(row))
+        columns = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
+        kind = "display_kind" if "display_kind" in columns else "NULL AS display_kind"
+        rows = db.execute(
+            f"SELECT message_uid, content, {kind} FROM messages "
+            "WHERE session_id=? AND role='user' ORDER BY id DESC", (session_id,))
+        for row in rows:
+            text = re.sub(r"^\[Workspace::v1: [^\r\n]+\]\r?\n", "", row["content"] or "", count=1)
+            if row["display_kind"] != "steer" and text.startswith((
+                    "[IMPORTANT: Background process", "[ASYNC DELEGATION BATCH")):
+                continue
+            require(bool(row["message_uid"]), "Missing durable user anchor")
+            return digest({"message_uid": row["message_uid"], "content": text})
+    raise RuntimeError("Missing durable user anchor")
 
 
 def capture_settled(consumer, *, session_id, profile, workspace, session_dir,

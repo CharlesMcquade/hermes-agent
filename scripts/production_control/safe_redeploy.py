@@ -224,20 +224,21 @@ def initial_inspection(c, pending, plan, candidate):
 IDENTITY_FIELDS = ("session_id", "profile", "workspace", "model", "model_provider")
 
 
-def verify_binding(consumer, plan, binding):
-    """Genuine user input still aborts; volatile transcript churn does not.
-
-    The revision digest moves with every system row and controller turn, so the
-    mid-flight check pins IDENTITY only. The consumer re-validates the full
-    binding at claim time against the request published with the FRESH binding
-    the caller stores from this call.
-    """
-    require(continuation.human_anchor(plan["state_home"], binding["session_id"]) == plan["human_anchor"],
+def verify_authorization(plan):
+    require(time.time() < plan["approval"]["expires_at"], "Deployment approval expired")
+    require(continuation.human_anchor(plan["state_home"], plan["session"]["session_id"]) == plan["human_anchor"],
             "User intervened after deployment was armed")
+
+
+def verify_binding(consumer, plan, binding, *, exact=False):
+    """Refresh before publication; after publication the immutable revision wins."""
+    verify_authorization(plan)
     current = consumer.inspect_binding(binding["session_id"], binding["profile"], binding["workspace"],
                                        session_dir=Path(plan["session_dir"]), profile_home=Path(plan["state_home"]))
     require(all(current[k] == binding[k] for k in IDENTITY_FIELDS),
             "Session identity changed since deployment was armed")
+    if exact:
+        require(current == binding, "Published session revision changed")
     return current
 
 
@@ -257,7 +258,7 @@ def settlement_health(c, pending, pin, baseline):
     return stable(observe)
 
 
-def services_idle(c, pending, pin):
+def services_idle(c, pending, pin, *, report=None, advisory=None):
     def observe():
         refresh = c.refresh_admission()
         _, old, new, unchanged = pending.load(c, pin, allow_unfenced=True)
@@ -266,40 +267,76 @@ def services_idle(c, pending, pin):
         state = json.loads(c.retained_file(Path(effective["state_dir"]) / "gateway_state.json")[0])
         require(state.get("pid") == identities["agent"]["child"]["pid"] and
                 state.get("gateway_state") == "running", "Gateway idle owner mismatch")
-        # active_agents counts CACHED session agents (persistently >=1 while a
-        # WebUI session exists); the restart hazard is active work, not cache.
-        idle = (health.get("status") == "ok" and health.get("active_runs") == 0 and
-                health.get("active_streams") == 0 and
-                "active_work" in state and not state["active_work"])
+        # This is the runtime's aggregate in-flight count, not its agent cache.
+        # active_work is diagnostic detail emitted only while draining.
+        observation = {
+            "webui_status": health.get("status"),
+            "webui_active_runs": health.get("active_runs"),
+            "webui_active_streams": health.get("active_streams"),
+            "gateway_active_agents": state.get("active_agents"),
+        }
+        # The aggregate has a known completion-path accounting gap that can latch
+        # a stale count (see the operation's diagnosis report). Advisory status
+        # applies ONLY to the exact diagnosed process AND the exact diagnosed
+        # count AND the hash-pinned report; any drift re-arms the hard block.
+        advisory_accepted = False
+        if (advisory and observation["gateway_active_agents"] == advisory.get("observed_agents")
+                and state.get("pid") == advisory.get("gateway_pid")):
+            advisory_accepted = (advisory.get("report_sha256") ==
+                                 sha(Path(advisory["report_path"]).read_bytes()))
+        observation["gateway_active_agents_advisory"] = advisory_accepted
+        if report is not None:
+            report(observation)
+        idle = (health.get("status") == "ok" and not state.get("active_work") and
+                all(type(observation[k]) is int and observation[k] == 0 for k in
+                    ("webui_active_runs", "webui_active_streams")) and
+                ((type(observation["gateway_active_agents"]) is int and
+                  observation["gateway_active_agents"] == 0) or advisory_accepted))
         refresh(); unchanged()
         require(pending.effective_pair(c, old, new)[2] == identities, "Idle owners changed")
         return idle
     return stable(observe)
 
 
-def idle_checkpoint(c, pending, pin, checkpoint):
+def idle_checkpoint(c, pending, pin, checkpoint, *, guard=None, advisory=None):
     def guarded(phase, **fields):
         checkpoint(phase, **fields)
         if phase in ("before_kick", "before_restore_selection"):
-            require(services_idle(c, pending, pin), "Work appeared before service action")
+            if guard is not None:
+                guard()
+            require(services_idle(c, pending, pin, advisory=advisory), "Work appeared before service action")
     return guarded
 
 
-def wait_idle(c, pending, pin, timeout=600, stable_seconds=10):
-    """Bounded read-only drain: ~10s of continuous idle authorizes the restart."""
+def wait_idle(c, pending, pin, timeout=60, stable_seconds=10, *, guard=None, advisory=None, binding_probe=None):
+    """Observe 10s of continuous idle AND a settled binding digest; report blockers."""
     deadline = c.monotonic() + timeout
-    idle_since = None
+    idle_since, last_report_at, last_report = None, None, None
+    observed, last_revision, stable = {}, None, False
     while c.monotonic() < deadline:
+        if guard is not None:
+            guard()
         with patient_locked(c):
-            if services_idle(c, pending, pin):
-                if idle_since is None:
-                    idle_since = c.monotonic()
-                elif c.monotonic() - idle_since >= stable_seconds:
-                    return
-            else:
-                idle_since = None
+            idle = services_idle(c, pending, pin, report=observed.update, advisory=advisory)
+            revision = binding_probe() if binding_probe is not None else "unprobed"
+        now = c.monotonic()
+        stable = idle and revision is not None and revision == last_revision
+        if observed != last_report or last_report_at is None or now - last_report_at >= 10:
+            print(json.dumps({"step": "idle_observation", "binding_stable": stable, **observed}), flush=True)
+            last_report, last_report_at = dict(observed), now
+        if stable:
+            if idle_since is None:
+                idle_since = now
+            elif now - idle_since >= stable_seconds:
+                if guard is not None:
+                    guard()
+                return
+        else:
+            idle_since = None
+        last_revision = revision
         c.sleep(1)
-    raise RuntimeError("Services still have active work; no restart authorized")
+    observed["binding_stable"] = stable
+    raise RuntimeError("Services still have active work; no restart authorized: " + json.dumps(observed, sort_keys=True))
 
 
 def execute(plan, candidate, checkpoint):
@@ -311,6 +348,8 @@ def execute(plan, candidate, checkpoint):
         c = controller.Controller(base, control_refresh_sha256=plan["control_refresh_sha256"])
         consumer = continuation.load_consumer(candidate)
         deployment = continuation.deployment_binding(candidate)
+        authorization_guard = lambda: verify_authorization(plan)
+        advisory = plan.get("gateway_active_agents_advisory")
         if checkpoint.value.get("outcome") in ("worker_entered", "rolled_back", "failed_before_selection", "ambiguous"):
             return checkpoint.value
         # A terminal write may have reached disk before its checkpoint. It is
@@ -349,10 +388,11 @@ def execute(plan, candidate, checkpoint):
             binding = verify_binding(consumer, plan, binding)
             recovery_pin = plan.get("recovery_pending_sha256")
             if recovery_pin and not recovery_done:
-                wait_idle(c, pending, recovery_pin)
+                wait_idle(c, pending, recovery_pin, guard=authorization_guard, advisory=advisory)
+                authorization_guard()
                 checkpoint("baseline_recovery_started")
                 stable(lambda: rollback_pending(c, pending, recovery_pin,
-                                                idle_checkpoint(c, pending, recovery_pin, checkpoint)))
+                    idle_checkpoint(c, pending, recovery_pin, checkpoint, guard=authorization_guard, advisory=advisory)))
                 stable(lambda: retire(c, pending, recovery_pin,
                                       Path(plan["operation_dir"]) / "previous-receipt",
                                       checkpoint=checkpoint))
@@ -391,30 +431,44 @@ def execute(plan, candidate, checkpoint):
         selected = False
         try:
             request = checkpoint.value.get("request")
-            if request is None:
-                verify_binding(consumer, plan, binding)
-                request = continuation.publish_request(consumer, plan["continuation_dir"],
-                    admission_id=plan["operation_id"], controller_operation_id=r["operation_id"],
-                    deployment=deployment, binding=binding, message=plan["resume_message"], runtime_adapter="legacy-direct")
-                checkpoint("resume_request_published", request=request)
             # Do not revalidate a claimed session as if its resumed messages were
             # human intervention. The immutable claim is the replay fence.
             if checkpoint.value.get("terminal"):
                 checkpoint("continuation_observed", outcome=continuation.receipt_status(consumer, plan["continuation_dir"], request)["status"])
                 return checkpoint.value
             profile_guard()
-            binding = verify_binding(consumer, plan, binding)
-            checkpoint("binding_refreshed", binding=binding)
-            wait_idle(c, pending, pending_pin)
+            def binding_probe():
+                try:
+                    return consumer.inspect_binding(
+                        binding["session_id"], binding["profile"], binding["workspace"],
+                        session_dir=Path(plan["session_dir"]), profile_home=Path(plan["state_home"]),
+                    )["session_revision"]
+                except consumer.Refused as exc:
+                    if str(exc) == "pending durable work":
+                        return None
+                    raise
+            wait_idle(c, pending, pending_pin, guard=authorization_guard, advisory=advisory, binding_probe=binding_probe)
+            if request is None:
+                binding = verify_binding(consumer, plan, binding)
+                checkpoint("binding_refreshed", binding=binding)
+                request = continuation.publish_request(consumer, plan["continuation_dir"],
+                    admission_id=plan["operation_id"], controller_operation_id=r["operation_id"],
+                    deployment=deployment, binding=binding, message=plan["resume_message"], runtime_adapter="legacy-direct")
+                checkpoint("resume_request_published", request=request)
+            # A published request cannot be rebound, including after interruption.
+            binding = request["binding"]
+            binding_guard = lambda: verify_binding(consumer, plan, binding, exact=True)
+            binding_guard()
             checkpoint("selecting")
+            binding_guard()
             pending.select(c, pending_pin)
             selected = True
             require(sha(c.retained_file(c.manifest_path)[0]) == plan["candidate_sha256"], "Selection readback mismatch")
             checkpoint("selected")
             profile_guard()
             proof = stable(lambda: run_activation(c, pending, pending_pin,
-                                                  idle_checkpoint(c, pending, pending_pin, checkpoint)))
-            profile_guard(); verify_binding(consumer, plan, binding)
+                idle_checkpoint(c, pending, pending_pin, checkpoint, guard=binding_guard)))
+            profile_guard(); binding_guard()
             def publish_verified_terminal():
                 with patient_locked(c):
                     refresh = c.refresh_admission()
@@ -431,7 +485,7 @@ def execute(plan, candidate, checkpoint):
                             "Terminal owner changed after settlement")
                     health = c.health(new)
                     refresh(); unchanged(); profile_guard()
-                    verify_binding(consumer, plan, binding)
+                    binding_guard()
                     return continuation.publish_terminal(consumer, plan["continuation_dir"], request, fresh, health)
             terminal = stable(publish_verified_terminal)
             checkpoint("resume_terminal_published", terminal=terminal)
@@ -454,10 +508,10 @@ def execute(plan, candidate, checkpoint):
                 checkpoint("continuation_ambiguous", outcome="ambiguous")
                 return checkpoint.value
             if selected or sha(c.retained_file(c.manifest_path)[0]) == plan["candidate_sha256"]:
-                wait_idle(c, pending, pending_pin)
+                wait_idle(c, pending, pending_pin, guard=authorization_guard)
                 checkpoint("rollback_started")
                 stable(lambda: rollback_pending(c, pending, pending_pin,
-                                                idle_checkpoint(c, pending, pending_pin, checkpoint)))
+                    idle_checkpoint(c, pending, pending_pin, checkpoint, guard=authorization_guard)))
                 checkpoint("rollback_verified", outcome="rolled_back")
             else:
                 checkpoint("stopped_before_selection", outcome="failed_before_selection")

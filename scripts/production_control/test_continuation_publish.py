@@ -16,7 +16,7 @@ class PublisherTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
         source = Path(os.environ.get('HERMES_TEST_CONTINUATION_SOURCE',
-            '/Users/charles/hermes-webui-verity-resume/api/post_restart_continuation.py'))
+            str(Path(__file__).resolve().parents[3] / 'safe-redeploy-webui/api/post_restart_continuation.py')))
         self.assertTrue(source.is_file(), 'Set HERMES_TEST_CONTINUATION_SOURCE to the real consumer source')
         inventory = {}
         for name in pub.FILES:
@@ -30,7 +30,7 @@ class PublisherTests(unittest.TestCase):
         self.store = self.root / 'private'
         pub.initialize(self.consumer, self.store, self.deployment)
         self.kw = dict(admission_id='a' * 32, controller_operation_id='controller-1',
-                       deployment=self.deployment, binding={'session_id': 's'}, message='Resume', runtime_adapter='legacy-journal')
+                       deployment=self.deployment, binding={'session_id': 's'}, message='Resume', runtime_adapter='legacy-direct')
 
     def request(self):
         return pub.publish_request(self.consumer, self.store, **self.kw)
@@ -94,6 +94,21 @@ class PublisherTests(unittest.TestCase):
         with sqlite3.connect(self.root / 'state.db') as db:
             db.execute("INSERT INTO messages VALUES (2,'s','user','u2','same')")
         self.assertNotEqual(first, pub.human_anchor(self.root, 's'))
+
+    def test_notifications_with_workspace_do_not_advance_human_anchor(self):
+        with sqlite3.connect(self.root / 'state.db') as db:
+            db.execute('CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, message_uid TEXT, content TEXT, display_kind TEXT)')
+            db.execute("INSERT INTO messages VALUES (1,'s','user','u1','continue',NULL)")
+        anchor = pub.human_anchor(self.root, 's')
+        for i, body in enumerate(('[IMPORTANT: Background process proc_1 completed]',
+                                  '[ASYNC DELEGATION BATCH complete]'), 2):
+            for prefix in ('', '[Workspace::v1: /workspace]\n'):
+                with sqlite3.connect(self.root / 'state.db') as db:
+                    db.execute("INSERT INTO messages(session_id,role,message_uid,content) VALUES ('s','user',?,?)", (f'n{i}', prefix + body))
+                self.assertEqual(pub.human_anchor(self.root, 's'), anchor)
+        with sqlite3.connect(self.root / 'state.db') as db:
+            db.execute("INSERT INTO messages(session_id,role,message_uid,content,display_kind) VALUES ('s','user','u2',?,'steer')", ('[IMPORTANT: Background process text from human]',))
+        self.assertNotEqual(pub.human_anchor(self.root, 's'), anchor)
 
 
 if __name__ == '__main__':
