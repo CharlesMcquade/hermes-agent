@@ -56,13 +56,21 @@ def deployment_binding(manifest):
 
 
 def human_anchor(state_home, session_id):
-    """Preserve user intervention even if an identical message is sent twice."""
+    """Preserve user intervention even if an identical message is sent twice.
+
+    Hermes delivers its own background-process and delegation notifications as
+    user-role transcript rows; they are system noise, not human intervention,
+    and must not trip the anchor between dispatch and continuation.
+    """
     path = Path(state_home) / "state.db"
     with sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA query_only=ON")
-        row = db.execute("SELECT message_uid, content FROM messages WHERE session_id=? "
-                         "AND role='user' ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+        row = db.execute(
+            "SELECT message_uid, content FROM messages WHERE session_id=? AND role='user' "
+            "AND content NOT LIKE '[IMPORTANT: Background process%' "
+            "AND content NOT LIKE '[ASYNC DELEGATION BATCH%' "
+            "ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
     if row is None or not row["message_uid"]:
         raise RuntimeError("Missing durable user anchor")
     return digest(dict(row))
