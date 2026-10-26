@@ -211,7 +211,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             (self.source / package).mkdir()
             (self.source / package / '__init__.py').touch()
         identity = ('import subprocess\nfrom pathlib import Path\n'
-                    'def sha(): return subprocess.check_output(["/usr/bin/git", "-C", '
+                    'def sha(): return subprocess.check_output(["git", "-C", '
                     'str(Path(__file__).resolve().parents[1]), "rev-parse", "HEAD"], text=True).strip()\n')
         (self.source / 'hermes_cli/main.py').write_text(identity +
             'def _read_git_revision_fingerprint(p): return "git:HEAD:" + sha()\n')

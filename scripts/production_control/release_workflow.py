@@ -25,7 +25,14 @@ import release_build
 import candidate_canary as canary
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
-SAFE_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+# CLT toolchain before /usr/bin: bare `git` must resolve to the real CLT
+# binary, not the Apple shim. The shim dlopens libxcrun from whichever
+# developer dir xcode-select points at — with Xcode.app selected (Duo
+# simulator install, 2026-10) sandboxed probes died on denied libxcrun/
+# xcodebuild access and get_code_identity() reported sha=null ("Actual
+# gateway code SHA differs from manifest"). The CLT git binary needs no
+# xcrun and is exec-whitelisted in the sandbox policy.
+SAFE_PATH = '/Library/Developer/CommandLineTools/usr/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
 
 
 def encoded(value):

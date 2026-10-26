@@ -61,7 +61,7 @@ def inventory(root):
 
 def clean_env(root, agent=None, webui=None, port=None):
     # Construct, never filter/copy os.environ or manifest env/env_files.
-    env = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'en_US.UTF-8',
+    env = {'PATH': '/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'en_US.UTF-8',
            'HOME': str(root / 'home'), 'TMPDIR': str(root / 'tmp'),
            'HERMES_HOME': str(root / 'state'), 'HERMES_BASE_HOME': str(root / 'state'),
            'HERMES_CONFIG_PATH': str(root / 'state/config.yaml'),
