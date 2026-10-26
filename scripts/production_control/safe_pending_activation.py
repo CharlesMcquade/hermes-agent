@@ -25,20 +25,22 @@ def _stable_gateway_state(c, manifest):
     """Read gateway-maintained state through its rewrite races, bounded.
 
     The gateway rewrites gateway_state.json outside the controller lock; a
-    stat-read-stability read can lose that race. Content checks still gate
-    everything downstream — only the transient rewrite race is absorbed.
+    stat-read-stability read can lose that race (either stability check's
+    message). Content checks still gate everything downstream — only the
+    transient rewrite race is absorbed.
     """
     path = Path(manifest['state_dir']) / 'gateway_state.json'
+    transient = {'Input changed during read', 'Retained file changed while reading'}
     last = None
     for attempt in range(10):
         try:
             return json.loads(c.retained_file(path)[0])
         except RuntimeError as exc:
-            if str(exc) != 'Input changed during read':
+            if str(exc) not in transient:
                 raise
             last = exc
             time.sleep(0.25 * (attempt + 1))
-    raise last if last is not None else RuntimeError('Input changed during read')
+    raise RuntimeError('Gateway state did not stabilize')
 
 
 def _guard(c, pending, pin, selected, *, expiring=False):
