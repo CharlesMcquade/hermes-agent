@@ -166,7 +166,10 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual((self.root / 'state.json.writing').read_text(), 'partial')
 
     def test_idle_bounded_wait_and_owner_validation(self):
-        for change in ({'active_agents': 1}, {'active_work': {'other': 'task'}}, {'active_agents': None}):
+        # active_agents counts cached agents and does NOT gate; active_work does.
+        self.gateway(active_agents=1)
+        runner.wait_idle(self.c, self.pending, 'pin', timeout=12)
+        for change in ({'active_work': {'other': 'task'}}, {'active_work': {'x': 1}}):
             self.gateway(**change)
             with self.assertRaisesRegex(RuntimeError, 'active work'): runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
         self.gateway(pid=999)

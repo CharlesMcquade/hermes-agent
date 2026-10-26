@@ -266,9 +266,11 @@ def services_idle(c, pending, pin):
         state = json.loads(c.retained_file(Path(effective["state_dir"]) / "gateway_state.json")[0])
         require(state.get("pid") == identities["agent"]["child"]["pid"] and
                 state.get("gateway_state") == "running", "Gateway idle owner mismatch")
+        # active_agents counts CACHED session agents (persistently >=1 while a
+        # WebUI session exists); the restart hazard is active work, not cache.
         idle = (health.get("status") == "ok" and health.get("active_runs") == 0 and
-                health.get("active_streams") == 0 and type(state.get("active_agents")) is int and
-                state["active_agents"] == 0 and "active_work" in state and not state["active_work"])
+                health.get("active_streams") == 0 and
+                "active_work" in state and not state["active_work"])
         refresh(); unchanged()
         require(pending.effective_pair(c, old, new)[2] == identities, "Idle owners changed")
         return idle
