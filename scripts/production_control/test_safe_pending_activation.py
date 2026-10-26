@@ -127,6 +127,63 @@ class EngineTests(unittest.TestCase):
                 preflight.assert_not_called()
                 snapshot.assert_not_called()
 
+    def _hold_lock_in_other_process(self, seconds):
+        import subprocess
+        import sys
+        proc = subprocess.Popen([
+            sys.executable, '-I', '-B', '-c',
+            'import fcntl,sys,time; f=open(sys.argv[1], "rb"); '
+            'fcntl.flock(f, fcntl.LOCK_EX); print("held", flush=True); time.sleep(float(sys.argv[2]))',
+            str(self.c.base / 'control.lock'), str(seconds),
+        ], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(proc.kill)
+        self.assertEqual(proc.stdout.readline().strip(), 'held')
+        return proc
+
+    def test_scheduled_tick_owning_lock_is_waited_out_not_escalated(self):
+        """A3 regression: a watchdog tick holding control.lock must not raise out
+        of the engine (the runner used to restart the whole activation)."""
+        import time as real_time
+        self.stage()
+        self.scheduled = False
+        self.sleep_hook = lambda: real_time.sleep(0.1)
+        self._hold_lock_in_other_process(1.0)
+        with self.assertRaises(ControlError):
+            with self.c.locked():
+                pass
+        with engine._patient_lock(self.c):
+            pass  # acquired after the holder released, without raising
+        self.assertGreaterEqual(self.c.monotonic(), 1)
+
+    def test_lock_patience_is_bounded(self):
+        self.stage()
+        self.scheduled = False
+        self._hold_lock_in_other_process(30)
+        with self.assertRaisesRegex(ControlError, 'owns control.lock'):
+            with engine._patient_lock(self.c, patience=3):
+                pass
+
+    def test_readiness_wait_yields_lock_for_a_whole_tick(self):
+        """Between locked readiness probes the lock must stay free for >= 5 s,
+        so a scheduled watchdog tick can run instead of reporting busy."""
+        self.stage()
+        self.scheduled = False
+        gaps = []
+        last = [None]
+        real_locked = self.c.locked
+        def spy_locked():
+            now = self.c.monotonic()
+            if last[0] is not None:
+                gaps.append(now - last[0])
+            last[0] = now
+            return real_locked()
+        with patch.object(self.c, 'locked', side_effect=spy_locked), \
+             patch.object(engine, '_ready', side_effect=RuntimeError('not yet')):
+            with self.assertRaisesRegex(RuntimeError, 'readiness timeout'):
+                engine._wait_service(self.c, pending, self.pin, 'new', 'webui', 12)
+        self.assertTrue(gaps)
+        self.assertTrue(all(g >= engine.READINESS_YIELD_SECONDS for g in gaps), gaps)
+
     def test_missing_watchdog_proof_has_visible_phase_and_observation(self):
         self.stage()
         self.scheduled = False
@@ -223,7 +280,8 @@ class EngineTests(unittest.TestCase):
                 raise ControlError('Missing launchd job')
             return job(target)
         self.host.kickstart, self.host.job = transient, read
-        self.assertEqual(self.run_engine()['status'], 'verified')
+        # Readiness probes are spaced READINESS_YIELD_SECONDS apart (lock yield).
+        self.assertEqual(self.run_engine(service_timeout=20)['status'], 'verified')
         self.assertEqual(self.host.calls, [('kickstart', 'webui'), ('kickstart', 'agent')])
 
     def test_assets_gate_gateway(self):

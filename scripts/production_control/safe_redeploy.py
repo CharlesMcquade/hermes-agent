@@ -231,9 +231,19 @@ def verify_authorization(plan):
             "User intervened after deployment was armed")
 
 
-def verify_binding(consumer, plan, binding, *, exact=False):
-    """Refresh before publication; after publication the immutable revision wins."""
-    verify_authorization(plan)
+def verify_binding(consumer, plan, binding, *, exact=False, authorize=True):
+    """Refresh before publication; after publication the immutable revision wins.
+
+    authorize=False is the post-service-action scope: once a service has been
+    signalled, a new human message in the orchestrating session is the moment
+    to report, not grounds to abort (and never grounds to roll back a verified
+    deployment). Identity and approval expiry still hold; the consumer's claim
+    enforces the exact published revision on its side.
+    """
+    if authorize:
+        verify_authorization(plan)
+    else:
+        require(time.time() < plan["approval"]["expires_at"], "Deployment approval expired")
     current = consumer.inspect_binding(binding["session_id"], binding["profile"], binding["workspace"],
                                        session_dir=Path(plan["session_dir"]), profile_home=Path(plan["state_home"]))
     require(all(current[k] == binding[k] for k in IDENTITY_FIELDS),
@@ -339,7 +349,8 @@ def execute(plan, candidate, checkpoint):
         consumer = continuation.load_consumer(candidate)
         deployment = continuation.deployment_binding(candidate)
         authorization_guard = lambda: verify_authorization(plan)
-        if checkpoint.value.get("outcome") in ("worker_entered", "rolled_back", "failed_before_selection", "ambiguous"):
+        if checkpoint.value.get("outcome") in ("worker_entered", "rolled_back", "failed_before_selection", "ambiguous",
+                                                "verified_unreported"):
             return checkpoint.value
         # A terminal write may have reached disk before its checkpoint. It is
         # irrevocable authority: do not select, signal, or revalidate session state.
@@ -418,6 +429,7 @@ def execute(plan, candidate, checkpoint):
                         r["new"]["sha256"] == plan["candidate_sha256"], "Resumed pending pins differ")
                 unchanged()
         selected = False
+        activated = False
         try:
             request = checkpoint.value.get("request")
             # Do not revalidate a claimed session as if its resumed messages were
@@ -447,6 +459,20 @@ def execute(plan, candidate, checkpoint):
             # A published request cannot be rebound, including after interruption.
             binding = request["binding"]
             binding_guard = lambda: verify_binding(consumer, plan, binding, exact=True)
+            post_restart_guard = lambda: verify_binding(consumer, plan, binding, authorize=False)
+            # The human-anchor kill switch covers everything up to the FIRST
+            # service signal. Past that edge the only remaining action is the
+            # report to the session; aborting there (A3, 2026-10-26) left a
+            # verified deployment with no continuation and one exception away
+            # from an unwanted rollback.
+            past_edge = []
+            def edge_guard():
+                (post_restart_guard if past_edge else binding_guard)()
+            def edge_checkpoint(phase, **fields):
+                checkpoint(phase, **fields)
+                if phase == "before_kick" and not past_edge:
+                    binding_guard()  # last anchor check, at the signal boundary
+                    past_edge.append(phase)
             binding_guard()
             checkpoint("selecting")
             binding_guard()
@@ -455,9 +481,12 @@ def execute(plan, candidate, checkpoint):
             require(sha(c.retained_file(c.manifest_path)[0]) == plan["candidate_sha256"], "Selection readback mismatch")
             checkpoint("selected")
             profile_guard()
-            proof = stable(lambda: run_activation(c, pending, pending_pin,
-                idle_checkpoint(c, pending, pending_pin, checkpoint, guard=binding_guard)))
-            profile_guard(); binding_guard()
+            # run_activation owns its own bounded lock patience; wrapping it in
+            # stable() restarted the whole activation on one lock collision.
+            proof = run_activation(c, pending, pending_pin,
+                idle_checkpoint(c, pending, pending_pin, edge_checkpoint, guard=edge_guard))
+            activated = True
+            profile_guard(); post_restart_guard()
             def publish_verified_terminal():
                 with patient_locked(c):
                     refresh = c.refresh_admission()
@@ -474,7 +503,7 @@ def execute(plan, candidate, checkpoint):
                             "Terminal owner changed after settlement")
                     health = c.health(new)
                     refresh(); unchanged(); profile_guard()
-                    binding_guard()
+                    post_restart_guard()
                     return continuation.publish_terminal(consumer, plan["continuation_dir"], request, fresh, health)
             terminal = stable(publish_verified_terminal)
             checkpoint("resume_terminal_published", terminal=terminal)
@@ -496,6 +525,12 @@ def execute(plan, candidate, checkpoint):
             if terminal_exists:
                 checkpoint("continuation_ambiguous", outcome="ambiguous")
                 return checkpoint.value
+            if activated:
+                # A verified activation is never rolled back for a reporting
+                # failure: healthy deployment, no resume published. Terminal
+                # outcome so a rerun does not re-select; the error still propagates.
+                checkpoint("continuation_unpublished", outcome="verified_unreported")
+                raise
             if selected or sha(c.retained_file(c.manifest_path)[0]) == plan["candidate_sha256"]:
                 wait_idle(c, pending, pending_pin, guard=authorization_guard)
                 checkpoint("rollback_started")

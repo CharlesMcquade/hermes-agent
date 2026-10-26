@@ -14,6 +14,10 @@ import safe_redeploy as runner
 class Crash(BaseException): pass
 
 
+REAL_VERIFY_BINDING = runner.verify_binding
+REAL_VERIFY_AUTHORIZATION = runner.verify_authorization
+
+
 class OrchestratorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -108,6 +112,62 @@ class OrchestratorTests(unittest.TestCase):
         with patch.object(runner.continuation, 'publish_terminal') as publish:
             with self.assertRaisesRegex(RuntimeError, 'owner changed'): self.execute()
         publish.assert_not_called()
+
+    def _real_binding_guards(self):
+        """Swap the setUp mocks for the real verify_binding/verify_authorization."""
+        self.stack.enter_context(patch.object(runner, 'verify_binding', REAL_VERIFY_BINDING))
+        self.stack.enter_context(patch.object(runner, 'verify_authorization', REAL_VERIFY_AUTHORIZATION))
+        binding = dict(session_id='s', profile='default', workspace='/work', model='m', model_provider='p',
+                       session_revision='rev')
+        self.current = dict(binding)
+        self.consumer.inspect_binding = Mock(side_effect=lambda *a, **kw: dict(self.current))
+        self.state('session_settled', binding=binding)
+        self.plan['approval'] = {'expires_at': 10**12}
+        self.plan['session'] = {'session_id': 's'}
+        self.anchor = self.stack.enter_context(patch.object(runner.continuation, 'human_anchor', return_value='anchor'))
+
+    def test_anchor_move_after_first_kick_reports_instead_of_aborting(self):
+        """A3 regression: a human message after the WebUI signal must not abort or roll back."""
+        self.terminal_fixture()
+        self._real_binding_guards()
+        def activation(c, pending, pin, checkpoint):
+            checkpoint('before_kick', service='webui')
+            # The user types in the session while WebUI restarts; the transcript moves.
+            self.anchor.return_value = 'moved'
+            self.current['session_revision'] = 'rev+1'
+            checkpoint('before_kick', service='agent')
+            return {'proof': {'process_identity': self.identity}}
+        self.engine.run_activation.side_effect = activation
+        with patch.object(runner.continuation, 'publish_terminal', return_value={'verified': True}) as publish, \
+             patch.object(runner.continuation, 'receipt_status', return_value={'status': 'worker_entered', 'stream_id': 'x'}):
+            self.assertEqual(self.execute()['outcome'], 'worker_entered')
+        publish.assert_called_once()
+        self.engine.rollback_pending.assert_not_called()
+
+    def test_anchor_move_before_first_kick_still_refuses_and_rolls_back(self):
+        self.terminal_fixture()
+        self._real_binding_guards()
+        def activation(c, pending, pin, checkpoint):
+            self.anchor.return_value = 'moved'
+            checkpoint('before_kick', service='webui')
+            raise AssertionError('signal must not happen')
+        self.engine.run_activation.side_effect = activation
+        with patch.object(runner.continuation, 'publish_terminal') as publish:
+            with self.assertRaisesRegex(RuntimeError, 'User intervened'):
+                self.execute()
+        publish.assert_not_called()
+        # Rollback is itself anchor-fenced: the run stops with the selection
+        # written and no process signalled, for independent review.
+        self.engine.rollback_pending.assert_not_called()
+        self.assertEqual(self.selected.read_bytes(), self.newraw)
+
+    def test_failure_after_verified_activation_raises_without_rollback(self):
+        self.terminal_fixture()
+        with patch.object(runner.continuation, 'publish_terminal', side_effect=OSError('publisher down')):
+            with self.assertRaisesRegex(OSError, 'publisher down'):
+                self.execute()
+        self.engine.rollback_pending.assert_not_called()
+        self.assertEqual(self.state.value['outcome'], 'verified_unreported')
 
     def test_selection_write_then_failure_rolls_back(self):
         self.prepared()
@@ -224,7 +284,7 @@ class OrchestratorTests(unittest.TestCase):
         self.terminal_fixture()
         fresh = {'session_id': 's', 'session_revision': 'new'}
         events = []
-        def verify(consumer, plan, binding, *, exact=False):
+        def verify(consumer, plan, binding, *, exact=False, authorize=True):
             events.append('exact' if exact else 'refresh')
             if exact:
                 self.assertEqual(binding, fresh)
@@ -244,7 +304,7 @@ class OrchestratorTests(unittest.TestCase):
 
     def test_published_revision_change_refuses_selection(self):
         self.prepared()
-        def verify(consumer, plan, binding, *, exact=False):
+        def verify(consumer, plan, binding, *, exact=False, authorize=True):
             if exact:
                 raise RuntimeError('Published session revision changed')
             return binding

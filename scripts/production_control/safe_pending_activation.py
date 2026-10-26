@@ -14,6 +14,48 @@ import urllib.parse
 
 
 ORDER = ('webui', 'agent')
+# Unlocked gap between locked readiness probes. The scheduled watchdog takes
+# control.lock non-blocking once per tick and reports 'busy' otherwise; a
+# one-second gap starved it (A3, 2026-10-26). Five seconds leaves the lock
+# free >70% of the time against ~1-2 s ticks.
+READINESS_YIELD_SECONDS = 5
+LOCK_PATIENCE_SECONDS = 60
+
+
+def _lock_contention(exc):
+    return isinstance(exc, BlockingIOError) or 'owns control.lock' in str(exc)
+
+
+class _patient_lock:
+    """control.lock with bounded waiting on contention.
+
+    The installed controller acquires non-blocking and raises ControlError
+    when the scheduled watchdog owns the lock. Letting that escape made the
+    runner's outer retry restart the whole activation, re-entering the locked
+    readiness loop and starving the very tick it was waiting for.
+    """
+
+    def __init__(self, c, patience=LOCK_PATIENCE_SECONDS):
+        self.c, self.patience, self.lock = c, patience, None
+
+    def __enter__(self):
+        deadline = self.c.monotonic() + self.patience
+        last = None
+        while True:
+            lock = self.c.locked()
+            try:
+                lock.__enter__()
+            except Exception as exc:
+                if not _lock_contention(exc) or self.c.monotonic() >= deadline:
+                    raise
+                last = exc
+                self.c.sleep(1)
+                continue
+            self.lock = lock
+            return self
+
+    def __exit__(self, *exc_info):
+        return self.lock.__exit__(*exc_info)
 
 
 def require(ok, message):
@@ -107,7 +149,7 @@ def _wait_service(c, pending, pin, selected, service, timeout):
     deadline = c.monotonic() + timeout
     error = 'No readiness sample'
     while c.monotonic() < deadline:
-        with c.locked():
+        with _patient_lock(c):
             _, old, new = _guard(c, pending, pin, selected, expiring=selected == 'new')
             target = new if selected == 'new' else old
             try:
@@ -116,7 +158,8 @@ def _wait_service(c, pending, pin, selected, service, timeout):
                 # No signals here. Missing jobs, stale gateway state and socket
                 # handover are transient only within this bounded read-only wait.
                 error = str(exc)
-        c.sleep(1)
+        # Yield the publisher lock long enough for a whole scheduled tick.
+        c.sleep(READINESS_YIELD_SECONDS)
     raise RuntimeError(service + ' readiness timeout: ' + error)
 
 
@@ -125,7 +168,7 @@ def _ordered(c, pending, pin, checkpoint, selected, timeout):
     from restart_production import ControlError
     report = {}
     for service in ORDER:
-        with c.locked():
+        with _patient_lock(c):
             r, old, new = _guard(c, pending, pin, selected, expiring=selected == 'new')
             target = new if selected == 'new' else old
             # Positively identify BOTH current owners before any signal. In
@@ -189,7 +232,7 @@ def _settle(c, pending, pin, selected, timeout, stable_seconds, *, progress=None
                 stable, stable_at = None, None
                 c.sleep(1)
                 continue
-        with c.locked():
+        with _patient_lock(c):
             r, old, new = _guard(c, pending, pin, selected)
             target = new if selected == 'new' else old
             try:
