@@ -30,17 +30,18 @@ def _stable_gateway_state(c, manifest):
     transient rewrite race is absorbed.
     """
     path = Path(manifest['state_dir']) / 'gateway_state.json'
-    transient = {'Input changed during read', 'Retained file changed while reading'}
+    transient_msgs = {'Input changed during read', 'Retained file changed while reading'}
     last = None
     for attempt in range(10):
         try:
             return json.loads(c.retained_file(path)[0])
-        except RuntimeError as exc:
-            if str(exc) not in transient:
+        except Exception as exc:  # installed ControlError is not a RuntimeError
+            transient = (str(exc) in transient_msgs
+                         or 'owns control.lock' in str(exc)
+                         or isinstance(exc, BlockingIOError))
+            if not transient:
                 raise
             last = exc
-        except BlockingIOError:
-            last = RuntimeError('control.lock busy')
         time.sleep(0.25 * (attempt + 1))
     raise RuntimeError('Gateway state did not stabilize: ' + str(last))
 

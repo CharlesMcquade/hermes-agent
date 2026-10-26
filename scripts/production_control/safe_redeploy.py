@@ -38,22 +38,23 @@ def stable(action, *, attempts=10):
 
     Transient conditions absorbed: the gateway rewrites gateway_state.json, the
     running WebUI's embedded watchdog rewrites watchdog-state.json and holds
-    control.lock during ticks (BlockingIOError on non-blocking acquisition), and
-    both stability checks (tooling + installed controller) can lose a rewrite
-    race. Content checks still gate everything — only these transient races are
-    absorbed. Non-stability errors and exhausted attempts propagate.
+    control.lock during ticks (ControlError/BlockingIOError on non-blocking
+    acquisition), and both stability checks (tooling + installed controller) can
+    lose a rewrite race. Content checks still gate everything — only these
+    transient races are absorbed. Everything else propagates.
     """
     transient_msgs = {'Input changed during read', 'Retained file changed while reading'}
     last = None
     for attempt in range(attempts):
         try:
             return action()
-        except RuntimeError as exc:
-            if str(exc) not in transient_msgs:
+        except Exception as exc:  # installed ControlError is not a RuntimeError
+            transient = (str(exc) in transient_msgs
+                         or 'owns control.lock' in str(exc)
+                         or isinstance(exc, BlockingIOError))
+            if not transient:
                 raise
             last = exc
-        except BlockingIOError:
-            last = RuntimeError('control.lock busy (watchdog tick or concurrent runner)')
         time.sleep(0.25 * (attempt + 1))
     raise RuntimeError('Observational state did not stabilize: ' + str(last))
 
