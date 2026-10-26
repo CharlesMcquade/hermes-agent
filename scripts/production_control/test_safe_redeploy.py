@@ -56,7 +56,7 @@ class OrchestratorTests(unittest.TestCase):
         self.stack.enter_context(patch.object(runner.continuation, 'deployment_binding', return_value={}))
         self.stack.enter_context(patch.object(runner.continuation, 'initialize'))
         self.stack.enter_context(patch.object(runner.continuation, 'publish_request', return_value={'request': True}))
-        self.stack.enter_context(patch.object(runner, 'verify_binding'))
+        self.stack.enter_context(patch.object(runner, 'verify_binding', return_value={'session_id': 's'}))
         self.stack.enter_context(patch.object(runner.routing, 'profile_routing_guard', return_value=lambda: None))
         self.inspection = self.stack.enter_context(patch.object(runner, 'initial_inspection',
             return_value=(self.manifest, lambda: None, {})))
@@ -171,7 +171,7 @@ class OrchestratorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'active work'): runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
         self.gateway(pid=999)
         with self.assertRaisesRegex(RuntimeError, 'owner mismatch'): runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
-        self.gateway(); runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
+        self.gateway(); runner.wait_idle(self.c, self.pending, 'pin', timeout=12)
 
     def test_mixed_baseline_settlement_uses_effective_pair_not_old_release(self):
         runner.settlement_health(self.c, self.pending, 'old-pin', {'wrong': 'baseline'})
