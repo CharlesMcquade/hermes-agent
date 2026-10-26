@@ -158,6 +158,33 @@ def read_plan(path, pin):
     return plan, candidate
 
 
+@contextmanager
+def patient_locked(c, *, timeout=180):
+    """Acquire the controller lock, outlasting watchdog ticks.
+
+    The running WebUI's embedded watchdog holds control.lock for each tick and
+    the installed controller raises ControlError/BlockingIOError on a
+    non-blocking collision. Wait-and-retry is correct here: tick duration is
+    seconds, and every caller re-validates state after acquisition.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        cm = c.locked()
+        try:
+            cm.__enter__()
+        except Exception as exc:
+            transient = isinstance(exc, BlockingIOError) or 'owns control.lock' in str(exc)
+            if not transient or time.monotonic() > deadline:
+                raise
+            time.sleep(0.5)
+            continue
+        try:
+            yield
+        finally:
+            cm.__exit__(None, None, None)
+        return
+
+
 def initial_inspection(c, pending, plan, candidate):
     """Read-only admission. An exact expired mixed pair is a recovery gate, not readiness."""
     base = Path(plan["base"])
@@ -167,7 +194,7 @@ def initial_inspection(c, pending, plan, candidate):
     profile_guard = routing.profile_routing_guard(candidate)
 
     def observe_admission():
-        with c.locked():
+        with patient_locked(c):
             refresh = c.refresh_admission()
             for manifest in (old, candidate):
                 c.check_revocation(manifest); c.preflight(manifest)
@@ -206,7 +233,7 @@ def settlement_health(c, pending, pin, baseline):
         return c.health(baseline)
 
     def observe():
-        with c.locked():
+        with patient_locked(c):
             refresh = c.refresh_admission()
             _, old, new, unchanged = pending.load(c, pin)
             effective, _, identities = pending.effective_pair(c, old, new)
@@ -247,7 +274,7 @@ def wait_idle(c, pending, pin, timeout=600):
     """Bounded read-only drain; a stale gateway state is never idle proof."""
     deadline = c.monotonic() + timeout
     while c.monotonic() < deadline:
-        with c.locked():
+        with patient_locked(c):
             if services_idle(c, pending, pin):
                 return
         c.sleep(1)
@@ -276,7 +303,7 @@ def execute(plan, candidate, checkpoint):
         archive = Path(plan["operation_dir"]) / "previous-receipt"
         if not pending_pin and "preparing" in phases and os.path.lexists(base / pending.RECEIPT):
             pending_pin = sha(c.retained_file(base / pending.RECEIPT)[0])
-            with c.locked():
+            with patient_locked(c):
                 r, _, _, unchanged = pending.load(c, pending_pin, allow_unfenced=True)
                 require(r["old"]["sha256"] == plan["selected_sha256"] and
                         r["new"]["sha256"] == plan["candidate_sha256"], "Foreign preparation after interruption")
@@ -318,7 +345,7 @@ def execute(plan, candidate, checkpoint):
             if os.path.lexists(base / pending.RECEIPT):
                 receipt_raw = c.retained_file(base / pending.RECEIPT)[0]
                 recovered_pin = sha(receipt_raw)
-                with c.locked():
+                with patient_locked(c):
                     r, _, _, unchanged = pending.load(c, recovered_pin, allow_unfenced=True)
                     require(r["old"]["sha256"] == plan["selected_sha256"] and
                             r["new"]["sha256"] == plan["candidate_sha256"], "Foreign preparation after interruption")
@@ -328,14 +355,14 @@ def execute(plan, candidate, checkpoint):
                 prepared = stable(lambda: pending.prepare(c, Path(plan["candidate"]),
                     expected_old_sha256=plan["selected_sha256"], expected_new_sha256=plan["candidate_sha256"]))
             pending_pin = prepared["receipt_sha256"]
-            with c.locked():
+            with patient_locked(c):
                 r, _, _, unchanged = pending.load(c, pending_pin)
                 unchanged()
             checkpoint("prepared", pending_pin=pending_pin, controller_operation_id=r["operation_id"])
         else:
             profile_guard = routing.profile_routing_guard(candidate)
             binding = checkpoint.value["binding"]
-            with c.locked():
+            with patient_locked(c):
                 r, old, new, unchanged = pending.load(c, pending_pin, allow_unfenced=True)
                 require(r["old"]["sha256"] == plan["selected_sha256"] and
                         r["new"]["sha256"] == plan["candidate_sha256"], "Resumed pending pins differ")
@@ -366,7 +393,7 @@ def execute(plan, candidate, checkpoint):
                                                   idle_checkpoint(c, pending, pending_pin, checkpoint)))
             profile_guard(); verify_binding(consumer, plan, binding)
             def publish_verified_terminal():
-                with c.locked():
+                with patient_locked(c):
                     refresh = c.refresh_admission()
                     r, _, new, unchanged = pending.load(c, pending_pin)
                     result = json.loads(c.retained_file(base / pending.RESULT)[0])
