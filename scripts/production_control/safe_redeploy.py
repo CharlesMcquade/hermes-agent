@@ -221,12 +221,24 @@ def initial_inspection(c, pending, plan, candidate):
     return old, profile_guard, state
 
 
+IDENTITY_FIELDS = ("session_id", "profile", "workspace", "model", "model_provider")
+
+
 def verify_binding(consumer, plan, binding):
+    """Genuine user input still aborts; volatile transcript churn does not.
+
+    The revision digest moves with every system row and controller turn, so the
+    mid-flight check pins IDENTITY only. The consumer re-validates the full
+    binding at claim time against the request published with the FRESH binding
+    the caller stores from this call.
+    """
     require(continuation.human_anchor(plan["state_home"], binding["session_id"]) == plan["human_anchor"],
             "User intervened after deployment was armed")
     current = consumer.inspect_binding(binding["session_id"], binding["profile"], binding["workspace"],
                                        session_dir=Path(plan["session_dir"]), profile_home=Path(plan["state_home"]))
-    require(current == binding, "Settled session revision changed")
+    require(all(current[k] == binding[k] for k in IDENTITY_FIELDS),
+            "Session identity changed since deployment was armed")
+    return current
 
 
 def settlement_health(c, pending, pin, baseline):
@@ -271,13 +283,19 @@ def idle_checkpoint(c, pending, pin, checkpoint):
     return guarded
 
 
-def wait_idle(c, pending, pin, timeout=600):
-    """Bounded read-only drain; a stale gateway state is never idle proof."""
+def wait_idle(c, pending, pin, timeout=600, stable_seconds=10):
+    """Bounded read-only drain: ~10s of continuous idle authorizes the restart."""
     deadline = c.monotonic() + timeout
+    idle_since = None
     while c.monotonic() < deadline:
         with patient_locked(c):
             if services_idle(c, pending, pin):
-                return
+                if idle_since is None:
+                    idle_since = c.monotonic()
+                elif c.monotonic() - idle_since >= stable_seconds:
+                    return
+            else:
+                idle_since = None
         c.sleep(1)
     raise RuntimeError("Services still have active work; no restart authorized")
 
@@ -326,7 +344,7 @@ def execute(plan, candidate, checkpoint):
                     health=lambda: settlement_health(c, pending,
                         None if recovery_done else plan.get("recovery_pending_sha256"), old))
                 checkpoint("session_settled", binding=binding)
-            verify_binding(consumer, plan, binding)
+            binding = verify_binding(consumer, plan, binding)
             recovery_pin = plan.get("recovery_pending_sha256")
             if recovery_pin and not recovery_done:
                 wait_idle(c, pending, recovery_pin)
@@ -382,7 +400,9 @@ def execute(plan, candidate, checkpoint):
             if checkpoint.value.get("terminal"):
                 checkpoint("continuation_observed", outcome=continuation.receipt_status(consumer, plan["continuation_dir"], request)["status"])
                 return checkpoint.value
-            profile_guard(); verify_binding(consumer, plan, binding)
+            profile_guard()
+            binding = verify_binding(consumer, plan, binding)
+            checkpoint("binding_refreshed", binding=binding)
             wait_idle(c, pending, pending_pin)
             checkpoint("selecting")
             pending.select(c, pending_pin)
