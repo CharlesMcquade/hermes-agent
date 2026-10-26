@@ -9,8 +9,9 @@ development tree never acts on production state.
 
 The script performs the ordered handoff the pending protocol expects: Restart
 WebUI, prove the candidate identity + listener ownership + health, then Restart
-Gateway, then settle the durable pending result via the scheduled watchdog job
-(forced ticks of the same launchd job; never a private observe call).
+Gateway, then wait for natural scheduled watchdog publication of a verified
+result matching the exact pending receipt, bounded by --settle-timeout. Never
+force watchdog ticks or call a private observer to shorten settlement.
 
 On any failure: STOP and report. No automatic rollback here — recovery is the
 watchdog's deadline expiry (selection auto-restores) plus the retained baseline
@@ -29,7 +30,6 @@ from pathlib import Path
 
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
            'control_refresh', 'watchdog', 'approved_restart_job')
-WATCHDOG_LABEL = 'com.charles.hermes-webui-watchdog'
 ORDER = ('webui', 'agent')  # ordered handoff: WebUI first, Gateway second
 
 
@@ -179,14 +179,10 @@ def main():
                 report[f'{service}_new_pid'] = new_pid
                 print(json.dumps({service: 'new-verified', 'pid': new_pid}), flush=True)
 
-        # Settlement: force ticks of the SCHEDULED watchdog job and poll its result.
+        # Observe natural scheduled publication; never accelerate watchdog settlement.
         settle_deadline = time.time() + args.settle_timeout
         last = None
         while time.time() < settle_deadline:
-            try:
-                c.host.kickstart(WATCHDOG_LABEL)
-            except Exception as exc:
-                print(f'watchdog tick force failed ({exc}); relying on schedule', file=sys.stderr)
             time.sleep(12)
             result_path = base / pending.RESULT
             if result_path.exists():
