@@ -270,7 +270,9 @@ class OrchestratorTests(unittest.TestCase):
         self.c.health.return_value['active_runs'] = 1
         runner.wait_idle(self.c, self.pending, 'pin', timeout=3)  # courtesy window, then proceeds
         self.c.health.return_value['active_runs'] = 0
-        guarded = runner.idle_checkpoint(self.c, self.pending, 'pin', lambda *a, **k: self.gateway(active_agents=1))
+        def strict_checkpoint(phase, **fields):
+            self.gateway(active_agents=1)
+        guarded = runner.idle_checkpoint(self.c, self.pending, 'pin', strict_checkpoint)
         guarded('before_kick', service='agent')  # observed and journaled, not refused
 
     def test_busy_gateway_does_not_block_selection(self):

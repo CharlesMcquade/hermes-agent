@@ -69,8 +69,8 @@ def retire(c, pending, pin, archive, *, checkpoint=lambda *a, **k: None):
                     result_path = c.base / pending.RESULT
                     require(os.path.lexists(result_path), "No durable result for dead-round retirement")
                     dead_result = json.loads(c.retained_file(result_path)[0])
-                    require(dead_result.get("status") == "old_observed"
-                            and dead_result.get("operation_id") == r["operation_id"],
+                    require(dead_result.get("operation_id") == r["operation_id"]
+                            and dead_result.get("selected") != "new",
                             "Unexpired old pending handoff cannot retire")
                     dead_round = True
             else:

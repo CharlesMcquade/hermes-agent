@@ -307,12 +307,12 @@ def idle_checkpoint(c, pending, pin, checkpoint, *, guard=None):
                 idle = services_idle(c, pending, pin)
             except Exception as exc:
                 # Observation failure is journaled, never a veto (Charles, 2026-10-26).
-                checkpoint("idle_observation_failed", phase=phase, error=str(exc)[:200])
+                checkpoint("idle_observation_failed", observed_phase=phase, error=str(exc)[:200])
                 return
             if not idle:
                 # Advisory only (Charles, 2026-10-26): activity never vetoes a
                 # scheduled service action; it is journaled instead.
-                checkpoint("work_observed_at_service_edge", phase=phase)
+                checkpoint("work_observed_at_service_edge", observed_phase=phase)
     return guarded
 
 
