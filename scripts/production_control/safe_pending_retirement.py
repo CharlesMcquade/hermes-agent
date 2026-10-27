@@ -56,8 +56,23 @@ def retire(c, pending, pin, archive, *, checkpoint=lambda *a, **k: None):
             target = old if selected == pending.decode(r["old"]) else new
             require(selected in (pending.decode(r["old"]), pending.decode(r["new"])), "Foreign selection")
             result = {}
+            dead_round = False
             if target is old:
-                require(c.clock() > r["deadline"], "Unexpired old pending handoff cannot retire")
+                if c.clock() > r["deadline"]:
+                    pass
+                else:
+                    # Charles-directed design change (2026-10-26): a NEVER-SELECTED
+                    # round whose durable result still observes OLD is retireable
+                    # before its deadline — the handoff never took effect, so the
+                    # deadline protects nothing. The evidence is journaled verbatim;
+                    # anything else still refuses closed.
+                    result_path = c.base / pending.RESULT
+                    require(os.path.lexists(result_path), "No durable result for dead-round retirement")
+                    dead_result = json.loads(c.retained_file(result_path)[0])
+                    require(dead_result.get("status") == "old_observed"
+                            and dead_result.get("operation_id") == r["operation_id"],
+                            "Unexpired old pending handoff cannot retire")
+                    dead_round = True
             else:
                 result = json.loads(c.retained_file(result_path)[0])
                 require(result.get("status") == "verified" and result.get("operation_id") == r["operation_id"]
@@ -84,7 +99,8 @@ def retire(c, pending, pin, archive, *, checkpoint=lambda *a, **k: None):
             saved = {"schema": 1, "pin": pin, "selection": encode(selected),
                      "receipt": encode(c.retained_file(receipt_path)[0]),
                      "result": encode(c.retained_file(result_path)[0]) if result_path.exists() else None,
-                     "transaction": encode(transaction), "cleared": encode(cleared), "proof": proof}
+                     "transaction": encode(transaction), "cleared": encode(cleared), "proof": proof,
+                     "dead_round": dead_round}
             refresh(); unchanged()
             require(c.snapshot(target, c.definitions(target))["process_identity"] == proof["process_identity"],
                     "Retirement owner changed")

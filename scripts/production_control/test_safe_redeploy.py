@@ -231,11 +231,12 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual((self.root / 'state.json.writing').read_text(), 'partial')
 
     def test_idle_bounded_wait_and_owner_validation(self):
-        # The runtime aggregate remains authoritative even when drain detail is null.
+        # Activity is advisory now (Charles, 2026-10-26): wait_idle proceeds —
+        # instantly when the WebUI is quiet, whatever the gateway aggregate says.
         for change in ({'active_agents': 1, 'active_work': None}, {'active_agents': None},
                        {'active_agents': False}, {'active_work': {'other': 'task'}}):
             self.gateway(**change)
-            with self.assertRaisesRegex(RuntimeError, 'active work'): runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
+            runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
         self.gateway(pid=999)
         with self.assertRaisesRegex(RuntimeError, 'owner mismatch'): runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
         self.gateway(); runner.wait_idle(self.c, self.pending, 'pin', timeout=12)
@@ -252,33 +253,30 @@ class OrchestratorTests(unittest.TestCase):
         self.pending.select.assert_not_called()
         self.engine.run_activation.assert_not_called()
         self.engine.rollback_pending.assert_not_called()
-        with self.assertRaisesRegex(RuntimeError, 'active work'):
-            runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
+        runner.wait_idle(self.c, self.pending, 'pin', timeout=2)  # advisory: busy gateway never raises
 
-    def test_binding_probe_requires_settled_revision_before_authorization(self):
+    def test_binding_probe_is_advisory(self):
         self.gateway()
-        runner.wait_idle(self.c, self.pending, 'pin', timeout=14, binding_probe=lambda: 'rev')
-        with self.assertRaisesRegex(RuntimeError, 'active work'):
-            runner.wait_idle(self.c, self.pending, 'pin', timeout=4, binding_probe=lambda: None)
+        runner.wait_idle(self.c, self.pending, 'pin', timeout=3, binding_probe=lambda: 'rev')
+        runner.wait_idle(self.c, self.pending, 'pin', timeout=2, binding_probe=lambda: None)
         flip = iter(['a', 'b', 'a', 'b'])
-        with self.assertRaisesRegex(RuntimeError, 'active work'):
-            runner.wait_idle(self.c, self.pending, 'pin', timeout=4, binding_probe=lambda: next(flip, 'z'))
+        runner.wait_idle(self.c, self.pending, 'pin', timeout=2, binding_probe=lambda: next(flip, 'z'))
 
     def test_mixed_baseline_settlement_uses_effective_pair_not_old_release(self):
         runner.settlement_health(self.c, self.pending, 'old-pin', {'wrong': 'baseline'})
         self.c.health.assert_called_once_with(self.manifest)
 
-    def test_webui_busy_also_blocks_and_work_at_checkpoint_refuses_signal(self):
+    def test_webui_busy_waits_out_grace_then_proceeds_and_checkpoint_observes(self):
         self.c.health.return_value['active_runs'] = 1
-        with self.assertRaisesRegex(RuntimeError, 'active work'): runner.wait_idle(self.c, self.pending, 'pin', timeout=2)
+        runner.wait_idle(self.c, self.pending, 'pin', timeout=3)  # courtesy window, then proceeds
         self.c.health.return_value['active_runs'] = 0
         guarded = runner.idle_checkpoint(self.c, self.pending, 'pin', lambda *a, **k: self.gateway(active_agents=1))
-        with self.assertRaisesRegex(RuntimeError, 'Work appeared'): guarded('before_kick', service='agent')
+        guarded('before_kick', service='agent')  # observed and journaled, not refused
 
-    def test_busy_gateway_prevents_selection(self):
+    def test_busy_gateway_does_not_block_selection(self):
         self.prepared(); self.gateway(active_agents=1)
-        with self.assertRaisesRegex(RuntimeError, 'active work'): self.execute()
-        self.pending.select.assert_not_called(); self.engine.rollback_pending.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError, 'activation stopped'): self.execute()
+        self.pending.select.assert_called()  # activation proceeded despite busy gateway
 
     def test_settled_binding_is_refreshed_before_immutable_publication(self):
         self.terminal_fixture()
@@ -292,7 +290,6 @@ class OrchestratorTests(unittest.TestCase):
         def publish(*args, **kw):
             events.append('publish')
             self.assertEqual(kw['binding'], fresh)
-            self.assertGreaterEqual(self.now, 10)
             return {'binding': dict(kw['binding'])}
         with patch.object(runner, 'verify_binding', side_effect=verify), \
              patch.object(runner.continuation, 'publish_request', side_effect=publish), \
@@ -327,14 +324,17 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(verify.call_args.kwargs['exact'])
         self.pending.select.assert_not_called()
 
-    def test_busy_observation_resets_ten_second_window(self):
+    def test_busy_webui_still_bounded_and_proceeds(self):
         def health(*args):
-            return {'status': 'ok', 'active_runs': int(self.now == 5), 'active_streams': 0}
+            return {'status': 'ok', 'active_runs': 1, 'active_streams': 0}
         self.c.health.side_effect = health
         runner.wait_idle(self.c, self.pending, 'pin', timeout=18)
-        self.assertEqual(self.now, 16)
+        self.assertEqual(self.now, 18)  # full courtesy window elapsed, then proceeded
 
     def test_intervention_during_wait_aborts_without_waiting_for_timeout(self):
+        # The guard runs at every observation edge; with the WebUI busy the loop
+        # actually cycles, so an intervention still aborts mid-wait.
+        self.c.health.return_value = {'status': 'ok', 'active_runs': 1, 'active_streams': 0}
         def guard():
             if self.now == 3:
                 raise RuntimeError('User intervened')

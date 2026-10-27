@@ -303,39 +303,45 @@ def idle_checkpoint(c, pending, pin, checkpoint, *, guard=None):
         if phase in ("before_kick", "before_restore_selection"):
             if guard is not None:
                 guard()
-            require(services_idle(c, pending, pin), "Work appeared before service action")
+            try:
+                idle = services_idle(c, pending, pin)
+            except Exception as exc:
+                # Observation failure is journaled, never a veto (Charles, 2026-10-26).
+                checkpoint("idle_observation_failed", phase=phase, error=str(exc)[:200])
+                return
+            if not idle:
+                # Advisory only (Charles, 2026-10-26): activity never vetoes a
+                # scheduled service action; it is journaled instead.
+                checkpoint("work_observed_at_service_edge", phase=phase)
     return guarded
 
 
-def wait_idle(c, pending, pin, timeout=300, stable_seconds=10, *, guard=None, binding_probe=None):
-    """Observe 10s of continuous idle AND a settled binding digest; report blockers."""
+def wait_idle(c, pending, pin, timeout=45, stable_seconds=10, *, guard=None, binding_probe=None):
+    """Courtesy settle, then proceed unconditionally.
+
+    Standing direction (Charles, 2026-10-26): a redeploy must not refuse to
+    restart because sessions are active. Observed activity is reported and
+    NEVER vetoes; the WebUI grace window merely avoids yanking a turn that is
+    about to end anyway. The authorization guard still runs at every edge —
+    consent, not session state, gates a restart.
+    """
     deadline = c.monotonic() + timeout
-    idle_since, last_report_at, last_report = None, None, None
-    observed, last_revision, stable = {}, None, False
+    observed, last_report_at, last_report = {}, None, None
     while c.monotonic() < deadline:
         if guard is not None:
             guard()
         with patient_locked(c):
-            idle = services_idle(c, pending, pin, report=observed.update)
-            revision = binding_probe() if binding_probe is not None else "unprobed"
+            services_idle(c, pending, pin, report=observed.update)
         now = c.monotonic()
-        stable = idle and revision is not None and revision == last_revision
+        if observed.get("webui_active_runs", 0) == 0 and observed.get("webui_active_streams", 0) == 0:
+            break
         if observed != last_report or last_report_at is None or now - last_report_at >= 10:
-            print(json.dumps({"step": "idle_observation", "binding_stable": stable, **observed}), flush=True)
+            print(json.dumps({"step": "idle_observation", "blocking": False, **observed}), flush=True)
             last_report, last_report_at = dict(observed), now
-        if stable:
-            if idle_since is None:
-                idle_since = now
-            elif now - idle_since >= stable_seconds:
-                if guard is not None:
-                    guard()
-                return
-        else:
-            idle_since = None
-        last_revision = revision
         c.sleep(1)
-    observed["binding_stable"] = stable
-    raise RuntimeError("Services still have active work; no restart authorized: " + json.dumps(observed, sort_keys=True))
+    if guard is not None:
+        guard()
+    print(json.dumps({"step": "idle_final", "blocking": False, **observed}), flush=True)
 
 
 def execute(plan, candidate, checkpoint):
