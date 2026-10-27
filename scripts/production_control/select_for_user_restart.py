@@ -24,8 +24,8 @@ import types
 # Reviewed transition: certifi-security -> duo-ready-r2. Pins are deliberately
 # explicit: a subsequent rebuild or control refresh requires fresh admission.
 REFRESH_PIN = '37936f249fb61da2310d5b638beffad91d6de2fdda85a031a0df3bdb492bfc45'
-OLD_PIN = '52c10c4580321cd4fec5af8f712a1734e522c81f9be9f98711d0208054fb2051'
-NEW_PIN = 'caa4cd967531673097406bf48d3051981a8b7c5259382c1f3dba1492b2a49c02'
+OLD_PIN = 'caa4cd967531673097406bf48d3051981a8b7c5259382c1f3dba1492b2a49c02'
+NEW_PIN = 'e87e89d8828623331febbde9e6c486d22d6704114862e87a7e71d8c42f57fa7d'
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
            'control_refresh', 'watchdog', 'approved_restart_job')
 ORDER = ['Restart WebUI', 'Reconnect and verify candidate WebUI native identity',
