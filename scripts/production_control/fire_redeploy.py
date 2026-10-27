@@ -255,7 +255,8 @@ def main():
         print(f"== {time.strftime('%H:%M:%S')} {ph}", flush=True)
         result = PHASE_FN[ph](op, a)
         if ph == "build": op = result
-    print("ARMED - runner live; the session receives a system-initiated turn when verification completes.")
+    if "dispatch" in phases:
+        print("ARMED - runner live; the session receives a system-initiated turn when verification completes.")
 
 
 if __name__ == "__main__":
