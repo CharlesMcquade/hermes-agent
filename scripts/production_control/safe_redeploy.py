@@ -307,7 +307,7 @@ def idle_checkpoint(c, pending, pin, checkpoint, *, guard=None):
     return guarded
 
 
-def wait_idle(c, pending, pin, timeout=60, stable_seconds=10, *, guard=None, binding_probe=None):
+def wait_idle(c, pending, pin, timeout=300, stable_seconds=10, *, guard=None, binding_probe=None):
     """Observe 10s of continuous idle AND a settled binding digest; report blockers."""
     deadline = c.monotonic() + timeout
     idle_since, last_report_at, last_report = None, None, None
