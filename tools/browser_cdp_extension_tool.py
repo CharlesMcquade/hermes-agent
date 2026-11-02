@@ -150,8 +150,8 @@ def browser_cdp_extension(
 BROWSER_CDP_EXTENSION_SCHEMA: Dict[str, Any] = {
     "name": "browser_cdp_extension",
     "description": (
-        "Send a Chrome DevTools Protocol (CDP) command to a browser tab "
-        "through a connected browser extension's chrome.debugger API. "
+        "Send a CDP command to a browser tab via the connected browser extension. "
+        "It uses the extension's chrome.debugger API. "
         "This does NOT require --remote-debugging-port — the extension "
         "uses its native debugger permission.\n\n"
         "The extension must be connected to the Hermes gateway WebSocket "

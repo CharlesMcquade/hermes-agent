@@ -206,6 +206,14 @@ def guarded(name, globals=None, locals=None, fromlist=(), level=0):
         if name == '__future__':
             return real_import(name, globals, locals, fromlist, level)
         if not seen:
+            if name in ('os', 'sys'):
+                # Union note (fork overlay): hermes_cli/main.py repairs sys.path
+                # for script-mode callers (the WebUI lifecycle control runs
+                # hermes_cli/ directly, not the checkout root) before the
+                # bootstrap import — stdlib-only, no PM/activation side
+                # effects. The bootstrap-before-APPLICATION-imports contract
+                # still holds and is asserted below.
+                return real_import(name, globals, locals, fromlist, level)
             assert name == 'hermes_bootstrap', name
             module = real_import(name, globals, locals, fromlist, level)
             assert module._pm_repair is True
@@ -318,7 +326,10 @@ sys.path.insert(0, fake_root)
 real_import = builtins.__import__
 class Boundary(BaseException): pass
 def guarded(name, globals=None, locals=None, fromlist=(), level=0):
-    if globals and globals.get('__file__') == entry and name not in ('__future__', 'hermes_bootstrap'):
+    # 'os'/'sys' allowed first: the fork's hermes_cli/main.py performs a
+    # stdlib-only sys.path repair for script-mode callers before the bootstrap
+    # import (union note — see test_entrypoint_executes_bootstrap_before_application_imports).
+    if globals and globals.get('__file__') == entry and name not in ('__future__', 'hermes_bootstrap', 'os', 'sys'):
         raise Boundary()
     return real_import(name, globals, locals, fromlist, level)
 builtins.__import__ = guarded

@@ -86,6 +86,13 @@ class TestTranscriptWritePatience:
         held by another process — not read like disk/permission damage."""
         monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 0.2)
 
+        # SQLite's default busy handler may sleep PAST the connection's
+        # busy_timeout (1s here) — long enough that the single BEGIN IMMEDIATE
+        # can outlast the 2s hold and succeed before the 0.2s app-level
+        # patience ever gets a say. Cap the connection-level busy wait well
+        # below the patience so exhaustion is deterministic.
+        db._conn.execute("PRAGMA busy_timeout=50")
+
         started = threading.Event()
         holder = threading.Thread(
             target=_hold_write_lock, args=(db.db_path, 2.0, started)

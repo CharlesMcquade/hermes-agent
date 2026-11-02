@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -101,6 +101,16 @@ class RangeHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
+class _ThreadingRangeServer(ThreadingHTTPServer):
+    # pm's downloader opens CONNECTIONS (8) parallel range requests on top of
+    # the probe. A plain HTTPServer is single-threaded with a listen backlog
+    # of 5, so on macOS the surplus connects get RST mid-handshake and the
+    # downloader burns its retry budget before first progress. Serve each
+    # connection in its own thread with a backlog that absorbs the burst.
+    daemon_threads = True
+    request_queue_size = 16
+
+
 @pytest.fixture
 def dl_server():
     RangeHandler.payloads = {}
@@ -110,7 +120,7 @@ def dl_server():
     RangeHandler.no_range = False
     RangeHandler.etags = True
     RangeHandler.chunk = 1 << 20
-    server = HTTPServer(("127.0.0.1", 0), RangeHandler)
+    server = _ThreadingRangeServer(("127.0.0.1", 0), RangeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

@@ -327,9 +327,9 @@ def browser_cdp_remote(
 BROWSER_CDP_REMOTE_SCHEMA: Dict[str, Any] = {
     "name": "browser_cdp_remote",
     "description": (
-        "Send a raw Chrome DevTools Protocol (CDP) command to a REMOTE browser "
-        "endpoint (e.g. PPC Chrome via Tailscale). This is the remote variant of "
-        "browser_cdp — it accepts an explicit 'endpoint' parameter instead of "
+        "Send a raw CDP command to a remote browser endpoint. This is the remote "
+        "variant of browser_cdp — it accepts an explicit 'endpoint' parameter (e.g. "
+        "PPC Chrome via Tailscale) instead of "
         "reading from config, so you can control a remote browser without changing "
         "the local browser.cdp_url setting.\n\n"
         f"**Default endpoint:** PPC Chrome at {DEFAULT_REMOTE_ENDPOINT} (via Tailscale "

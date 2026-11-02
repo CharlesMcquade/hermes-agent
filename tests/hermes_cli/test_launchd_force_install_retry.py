@@ -14,7 +14,24 @@ DOMAIN = "gui/501"
 def _forced_install_fixture(tmp_path, monkeypatch):
     plist = tmp_path / "LaunchAgents" / f"{LABEL}.plist"
     plist.parent.mkdir(parents=True)
-    plist.write_text("<old/>", encoding="utf-8")
+    # Union note (fork overlay): the fork's launchd ownership probe
+    # (_external_launchd_definition) fail-closes on malformed definitions before
+    # the install flow runs. The old "<old/>" stub parses as an empty dict (no
+    # ProgramArguments), tripping the probe's externally-owned refusal instead
+    # of exercising the install/retry path these tests target. A valid
+    # CLI-owned stub keeps the probe neutral (HermesServiceOwner="cli"
+    # short-circuits ownership) while leaving the staleness/retry machinery
+    # under test untouched.
+    plist.write_text(
+        "<plist><dict>"
+        "<key>HermesServiceOwner</key><string>cli</string>"
+        "<key>ProgramArguments</key><array>"
+        "<string>/usr/bin/python3</string><string>-m</string>"
+        "<string>hermes_cli.gateway</string><string>run</string>"
+        "</array>"
+        "</dict></plist>",
+        encoding="utf-8",
+    )
     events = []
 
     monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist)

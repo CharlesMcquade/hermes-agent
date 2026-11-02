@@ -131,10 +131,9 @@ def browser_cdp_sidecar(
 BROWSER_CDP_SIDECAR_SCHEMA: Dict[str, Any] = {
     "name": "browser_cdp_sidecar",
     "description": (
-        "Send Chrome DevTools Protocol (CDP) commands through Verity Sidecar's "
-        "authenticated WebUI-tab relay. This uses the browser extension's "
-        "chrome.debugger permission and the same signed-in WebUI auth channel; "
-        "it does not require --remote-debugging-port or /api/ws.\n\n"
+        "Send CDP commands through Verity Sidecar's authenticated WebUI-tab relay. "
+        "This uses the browser extension's chrome.debugger permission and the same "
+        "signed-in WebUI auth channel; it does not require --remote-debugging-port or /api/ws.\n\n"
         "Use method='cdp.listRelays' to see connected sidecars and "
         "method='cdp.listTabs' to list browser tabs.\n\n"
         f"CDP reference: {CDP_DOCS_URL}"
