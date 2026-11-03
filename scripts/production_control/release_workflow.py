@@ -88,16 +88,30 @@ def overlaps(a, b):
 def validate_config_paths(cfg):
     paths = {k: canonical_path(cfg[k], k) for k in
              ('baseline', 'output', 'scratch', 'agent_repo', 'webui_repo')}
-    for key in ('evidence_dir', 'controls', 'continuation_dir'):
+    for key in ('evidence_dir', 'controls', 'continuation_dir', 'runtime_source_root'):
         if key in cfg:
             paths[key] = canonical_path(cfg[key], key)
+    # Runtime genesis: an explicit venv python outside the selected baseline,
+    # contained under its own root. Both keys or neither. A venv's bin/python is
+    # legitimately a symlink to its base interpreter, so it is checked by
+    # containment after resolution rather than by the non-symlink rule.
+    if ('runtime_source' in cfg) != ('runtime_source_root' in paths):
+        raise RuntimeError('runtime_source and runtime_source_root must be given together')
+    if 'runtime_source' in cfg:
+        source = Path(cfg['runtime_source'])
+        if not source.is_absolute() or source.name not in ('python', 'python3') or source.parent.name != 'bin':
+            raise RuntimeError('runtime_source must be an absolute venv bin/python')
+        root = paths['runtime_source_root']
+        if not source.is_relative_to(root) or not source.resolve().is_relative_to(root):
+            raise RuntimeError('runtime_source escapes runtime_source_root')
+        paths['runtime_source'] = source
     output = paths['output']
     for key, value in paths.items():
         if key != 'output' and overlaps(output, value):
             raise RuntimeError('output overlaps ' + key)
     for writable in ('scratch', 'evidence_dir'):
         if writable in paths:
-            for protected in ('agent_repo', 'webui_repo', 'controls'):
+            for protected in ('agent_repo', 'webui_repo', 'controls', 'runtime_source_root'):
                 if protected in paths and overlaps(paths[writable], paths[protected]):
                     raise RuntimeError(writable + ' overlaps ' + protected)
             if paths['baseline'].is_relative_to(paths[writable]):
@@ -235,6 +249,20 @@ def check_placement(cfg, baseline):
         if key in ('scratch', 'evidence_dir') and value.is_relative_to(state):
             if key != 'scratch' or not value.is_relative_to(state / 'cache/scratch'):
                 raise RuntimeError(key + ' is inside application state, not dedicated scratch')
+    if 'runtime_source_root' in cfg:
+        genesis = Path(cfg['runtime_source_root'])
+        # A genesis runtime is never a frozen release, the pm tool store, or any
+        # other live state: those are inherited or managed by other contracts.
+        if overlaps(genesis, old) or overlaps(genesis, state):
+            raise RuntimeError('runtime_source_root overlaps a release tree or real state')
+
+
+def runtime_source_for(cfg, baseline):
+    """(python, containment root, mode) the build copies its runtime from."""
+    if 'runtime_source' in cfg:
+        return Path(cfg['runtime_source']), Path(cfg['runtime_source_root']), 'genesis'
+    old = Path(baseline['services']['agent']['repo']).parent
+    return Path(baseline['services']['agent']['argv'][0]), old / 'runtime', 'inherited'
 
 
 def require_sealed(root):
@@ -267,6 +295,182 @@ def verify(cfg):
         raise RuntimeError('Release metadata or modes changed during verification')
     return {'status': 'static_verified_not_deployed', 'manifest': str(path),
             'manifest_sha256': digest(path), 'identity': identity, 'runtime': runtime}
+
+
+# --- Runtime dependency drift -------------------------------------------------
+# The runtime is inherited by copy, never resolved at build time. A source commit
+# that declares a dependency the venv lacks boots-fails in production, and no
+# build/verify gate would predict it. This gate reads files only: no interpreter
+# from the release (or anywhere else) is executed.
+
+_DEP_NAME = re.compile(r'\s*([A-Za-z0-9][A-Za-z0-9._-]*)')
+_MARKER_TOKEN = re.compile(r"""\s*(?:'[^']*'|"[^"]*"|\(|\)|==|!=|<=|>=|<|>|~=|===|\b(?:and|or|not|in)\b|[A-Za-z_][A-Za-z0-9_]*)""")
+_MARKER_VARS = ('python_version', 'python_full_version', 'sys_platform', 'platform_system',
+                'platform_machine', 'platform_release', 'platform_python_implementation',
+                'implementation_name', 'os_name', 'extra')
+
+
+def _normalized(name):
+    return re.sub(r'[-_.]+', '-', name).lower()
+
+
+class _Version(str):
+    """PEP 440-ish ordering for the two version markers; string semantics otherwise."""
+    def _key(self):
+        return tuple(int(p) for p in re.findall(r'\d+', self))
+    def __eq__(self, other): return self._key() == _Version(other)._key()
+    def __ne__(self, other): return not self == other
+    def __lt__(self, other): return self._key() < _Version(other)._key()
+    def __le__(self, other): return self._key() <= _Version(other)._key()
+    def __gt__(self, other): return self._key() > _Version(other)._key()
+    def __ge__(self, other): return self._key() >= _Version(other)._key()
+    __hash__ = str.__hash__
+
+
+def marker_environment(python_version):
+    """The environment markers are evaluated against: this host, target python."""
+    uname = os.uname()
+    return {'python_version': _Version('.'.join(python_version.split('.')[:2])),
+            'python_full_version': _Version(python_version),
+            'sys_platform': sys.platform, 'platform_system': uname.sysname,
+            'platform_machine': uname.machine, 'platform_release': uname.release,
+            'platform_python_implementation': 'CPython', 'implementation_name': 'cpython',
+            'os_name': os.name}
+
+
+def evaluate_marker(marker, env):
+    """Evaluate a PEP 508 marker with a token allowlist; unknown syntax is an error."""
+    pos, tokens = 0, []
+    while pos < len(marker):
+        match = _MARKER_TOKEN.match(marker, pos)
+        if not match or match.end() == pos:
+            raise RuntimeError('Unsupported marker syntax: ' + marker)
+        token = match.group(0).strip()
+        if token.isidentifier() and token not in ('and', 'or', 'not', 'in') and token not in _MARKER_VARS:
+            raise RuntimeError('Unknown marker variable %r in %s' % (token, marker))
+        tokens.append(token)
+        pos = match.end()
+    if 'extra' in tokens:
+        return False
+    return bool(eval(' '.join(tokens), {'__builtins__': {}}, dict(env)))  # noqa: S307 - allowlisted tokens
+
+
+def _requirement(line):
+    """(normalized name, marker or None) for one requirement spec, or None to skip."""
+    line = line.split('#', 1)[0].strip()
+    if not line or line.startswith(('-', '--')) or '://' in line or ' @ ' in line or line.startswith(('.', '/')):
+        return None
+    match = _DEP_NAME.match(line)
+    if not match:
+        return None
+    marker = line.split(';', 1)[1].strip() if ';' in line else None
+    return _normalized(match.group(1)), marker
+
+
+def declared_dependencies(root, env):
+    """Dependency names whose markers hold in env, from agent pyproject + webui requirements."""
+    import tomllib
+    required = set()
+    pyproject = tomllib.loads((root / 'agent/pyproject.toml').read_text())
+    specs = list(pyproject.get('project', {}).get('dependencies', []))
+    requirements = root / 'webui/requirements.txt'
+    if requirements.is_file():
+        specs.extend(requirements.read_text().splitlines())
+    for spec in specs:
+        parsed = _requirement(spec)
+        if parsed is None:
+            continue
+        name, marker = parsed
+        if marker is None or evaluate_marker(marker, env):
+            required.add(name)
+    return required
+
+
+def venv_python_version(runtime):
+    """Interpreter version recorded by the venv itself (pyvenv.cfg), no execution."""
+    for line in (runtime / 'venv/pyvenv.cfg').read_text().splitlines():
+        key, _, value = line.partition('=')
+        if key.strip() in ('version', 'version_info'):
+            return value.strip()
+    raise RuntimeError('pyvenv.cfg lacks a version')
+
+
+def installed_distributions(runtime):
+    """Distribution names from dist-info METADATA under the venv purelib (file reads only)."""
+    names = set()
+    for metadata in (runtime / 'venv/lib').glob('python*/site-packages/*.dist-info/METADATA'):
+        for line in metadata.read_text(errors='replace').splitlines():
+            if line.startswith('Name:'):
+                names.add(_normalized(line[5:].strip()))
+                break
+            if not line.strip():
+                break
+    return names
+
+
+def pm_pins(root, facts_path):
+    """Lock-pinned uv/python versions vs the shared tool store's facts."""
+    lock = root / 'agent/pm/lock.json'
+    if not lock.is_file():
+        return {'status': 'no_pm_lock'}
+    pinned = {name: json.loads(lock.read_text())['packages'].get(name, {}).get('version')
+              for name in ('uv', 'python')}
+    if not facts_path or not Path(facts_path).is_file():
+        return {'status': 'facts_unavailable', 'pinned': pinned}
+    facts = json.loads(Path(facts_path).read_text()).get('packages', {})
+    present = {name: facts.get(name, {}).get('version') for name in pinned}
+    matched = all(pinned[n] and pinned[n] == present[n] for n in pinned)
+    return {'status': 'matched' if matched else 'store_behind_lock', 'pinned': pinned, 'store': present}
+
+
+def runtime_dependency_drift(root, facts_path=None):
+    """Compare declared dependencies with the runtime venv's installed distributions.
+
+    Markers are evaluated at the *target* python (the pm lock's pin, which is
+    what upstream's pyproject fences on), not the venv's actual version: upstream
+    now guards every dependency with python_version >= '3.14', so evaluating at
+    a 3.11 venv would check nothing. The runtime/target gap is reported instead.
+    """
+    root = Path(root)
+    runtime = root / 'runtime'
+    pm = pm_pins(root, facts_path)
+    actual = venv_python_version(runtime)
+    pinned_python = pm['pinned']['python'] if 'pinned' in pm else None
+    target = (pinned_python or actual).split('+', 1)[0]
+    required = declared_dependencies(root, marker_environment(target))
+    installed = installed_distributions(runtime)
+    if not installed:
+        raise RuntimeError('No distributions found in runtime venv')
+    missing = sorted(required - installed)
+    report = {'status': 'runtime_deps_drift' if missing else 'clean',
+              'missing': missing, 'declared': len(required), 'installed': len(installed),
+              'runtime_python': actual, 'marker_python': target, 'pm': pm, 'warnings': []}
+    if _Version(actual) < _Version(target):
+        report['warnings'].append(
+            'runtime python %s is below the dependency target %s: upstream resolves and '
+            'tests against the target, this venv is inherited history' % (actual, target))
+    if pm['status'] == 'store_behind_lock':
+        report['warnings'].append('pm lock pins outrun the tool store: first pm bootstrap falls back '
+                                  'to the release interpreter (needs >=3.14; pre-seed on 3.11 hosts)')
+    return report
+
+
+def unaccepted_drift(report, cfg):
+    """Missing distributions not explicitly accepted in config (normalized names).
+
+    Acceptance is a reviewed config decision for lazily-imported extras, never a
+    default; the report keeps the full missing list so the gap stays visible.
+    """
+    accepted = {_normalized(name) for name in cfg.get('accept_runtime_drift', [])}
+    report['accepted'] = sorted(accepted)
+    return sorted(set(report['missing']) - accepted)
+
+
+def drift(cfg):
+    """Read-only drift report for an existing release root; never builds or writes."""
+    baseline = launcher.load_manifest(Path(cfg['baseline']))
+    facts = Path(baseline['state_dir']) / 'tools/facts.json'
+    return runtime_dependency_drift(Path(cfg['output']), facts)
 
 
 def snapshot(source, sha, dest):
@@ -317,21 +521,28 @@ def build(cfg):
     root.mkdir(parents=True, exist_ok=False)
     for name in ('agent', 'webui'):
         snapshot(cfg[name + '_repo'], cfg[name + '_commit'], root / name)
-    # Rebuild a relocatable private interpreter/dependency tree using the existing
-    # known-working distribution. Never pip-install into a sealed runtime.
+    # Rebuild a relocatable private interpreter/dependency tree from a known-working
+    # distribution: the selected baseline (inherited) or an explicit, reviewed
+    # genesis venv (runtime_source). Never pip-install into a sealed runtime.
+    source_python, source_root, runtime_mode = runtime_source_for(cfg, baseline)
     with tempfile.TemporaryDirectory(prefix='release-build-', dir=scratch) as temp:
         home = Path(temp)
-        baseline_runtime = old / 'runtime'
         def probe(argv, **kwargs):
-            return contained_command(argv, home, [baseline_runtime, root / 'runtime'],
-                                     writes=[root / 'runtime'], exec_roots=[baseline_runtime, root / 'runtime'])
+            return contained_command(argv, home, [source_root, root / 'runtime'],
+                                     writes=[root / 'runtime'], exec_roots=[source_root, root / 'runtime'])
         python = release_build.private_python(
-            Path(baseline['services']['agent']['argv'][0]), root / 'runtime', runner=probe,
-            source_root=baseline_runtime)
+            source_python, root / 'runtime', runner=probe, source_root=source_root)
+        version = probe([str(python), '-B', '-s', '-c',
+                         'import platform; print(platform.python_version())'])
+    build_marker = root / 'runtime/python/BUILD'
+    runtime_provenance = {
+        'mode': runtime_mode, 'source': str(source_python), 'python_version': version,
+        'base_build_sha256': digest(build_marker) if build_marker.is_file() else None}
     manifest = rebase_paths(baseline, str(old), str(root))
     manifest.update(release_id=root.name, prepared_at=time.time(),
                     source_commits={name: cfg[name + '_commit'] for name in ('agent', 'webui')},
-                    baseline_sha256=hashlib.sha256(baseline_bytes).hexdigest())
+                    baseline_sha256=hashlib.sha256(baseline_bytes).hexdigest(),
+                    runtime=runtime_provenance)
     for name, item in manifest['services'].items():
         item['commit'] = cfg[name + '_commit']
         item['version'] = git(root / name, 'describe', '--always')
@@ -474,6 +685,13 @@ def prepare(cfg):
             if result.returncode:
                 raise RuntimeError('Workflow tests failed; inspect evidence log')
         report['gates']['static'] = verify(cfg) if root.exists() else build(cfg)
+        report['gates']['runtime_deps'] = runtime_dependency_drift(
+            root, Path(baseline['state_dir']) / 'tools/facts.json')
+        unaccepted = unaccepted_drift(report['gates']['runtime_deps'], cfg)
+        if unaccepted:
+            raise RuntimeError('Runtime lacks declared dependencies: ' + ', '.join(unaccepted)
+                               + ' (rebuild the runtime, or list them under accept_runtime_drift '
+                               'after confirming every import is lazy)')
         canary = subprocess.run([sys.executable, '-B', str(scripts / 'candidate_canary.py'),
                                  '--python', str(root / 'runtime/venv/bin/python'),
                                  '--runtime', str(root / 'runtime'),
@@ -510,15 +728,17 @@ def prepare(cfg):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
-    parser.add_argument('action', choices=('build', 'verify', 'prepare'))
+    parser.add_argument('action', choices=('build', 'verify', 'prepare', 'drift'))
     args = parser.parse_args()
     try:
         cfg = config_read(args.config)
-        report = {'build': build, 'verify': verify, 'prepare': prepare}[args.action](cfg)
+        report = {'build': build, 'verify': verify, 'prepare': prepare, 'drift': drift}[args.action](cfg)
         summary = {k: v for k, v in report.items() if k != 'gates'}
         print(json.dumps(summary, indent=2))
         if args.action == 'prepare':
             return 0 if report['status'] == 'APP_SMOKE_PASSED_PENDING_GATE_CHECKED' else 2
+        if args.action == 'drift':
+            return 0 if report['status'] == 'clean' else 2
     except Exception as exc:
         print(json.dumps({'status': 'NOT_READY', 'error': str(exc)}), file=sys.stderr)
         return 1

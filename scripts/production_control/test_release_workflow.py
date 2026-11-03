@@ -193,20 +193,26 @@ class ReleaseWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'exact lowercase'):
             workflow.config_read(path)
 
-    def test_build_seals_exact_fixture_and_preserves_baseline(self):
+    def _make_runtime(self, runtime):
+        """A relocatable base python + venv under `runtime`, built like production's."""
         import shutil
-        old = self.root / 'old'
-        runtime = old / 'runtime'
         base = runtime / 'python'
         from test_candidate_canary import SYSTEM_PYTHON
         source_base = subprocess.check_output([SYSTEM_PYTHON, '-B', '-s', '-c',
             'import sys; print(sys.base_prefix)'], env=workflow.isolated_env(self.root), text=True).strip()
         shutil.copytree(Path(source_base).resolve(), base, symlinks=True,
                         ignore=lambda d, names: [n for n in names if n == 'site-packages' or n == '__pycache__' or n.endswith('.pyc')])
-        home = self.root / 'bootstrap'; home.mkdir()
+        home = self.root / ('bootstrap-' + runtime.parent.name); home.mkdir()
         workflow.contained_command([str(base / 'bin/python3'), '-B', '-s', '-m', 'venv',
                                     '--without-pip', str(runtime / 'venv')], home, [runtime],
                                    writes=[runtime], exec_roots=[runtime])
+        return runtime / 'venv/bin/python'
+
+    def _build_fixture(self):
+        """Baseline release 'old' + build config for 'new'; returns (cfg, old, sha)."""
+        old = self.root / 'old'
+        runtime = old / 'runtime'
+        self._make_runtime(runtime)
         for package in ('hermes_cli', 'gateway'):
             (self.source / package).mkdir()
             (self.source / package / '__init__.py').touch()
@@ -241,9 +247,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         baseline = self.root / 'baseline.json'
         baseline.write_bytes(workflow.encoded(dict(schema_version=2, release_id='old', state_dir=str(state),
             services=services, source_commits=dict(agent=sha, webui=sha))))
-        before = workflow.canary.inventory(old)
         cfg = dict(baseline=str(baseline), output=str(self.root / 'new'), scratch=str(self.root / 'scratch'),
                    agent_repo=str(self.source), webui_repo=str(self.source), agent_commit=sha, webui_commit=sha)
+        return cfg, old, sha
+
+    def test_build_seals_exact_fixture_and_preserves_baseline(self):
+        cfg, old, sha = self._build_fixture()
+        before = workflow.canary.inventory(old)
         result = workflow.build(cfg)
         self.assertEqual(result['status'], 'static_verified_not_deployed')
         self.assertEqual(workflow.canary.inventory(old), before)
@@ -253,6 +263,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
         workflow.require_sealed(self.root / 'new')
         self.assertEqual(workflow.verify(cfg)['manifest_sha256'], result['manifest_sha256'])
         built = json.loads((Path(cfg["output"]) / "release.json").read_bytes())
+        # Without runtime_source the runtime is inherited from the baseline, and says so.
+        self.assertEqual(built['runtime']['mode'], 'inherited')
+        self.assertEqual(built['runtime']['source'], str(old / 'runtime/venv/bin/python'))
+        self.assertRegex(built['runtime']['python_version'], r'^\d+\.\d+\.\d+')
         webui = built["services"]["webui"]
         self.assertEqual(webui["env"]["HERMES_WEBUI_PYTHON"], webui["argv"][0])
         # Exercise the actual launcher merge: mutable runtime.env cannot redirect CLI.
@@ -266,6 +280,134 @@ class ReleaseWorkflowTests(unittest.TestCase):
              mock.patch.object(os, "chdir"), mock.patch.object(os, "execve") as execute:
             exec(workflow.launcher._ENTRY, {})
             self.assertEqual(execute.call_args.args[2]["HERMES_WEBUI_PYTHON"], webui["argv"][0])
+
+    def test_runtime_source_builds_from_genesis_not_baseline(self):
+        cfg, old, sha = self._build_fixture()
+        genesis = self.root / 'genesis'
+        genesis_python = self._make_runtime(genesis)
+        # Only the genesis venv carries this marker distribution; the baseline does not.
+        purelib = next((genesis / 'venv/lib').glob('python*/site-packages'))
+        (purelib / 'genesis_marker-1.0.dist-info').mkdir()
+        (purelib / 'genesis_marker-1.0.dist-info/METADATA').write_text('Name: genesis-marker\nVersion: 1.0\n')
+        (purelib / 'genesis_marker.py').write_text('MARK = 1\n')
+        cfg.update(runtime_source=str(genesis_python), runtime_source_root=str(genesis))
+        before = workflow.canary.inventory(old)
+        result = workflow.build(cfg)
+        self.assertEqual(result['status'], 'static_verified_not_deployed')
+        self.assertEqual(workflow.canary.inventory(old), before)
+        built = json.loads((self.root / 'new/release.json').read_bytes())
+        self.assertEqual(built['runtime']['mode'], 'genesis')
+        self.assertEqual(built['runtime']['source'], str(genesis_python))
+        self.assertIn('genesis-marker', workflow.installed_distributions(self.root / 'new/runtime'))
+        self.assertNotIn('genesis-marker', workflow.installed_distributions(old / 'runtime'))
+        workflow.require_sealed(self.root / 'new')
+        self.assertEqual(workflow.verify(cfg)['manifest_sha256'], result['manifest_sha256'])
+
+    def test_runtime_source_config_rejections(self):
+        cfg = {k: str(self.root / k) for k in ('baseline', 'output', 'scratch', 'agent_repo', 'webui_repo')}
+        cfg.update(agent_commit=self.sha, webui_commit=self.sha)
+        genesis = self.root / 'genesis'
+        (genesis / 'venv/bin').mkdir(parents=True)
+        (genesis / 'venv/bin/python').touch()
+        path = self.root / 'config.json'
+        cases = {
+            'root without python': {'runtime_source_root': str(genesis)},
+            'python without root': {'runtime_source': str(genesis / 'venv/bin/python')},
+            'python escapes root': {'runtime_source': str(genesis / 'venv/bin/python'),
+                                    'runtime_source_root': str(self.root / 'elsewhere')},
+            'not a venv python': {'runtime_source': str(genesis / 'venv'),
+                                  'runtime_source_root': str(genesis)},
+            'scratch inside genesis': {'runtime_source': str(genesis / 'venv/bin/python'),
+                                       'runtime_source_root': str(genesis),
+                                       'scratch': str(genesis / 'scratch')},
+            'output inside genesis': {'runtime_source': str(genesis / 'venv/bin/python'),
+                                      'runtime_source_root': str(genesis),
+                                      'output': str(genesis / 'new')},
+        }
+        for name, updates in cases.items():
+            with self.subTest(case=name):
+                path.write_text(json.dumps(dict(cfg, **updates)))
+                with self.assertRaises(RuntimeError):
+                    workflow.config_read(path)
+        path.write_text(json.dumps(dict(cfg, runtime_source=str(genesis / 'venv/bin/python'),
+                                        runtime_source_root=str(genesis))))
+        self.assertEqual(Path(workflow.config_read(path)['runtime_source_root']), genesis.resolve())
+
+    def test_genesis_root_may_not_be_a_release_or_state(self):
+        cfg, old, sha = self._build_fixture()
+        baseline = workflow.launcher.load_manifest(Path(cfg['baseline']))
+        for bad in (old / 'runtime', Path(baseline['state_dir']) / 'tools', Path(baseline['state_dir'])):
+            with self.subTest(root=str(bad)):
+                with self.assertRaisesRegex(RuntimeError, 'release tree or real state'):
+                    workflow.check_placement(dict(cfg, runtime_source=str(bad / 'venv/bin/python'),
+                                                  runtime_source_root=str(bad)), baseline)
+
+    def test_marker_evaluation_matches_pep508_for_upstream_forms(self):
+        env = workflow.marker_environment('3.14.9')
+        self.assertTrue(workflow.evaluate_marker("python_version >= '3.14'", env))
+        self.assertFalse(workflow.evaluate_marker("python_version >= '3.14'", workflow.marker_environment('3.11.16')))
+        self.assertTrue(workflow.evaluate_marker("python_version >= '3.9'", workflow.marker_environment('3.11.16')),
+                        'version comparison must be numeric, not lexical')
+        self.assertEqual(workflow.evaluate_marker("sys_platform == 'win32' and python_version >= '3.14'", env),
+                         sys.platform == 'win32')
+        self.assertTrue(workflow.evaluate_marker(
+            "((sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' "
+            "and platform_machine == 'x86_64' and 'android' not in platform_release)) and python_version >= '3.14'",
+            dict(env, sys_platform='darwin', platform_machine='arm64')))
+        self.assertFalse(workflow.evaluate_marker("extra == 'dev'", env))
+        for hostile in ("__import__('os')", "python_version.__class__", "open('x')", "python_version == '3.14' or 1"):
+            with self.subTest(marker=hostile):
+                with self.assertRaises(RuntimeError):
+                    workflow.evaluate_marker(hostile, env)
+
+    def _drift_root(self, deps, requirements, installed, python='3.11.16', name='drift'):
+        root = self.root / name
+        (root / 'agent/pm').mkdir(parents=True)
+        (root / 'webui').mkdir()
+        purelib = root / 'runtime/venv/lib/python3.11/site-packages'
+        purelib.mkdir(parents=True)
+        (root / 'runtime/venv/pyvenv.cfg').write_text('home = /x\nversion = %s\n' % python)
+        (root / 'agent/pyproject.toml').write_text(
+            '[project]\nname = "x"\ndependencies = [%s]\n' % ', '.join(json.dumps(d) for d in deps))
+        (root / 'webui/requirements.txt').write_text(requirements)
+        (root / 'agent/pm/lock.json').write_text(json.dumps(
+            {'packages': {'uv': {'version': '0.13.5'}, 'python': {'version': '3.14.9+20261021'}}}))
+        for name in installed:
+            info = purelib / (name.replace('-', '_') + '-1.0.dist-info'); info.mkdir()
+            (info / 'METADATA').write_text('Metadata-Version: 2.1\nName: %s\nVersion: 1.0\n' % name)
+        return root
+
+    def test_drift_gate_evaluates_markers_at_target_python_and_reads_only(self):
+        deps = ["PyYAML==6.0; python_version >= '3.14'", "pywin32; sys_platform == 'win32' and python_version >= '3.14'",
+                "Pillow-HEIF==1.0; python_version >= '3.14'"]
+        root = self._drift_root(deps, '# comment\npyyaml>=6.0\ncryptography>=42.0\n-r other.txt\n',
+                                installed=['PyYAML', 'cryptography'])
+        facts = self.root / 'facts.json'
+        facts.write_text(json.dumps({'packages': {'uv': {'version': '0.13.5'}, 'python': {'version': '3.14.9+20261021'}}}))
+        before = workflow.canary.inventory(root)
+        report = workflow.runtime_dependency_drift(root, facts)
+        self.assertEqual(workflow.canary.inventory(root), before, 'drift gate wrote into the release')
+        self.assertEqual(report['status'], 'runtime_deps_drift')
+        self.assertEqual(report['missing'], ['pillow-heif'])   # normalized; win32-only dep ignored here
+        self.assertEqual(report['marker_python'], '3.14.9')
+        self.assertEqual(report['runtime_python'], '3.11.16')
+        self.assertEqual(report['pm']['status'], 'matched')
+        self.assertTrue(any('below the dependency target' in w for w in report['warnings']))
+        facts.write_text(json.dumps({'packages': {'uv': {'version': '0.13.4'}, 'python': {'version': '3.14.9+20261021'}}}))
+        behind = workflow.runtime_dependency_drift(root, facts)
+        self.assertEqual(behind['pm']['status'], 'store_behind_lock')
+        self.assertTrue(any('pre-seed' in w for w in behind['warnings']))
+        clean = self._drift_root(deps, 'pyyaml\n', installed=['pyyaml', 'pillow_heif'], name='clean')
+        self.assertEqual(workflow.runtime_dependency_drift(clean, facts)['status'], 'clean')
+
+    def test_prepare_blocks_on_unaccepted_drift_only(self):
+        report = {'missing': ['pillow-heif', 'tomli-w']}
+        self.assertEqual(workflow.unaccepted_drift(dict(report), {}), ['pillow-heif', 'tomli-w'])
+        self.assertEqual(workflow.unaccepted_drift(dict(report), {'accept_runtime_drift': ['Pillow_HEIF', 'tomli-w']}), [])
+        partial = dict(report)
+        self.assertEqual(workflow.unaccepted_drift(partial, {'accept_runtime_drift': ['pillow-heif']}), ['tomli-w'])
+        self.assertEqual(partial['missing'], ['pillow-heif', 'tomli-w'], 'acceptance must not hide the gap')
+        self.assertEqual(partial['accepted'], ['pillow-heif'])
 
 
     def test_git_replacements_and_includes_do_not_redefine_provenance(self):
