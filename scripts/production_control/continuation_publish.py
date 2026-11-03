@@ -90,7 +90,8 @@ def _human_anchor_once(path, session_id):
             if row["display_kind"] != "steer" and text.startswith((
                     "[IMPORTANT: Background process", "[ASYNC DELEGATION BATCH",
                     "[CONTEXT COMPACTION — REFERENCE ONLY]",
-                    "[Your active task list was preserved across context compression]")):
+                    "[Your active task list was preserved across context compression]",
+                    "Continue from the compressed conversation context above. This marker exists because no human user turn was available.")):
                 continue
             require(bool(row["message_uid"]), "Missing durable user anchor")
             return digest({"message_uid": row["message_uid"], "content": text})

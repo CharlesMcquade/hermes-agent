@@ -103,7 +103,8 @@ class PublisherTests(unittest.TestCase):
         for i, body in enumerate(('[IMPORTANT: Background process proc_1 completed]',
                                   '[ASYNC DELEGATION BATCH complete]',
                                   '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted',
-                                  '[Your active task list was preserved across context compression]\n- [>] preflight'), 2):
+                                  '[Your active task list was preserved across context compression]\n- [>] preflight',
+                                  'Continue from the compressed conversation context above. This marker exists because no human user turn was available.'), 2):
             for prefix in ('', '[Workspace::v1: /workspace]\n'):
                 with sqlite3.connect(self.root / 'state.db') as db:
                     db.execute("INSERT INTO messages(session_id,role,message_uid,content) VALUES ('s','user',?,?)", (f'n{i}', prefix + body))
