@@ -101,7 +101,9 @@ class PublisherTests(unittest.TestCase):
             db.execute("INSERT INTO messages VALUES (1,'s','user','u1','continue',NULL)")
         anchor = pub.human_anchor(self.root, 's')
         for i, body in enumerate(('[IMPORTANT: Background process proc_1 completed]',
-                                  '[ASYNC DELEGATION BATCH complete]'), 2):
+                                  '[ASYNC DELEGATION BATCH complete]',
+                                  '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted',
+                                  '[Your active task list was preserved across context compression]\n- [>] preflight'), 2):
             for prefix in ('', '[Workspace::v1: /workspace]\n'):
                 with sqlite3.connect(self.root / 'state.db') as db:
                     db.execute("INSERT INTO messages(session_id,role,message_uid,content) VALUES ('s','user',?,?)", (f'n{i}', prefix + body))

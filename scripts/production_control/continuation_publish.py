@@ -59,8 +59,8 @@ def deployment_binding(manifest):
 def human_anchor(state_home, session_id):
     """Preserve user intervention even if an identical message is sent twice.
 
-    Hermes delivers its own background-process and delegation notifications as
-    user-role transcript rows; they are system noise, not human intervention,
+    Hermes delivers framework notifications, compression summaries, and task-list
+    restoration as user-role transcript rows; they are not human intervention,
     and must not trip the anchor between dispatch and continuation.
     """
     path = Path(state_home) / "state.db"
@@ -88,7 +88,9 @@ def _human_anchor_once(path, session_id):
         for row in rows:
             text = re.sub(r"^\[Workspace::v1: [^\r\n]+\]\r?\n", "", row["content"] or "", count=1)
             if row["display_kind"] != "steer" and text.startswith((
-                    "[IMPORTANT: Background process", "[ASYNC DELEGATION BATCH")):
+                    "[IMPORTANT: Background process", "[ASYNC DELEGATION BATCH",
+                    "[CONTEXT COMPACTION — REFERENCE ONLY]",
+                    "[Your active task list was preserved across context compression]")):
                 continue
             require(bool(row["message_uid"]), "Missing durable user anchor")
             return digest({"message_uid": row["message_uid"], "content": text})
