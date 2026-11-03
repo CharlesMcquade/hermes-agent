@@ -397,7 +397,8 @@ class InterruptControlMixin:
 
     def _drain_pending_steer(self) -> Optional[str]:
         """Return the pending steer text (if any) and clear the slot; None when nothing is pending."""
-        text, _ = self._drain_pending_steer_with_receipts()
+        # Preserve the mixin's unbound-call contract for lock-backed, duck-typed agents.
+        text, _ = InterruptControlMixin._drain_pending_steer_with_receipts(self)
         return text
 
     def _drain_pending_steer_with_receipts(self) -> tuple[Optional[str], list[str]]:
