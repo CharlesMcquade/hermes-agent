@@ -1308,6 +1308,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 msg["tool_calls"], [], f"Failed to deserialize tool_calls in {warn_context}, falling back to []")
         if msg.get("display_metadata") is not None:
             msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
+            if msg.get("display_kind") == "steer" and isinstance(msg["display_metadata"], dict):
+                from agent.prompt_builder import valid_steer_receipt_ids
+                ids = valid_steer_receipt_ids(msg["display_metadata"].get("steer_receipt_ids"))
+                if ids:
+                    msg["_steer_receipt_ids"] = ids
         # A `SELECT *` picks up every column, including any BLOB added to the schema later; the
         # JSON encoder that serves these dicts over HTTP fails outright on raw bytes. Drop them
         # here, once, rather than needing a new named pop for each future binary column. Known
@@ -1612,6 +1617,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             if row["display_metadata"] and (decoded := self._decode_display_metadata(row["display_metadata"])) is not None:
                 msg["display_metadata"] = decoded
                 lift_data_use(msg)
+                if row["display_kind"] == "steer" and isinstance(decoded, dict):
+                    from agent.prompt_builder import valid_steer_receipt_ids
+                    ids = valid_steer_receipt_ids(decoded.get("steer_receipt_ids"))
+                    if ids:
+                        msg["_steer_receipt_ids"] = ids
             if include_summary_markers and row["_compressed_summary"]:
                 msg["_compressed_summary"] = True
             msg.update(

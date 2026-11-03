@@ -8,6 +8,7 @@ and prompt-cache integrity.
 from __future__ import annotations
 
 import threading
+import uuid
 
 import pytest
 
@@ -74,6 +75,91 @@ def _bare_agent() -> AIAgent:
 
 
 class TestSteerDrain:
+    def test_receipt_survives_sqlite_reopen_in_display_and_replay(self, tmp_path):
+        from agent.prompt_builder import steer_user_row
+        from agent.session_persistence import _db_flush_row
+        from hermes_state import SessionDB
+        receipt = str(uuid.uuid4())
+        row = steer_user_row("same", [receipt])
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session("steer-receipt", source="test")
+        db.append_messages_batch("steer-receipt", [_db_flush_row(_bare_agent(), row, False)])
+        db.close()
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.get_messages("steer-receipt")[-1]["display_metadata"]["steer_receipt_ids"] == [receipt]
+            assert db.get_messages("steer-receipt")[-1]["_steer_receipt_ids"] == [receipt]
+            restored = db.get_messages_as_conversation("steer-receipt")[-1]
+            assert restored["display_metadata"]["steer_receipt_ids"] == [receipt]
+            assert restored["_steer_receipt_ids"] == [receipt]
+            assert restored["display_kind"] == "steer"
+            assert receipt not in restored["content"]
+        finally:
+            db.close()
+
+    def test_receipt_is_a_provider_excluded_field(self):
+        from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
+        from agent.prompt_builder import steer_user_row
+        receipt = str(uuid.uuid4())
+        row = steer_user_row("guidance", [receipt])
+        outgoing = {key: value for key, value in row.items() if key not in PERSISTENCE_ONLY_MESSAGE_FIELDS}
+        assert outgoing == {"role": "user", "content": row["content"]}
+
+    def test_identical_steers_keep_distinct_receipts_on_native_row(self):
+        from agent.prompt_builder import steer_user_row
+        first, second = str(uuid.uuid4()), str(uuid.uuid4())
+        agent = _bare_agent()
+        assert agent.steer("same", receipt_id=first)
+        assert agent.steer("same", receipt_id=second)
+        messages = [{"role": "assistant", "tool_calls": [{"id": "t"}]},
+                    {"role": "tool", "tool_call_id": "t", "content": "ok"}]
+        agent._apply_pending_steer_to_tool_results(messages, 1)
+        assert messages[-1] == steer_user_row("same\nsame", [first, second])
+        assert messages[-1]["_steer_receipt_ids"] == [first, second]
+        assert first not in messages[-1]["content"]
+        assert agent._pending_steer is None
+
+    def test_requeue_retains_receipts_and_withdraws_by_ticket_not_text(self):
+        from agent.agent_runtime_helpers import _requeue_pending_steer
+        agent = _bare_agent()
+        first, second = str(uuid.uuid4()), str(uuid.uuid4())
+        agent.steer("same", ticket="first", receipt_id=first)
+        agent.steer("same", ticket="second", receipt_id=second)
+        text, ids = agent._drain_pending_steer_with_receipts()
+        assert ids == [first, second]
+        assert text is not None
+        _requeue_pending_steer(agent, text)
+        assert agent.withdraw_steer("first") is True
+        assert agent._drain_pending_steer_with_receipts() == ("same", [second])
+        assert agent.withdraw_steer("second") is False
+
+    def test_ticketless_fallback_and_malformed_receipts(self):
+        from agent.prompt_builder import steer_user_row
+        agent = _bare_agent()
+        receipt = str(uuid.uuid4())
+        agent.steer("typed", receipt_id=receipt)
+        agent.steer("bad", receipt_id="run:23")
+        agent.steer("wrong", receipt_id=object())
+        agent.steer("ticket", ticket="transfer", receipt_id=str(uuid.uuid4()))
+        assert agent._drain_leftover_steer() == "typed\nbad\nwrong"
+        assert agent.withdraw_steer("transfer") is True
+        assert steer_user_row("typed", [receipt, "run:23", None])["_steer_receipt_ids"] == [receipt]
+        assert "_steer_receipt_ids" not in steer_user_row("bad", ["run:23"])
+
+    def test_pre_api_injection_and_requeue_keep_receipts(self):
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+        agent = _bare_agent()
+        receipt = str(uuid.uuid4())
+        agent.steer("guidance", receipt_id=receipt)
+        text, ids = agent._drain_pending_steer_with_receipts()
+        assert text is not None
+        _inject_steer_after_newest_tool_result(agent, [{"role": "user", "content": "start"}], text, ids)
+        assert agent._drain_pending_steer_with_receipts() == (text, [receipt])
+        _inject_steer_after_newest_tool_result(agent, messages := [
+            {"role": "tool", "content": "result"}], text, ids)
+        assert messages[-1]["_steer_receipt_ids"] == [receipt]
+
     def test_drain_returns_and_clears(self):
         agent = _bare_agent()
         agent.steer("hello")

@@ -3687,7 +3687,8 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     """
     if num_tool_msgs <= 0 or not messages:
         return
-    steer_text = agent._drain_pending_steer()
+    _drain_steer = getattr(agent, "_drain_pending_steer_with_receipts", None)
+    steer_text, receipt_ids = (_drain_steer() if _drain_steer else (agent._drain_pending_steer(), []))
     if not steer_text:
         return
     # Skip non-tool messages in the tail in case something else is appended at the boundary.
@@ -3699,7 +3700,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         # user message (which persists like any other user turn).
         _requeue_pending_steer(agent, steer_text)
         return
-    messages.append(steer_user_row(steer_text))
+    messages.append(steer_user_row(steer_text, receipt_ids=receipt_ids))
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),

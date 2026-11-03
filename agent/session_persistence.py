@@ -249,7 +249,12 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
         **{k: msg.get(k) for k in _ROW_REASONING_KEYS},
         "_compressed_summary": bool(msg.get(COMPRESSED_SUMMARY_METADATA_KEY)),
         "timestamp": timestamp, "api_content": api_content,
-        "display_kind": _summary_display_kind(msg), "display_metadata": msg.get("display_metadata"),
+        "display_kind": _summary_display_kind(msg),
+        "display_metadata": (
+            {**(msg.get("display_metadata") or {}), "steer_receipt_ids": msg["_steer_receipt_ids"]}
+            if msg.get("display_kind") == "steer" and isinstance(msg.get("_steer_receipt_ids"), list)
+            else msg.get("display_metadata")
+        ),
         # Load-bearing for restart drain-window recovery dedup.
         "platform_message_id": msg.get("platform_message_id") or msg.get("message_id"),
         "observed": bool(msg.get("observed")),

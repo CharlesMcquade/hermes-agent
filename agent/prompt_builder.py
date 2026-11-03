@@ -583,13 +583,38 @@ def format_steer_marker(steer_text: str) -> str:
 STEER_DISPLAY_KIND = "steer"
 
 
-def steer_user_row(steer_text: str) -> dict[str, Any]:
+def valid_steer_receipt_ids(receipt_ids: Any) -> list[str]:
+    """Keep only bounded canonical UUID text in display metadata, never in model content."""
+    import uuid
+    if receipt_ids is None or isinstance(receipt_ids, (str, bytes)):
+        return []
+    try:
+        values = iter(receipt_ids)
+    except TypeError:
+        return []
+    valid = []
+    for value in values:
+        if isinstance(value, str) and len(value) == 36:
+            try:
+                if str(uuid.UUID(value)) == value:
+                    valid.append(value)
+            except (ValueError, AttributeError):
+                pass
+    return valid
+
+
+def steer_user_row(steer_text: str, receipt_ids: Any = None) -> dict[str, Any]:
     """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
     result). Its own row — never smeared onto the already-persisted tool row, which append-only
     persistence would leave divergent from the live request — and typed so the alternation repair
     never merges the next real prompt into it and history renderers can label it."""
-    return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
-            "display_kind": STEER_DISPLAY_KIND}
+    row: dict[str, Any] = {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
+           "display_kind": STEER_DISPLAY_KIND}
+    ids = valid_steer_receipt_ids(receipt_ids)
+    if ids:
+        row["_steer_receipt_ids"] = ids
+        row["display_metadata"] = {"steer_receipt_ids": ids}
+    return row
 
 
 STEER_CHANNEL_NOTE = (
