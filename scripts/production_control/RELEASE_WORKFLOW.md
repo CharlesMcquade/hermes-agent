@@ -30,6 +30,30 @@ absolute; both commits must be exact, existing 40-character Git object IDs. `too
 is optional and must not contain inherited old release/development interpreters.
 Keep machine-specific configuration and evidence out of Git.
 
+Optional runtime keys:
+
+- `runtime_source` + `runtime_source_root` (together or neither): build the private
+  runtime from an explicit, reviewed **venv** python (`<root>/.../bin/python`) instead
+  of copying the selected baseline's runtime forward. This is a *runtime genesis*:
+  the only sanctioned way to change the interpreter or add a dependency. The root
+  may not overlap the baseline release, application state (`state_dir`, which
+  includes the pm tool store), output, scratch or evidence. Absent → byte-for-byte
+  the inherited behaviour. `release.json` records `runtime.mode`
+  (`inherited`/`genesis`), `runtime.source`, `runtime.python_version` and the
+  base interpreter's `BUILD` digest.
+- `accept_runtime_drift`: list of distribution names the dependency-drift gate may
+  report as missing without blocking `prepare`. Only for dependencies proven to be
+  lazily imported; the report still lists them under `missing`.
+
+`drift` is a read-only action: it compares the declared dependencies of the release
+source (agent `pyproject.toml` `[project.dependencies]` with PEP 508 markers evaluated
+at the pm lock's python on this host, plus webui `requirements.txt`) against the
+runtime venv's installed distributions and the pm lock's uv/python pins against
+`<state_dir>/tools/facts.json`. It reads files only. Exit 0 = clean, 2 = drift.
+`prepare` runs the same gate after the static gate and stops on unaccepted drift.
+The runtime is never resolved at build time, so without this gate a sync that adds
+a dependency boots-fails in production with no predicting check.
+
 ```
 PYTHONDONTWRITEBYTECODE=1 <nonproduction-python> -B \
   scripts/production_control/release_workflow.py --config <local-config> build
@@ -76,6 +100,9 @@ A `static_verified_not_deployed` result is deliberately **not restart readiness*
 2. Build a NEW immutable candidate from exact commits; never rsync edited files
    into a live release or fake a Git ref without its object.
 3. Run the stdlib workflow regression tests and the feature/neighbor test suites.
+   Run `drift` against the candidate (or the selected release after an upstream
+   sync, before building): unaccepted missing dependencies mean the runtime needs
+   a genesis rebuild, not a config exception.
 4. Run `candidate_canary.py` on the candidate with isolated state, a constructed
    credential-free environment, OS-enforced filesystem/network containment,
    loopback-only listeners, genuine gateway-reported SHA, health/asset checks,
