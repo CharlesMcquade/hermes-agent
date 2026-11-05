@@ -25,6 +25,7 @@ class ConfigContext:
     user_providers: dict
     custom_providers: list
     excluded_providers: list = None
+    preferred_providers: list | None = None
 
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
@@ -54,11 +55,13 @@ def load_picker_context() -> ConfigContext:
     else:  # config.model can be a bare string in older configs
         current_model, current_provider, current_base_url = (str(model_cfg) if model_cfg else ""), "", ""
     excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
+    preferred = cfg.get("model_catalog", {}).get("preferred_providers") or []
     return ConfigContext(
         current_provider=current_provider, current_model=current_model, current_base_url=current_base_url,
         user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
+        preferred_providers=preferred if isinstance(preferred, list) else [],
     )
 
 
@@ -145,6 +148,7 @@ def build_models_payload(
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
+    rows = _reorder_preferred(rows, ctx.preferred_providers)
     if pricing:
         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier, cached_only=pricing_cache_only)
     # Both metadata decorators consult ``model_overrides``.  Snapshot the
@@ -863,6 +867,16 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     canon = sorted((r for r in rows if r["slug"] in order), key=lambda r: order[r["slug"]])
     extras = [r for r in rows if r["slug"] not in order]
     return canon + extras
+
+
+def _reorder_preferred(rows: list[dict], preferred) -> list[dict]:
+    """Promote preferred providers while preserving every other row's existing relative order."""
+    from hermes_cli.models_catalog_static import preferred_provider_index
+
+    ranks = preferred_provider_index(preferred)
+    if not ranks:
+        return rows
+    return sorted(rows, key=lambda row: ranks.get(_slug(row), len(ranks)))
 
 
 def _attach_nous_plan_usage(row: dict, *, warm: bool):

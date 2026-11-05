@@ -1232,6 +1232,7 @@ def list_authenticated_providers(
     max_models: int | None = None, current_model: str = "", refresh: bool = False,
     probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, excluded_providers: list | None = None,
+    preferred_providers: list | None = None,
     non_blocking_catalogs: bool = False, fast_custom_probe: bool | None = None) -> list[dict]:
     """Detect which providers have credentials and list their curated (not full models.dev) models.
 
@@ -1307,7 +1308,12 @@ def list_authenticated_providers(
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
 
-    return _finalize_picker_rows(b.results, user_providers, current_model)
+    results = _finalize_picker_rows(b.results, user_providers, current_model)
+    from hermes_cli.models_catalog_static import preferred_provider_index
+    ranks = preferred_provider_index(preferred_providers)
+    if ranks:
+        results.sort(key=lambda row: ranks.get(str(row.get("slug", "")).strip().lower(), len(ranks)))
+    return results
 
 
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
@@ -1370,6 +1376,7 @@ def list_picker_providers(
     current_provider: str = "", current_base_url: str = "", user_providers: dict | None = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
     include_moa: bool = False, excluded_providers: list | None = None,
+    preferred_providers: list | None = None,
     non_blocking_catalogs: bool = False, probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False) -> list[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
@@ -1385,6 +1392,7 @@ def list_picker_providers(
         current_provider=current_provider, current_base_url=current_base_url,
         user_providers=user_providers, custom_providers=custom_providers, max_models=max_models,
         current_model=current_model, for_picker=True, excluded_providers=excluded_providers,
+        preferred_providers=preferred_providers,
         non_blocking_catalogs=non_blocking_catalogs, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider)
     if include_moa:
@@ -1408,6 +1416,10 @@ def list_picker_providers(
 
     drop_unofferable_model_ids(filtered)
     _attach_window_model_notes(filtered)
+    from hermes_cli.models_catalog_static import preferred_provider_index
+    ranks = preferred_provider_index(preferred_providers)
+    if ranks:
+        filtered.sort(key=lambda row: ranks.get(str(row.get("slug", "")).strip().lower(), len(ranks)))
     return filtered
 
 

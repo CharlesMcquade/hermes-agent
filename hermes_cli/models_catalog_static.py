@@ -525,6 +525,21 @@ def provider_group_for_slug(slug: str) -> str:
     return _SLUG_TO_GROUP.get(str(slug or "").strip().lower(), "")
 
 
+def preferred_provider_index(preferred) -> dict[str, int]:
+    """Normalize picker-priority slugs/aliases to their configured rank, first value winning."""
+    ranks: dict[str, int] = {}
+    if not isinstance(preferred, list):
+        return ranks
+    for value in preferred:
+        slug = str(value or "").strip().lower()
+        if not slug:
+            continue
+        slug = _PROVIDER_ALIASES.get(slug, slug)
+        if slug not in ranks:
+            ranks[slug] = len(ranks)
+    return ranks
+
+
 def group_providers(slugs):
     """Fold a flat ordered slug iterable into picker rows by provider group (DISPLAY ONLY).
 

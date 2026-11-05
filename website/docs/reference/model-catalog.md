@@ -110,6 +110,19 @@ model_catalog:
 
 The exclusion is matched case-insensitively against every key a provider can surface under — the Hermes id and models.dev id (built-in mapped providers), the overlay pid and resolved Hermes slug (overlay providers), and the canonical slug (canonical providers) — so a single entry like `copilot` hides the provider regardless of which section emits it. It is honored by every `/model` picker surface: the gateway interactive/text pickers, the TUI picker, and the interactive `hermes model` CLI picker. An empty list (or omitting the key) has no effect.
 
+### Ordering preferred providers first
+
+`preferred_providers` is a display-only priority list for the CLI, gateway and TUI provider pickers. Preferred providers appear first in the order listed; all remaining providers retain their existing relative order. Aliases are accepted and duplicate values are ignored. The preference outranks the current provider in the list, but never changes the selected provider or model.
+
+```yaml
+model_catalog:
+  preferred_providers:
+    - copilot
+    - custom:local-pmbp
+```
+
+An empty list (or omitting the key) preserves the original ordering. WebUI's model catalog honors this same preference together with `excluded_providers`, so the two surfaces can share one configuration.
+
 ## Updating the manifest
 
 Maintainers:

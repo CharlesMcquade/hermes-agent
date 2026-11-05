@@ -89,6 +89,7 @@ class _ModelSwitchContext:
     user_provs: Any = None
     custom_provs: Any = None
     excluded_provs: list = dataclasses.field(default_factory=list)
+    preferred_provs: list = dataclasses.field(default_factory=list)
 
     def read_config(self) -> None:
         """Fill the current route from ``config_path``; fail-open to the defaults."""
@@ -112,6 +113,9 @@ class _ModelSwitchContext:
             excl = cfg.get("model_catalog", {}).get("excluded_providers")
             if isinstance(excl, list):
                 self.excluded_provs = excl
+            preferred = cfg.get("model_catalog", {}).get("preferred_providers")
+            if isinstance(preferred, list):
+                self.preferred_provs = preferred
         except Exception:
             pass
 
@@ -492,6 +496,7 @@ class GatewayModelCommandsMixin:
             current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
+            preferred_providers=ctx.preferred_provs,
             # Chat `/model` is a read path: catalogs come from the disk cache and stale ones warm
             # in the background, and only the selected custom endpoint is probed live, so one
             # degraded provider can't stall the reply (#74003). Mirrors the GUI read path.
