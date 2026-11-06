@@ -431,13 +431,16 @@ def is_titleable_user_message(user_message: str) -> bool:
         return False
     if user_message.lstrip().startswith(_MACHINE_PREFIXES):
         return False
+    # Admission must inspect the same semantic projection used to build the
+    # model's title input. Raw wrappers can pass machine-only/attachment-only
+    # checks even when nothing meaningful remains after projection.
     text = _summarize_user_message(user_message)
-    if not text:
+    if not text or text.lstrip().startswith(_MACHINE_PREFIXES):
         return False
     # An attachment-only opener (manual attach, no paste preview) is a
     # file drop, not a request: deriving its "title" from the message
     # names the session after the truncated file path (#92068).
-    return not _attachment_only_opener(user_message)
+    return not _attachment_only_opener(text)
 
 
 def derive_title(user_message: str, title_preview: str | None = None) -> Optional[str]:
