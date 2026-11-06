@@ -1924,7 +1924,10 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4004, "empty command")
     try:
         approval = _tools_mod("tools.approval_detection")
-        is_hardline, hardline_desc = approval.detect_hardline_command(cmd)
+        allow_reboot = _tools_mod("tools.approval_context")._allow_reboot_commands()
+        is_hardline, hardline_desc = approval.detect_hardline_for_approval(
+            cmd, allow_reboot=allow_reboot
+        )
         if is_hardline:
             return _err(rid, 4005, f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands.")
         is_dangerous, _, desc = approval.detect_dangerous_command(cmd)

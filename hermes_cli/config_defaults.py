@@ -1660,6 +1660,9 @@ DEFAULT_CONFIG = {
         # channel — a pending approval there just blocks for the full timeout with nobody to answer (#37284,
         # #87509): deny    — block the command instantly and let the agent find another way (default, safe;
         # mirrors cron_mode deny) approve — auto-approve all dangerous commands on unattended platforms
+        # Opt in host power commands to the ordinary dangerous-command tier. False keeps
+        # shutdown/reboot/halt/poweroff on the unconditional hardline floor.
+        "allow_reboot": False,
         "mode": "smart",
         "timeout": 300,
         "discord_prompt_timeout": 300,  # Discord buttons stay clickable (min 30 s, cap MAX_SAFE_TIMEOUT_S)
