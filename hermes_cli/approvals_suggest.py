@@ -148,7 +148,8 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     """``(command, dangerous_class_description)`` records for dangerous-classified terminal commands
     that actually executed (i.e. carried an implied user approval).
     """
-    from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+    from tools import approval_context
+    from tools.approval_detection import detect_dangerous_command, detect_hardline_for_approval
     path = Path(db_path) if db_path else default_db_path()
     if not path.exists():
         return []
@@ -162,9 +163,10 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
         for tool_call_id, command in _iter_terminal_calls(con, since_ts):
             if tool_call_id in blocked:
                 continue
-            # Hardline commands are unconditionally blocked at runtime; never mine them (defense in
-            # depth against stale DB rows).
-            if detect_hardline_command(command)[0]:
+            # Exclude commands whose effective hardline floor still blocks at runtime. An opted-in,
+            # safely executed reboot is now ordinary dangerous-command history, not stale hardline data.
+            if detect_hardline_for_approval(
+                    command, allow_reboot=approval_context._allow_reboot_commands())[0]:
                 continue
             is_dangerous, _key, description = detect_dangerous_command(command)
             if is_dangerous:

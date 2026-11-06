@@ -29,7 +29,8 @@ from tools.approval_context import (
     get_current_session_key,
 )
 from tools.approval_detection import (
-    _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
+    _approval_key_aliases, _check_sudo_stdin_guard,
+    detect_dangerous_command, detect_hardline_command, detect_hardline_for_approval,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -1086,7 +1087,9 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     can run, #58748)."""
     from agent.runtime_self_protection import command_deletes_runtime
 
-    is_hardline, hardline_desc = detect_hardline_command(command)
+    is_hardline, hardline_desc = detect_hardline_for_approval(
+        command, allow_reboot=approval_context._allow_reboot_commands()
+    )
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc, command)

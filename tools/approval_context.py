@@ -344,6 +344,15 @@ def approval_timeout_notice_kwargs() -> dict:
     return {"waited": format_approval_window(seconds), "suggested": seconds * 3}
 
 
+def _allow_reboot_commands() -> bool:
+    """Whether host power commands may use the ordinary approval tier.
+
+    Default false preserves the hardline floor. This live, profile-scoped config
+    read deliberately leaves manual/smart and unattended deny policy in force.
+    """
+    return is_truthy_value(_get_approval_config().get("allow_reboot", False))
+
+
 def _binary_approval_mode(key: str) -> str:
     """Read ``approvals.<key>`` as 'approve' or 'deny' (default deny)."""
     try:

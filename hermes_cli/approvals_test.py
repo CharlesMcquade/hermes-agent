@@ -66,8 +66,10 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
                     "the runtime skips all command guards for it except approvals.deny"),
         )
 
-    # 2. Hardline blocklist — never bypassable, even under yolo.
-    is_hardline, hardline_desc = approval_detection.detect_hardline_command(command)
+    # 2. Hardline blocklist / effective reboot opt-in — before yolo/off.
+    is_hardline, hardline_desc = approval_detection.detect_hardline_for_approval(
+        command, allow_reboot=approval_context._allow_reboot_commands()
+    )
     if is_hardline:
         return result(
             "hardline-deny", rule=hardline_desc,
