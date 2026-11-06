@@ -140,6 +140,21 @@ class TestScan:
         assert len(scan_approval_history(path, days=90)) == 1
         assert len(scan_approval_history(path, days=0)) == 2
 
+    def test_opted_in_reboot_scans_but_never_becomes_allowlist_proposal(
+            self, db_path, monkeypatch):
+        from tools import approval_context
+
+        path, con = db_path
+        monkeypatch.setattr(
+            approval_context, "_get_approval_config", lambda: {"allow_reboot": True})
+        _add_terminal_call(con, "reboot")
+        _add_terminal_call(con, "rm -rf /")
+        records = scan_approval_history(path, days=0)
+        assert records == [("reboot", "system shutdown/reboot")]
+        # Independent of the tier downgrade, automatic host-power allowlisting
+        # stays in the deliberately unsafe class and is never proposed.
+        assert build_proposals(records * 3, min_count=1) == []
+
 
 # ---------------------------------------------------------------------------
 # Normalize / glob derivation

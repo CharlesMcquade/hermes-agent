@@ -102,6 +102,32 @@ class TestVerdicts:
         rc = at.approvals_test_command(_args(["sudo", "re" + "boot"]))
         assert rc == 3
 
+    def test_reboot_opt_in_uses_ordinary_dangerous_tier(self, isolated_approvals,
+                                                        capsys, monkeypatch):
+        monkeypatch.setattr(
+            approval_context, "_get_approval_config",
+            lambda: {"mode": "off", "allow_reboot": True})
+        rc = at.approvals_test_command(_args(["sudo", "re" + "boot"]))
+        assert rc == 0
+
+        monkeypatch.setattr(
+            approval_context, "_get_approval_config",
+            lambda: {"mode": "manual", "allow_reboot": True})
+        rc = at.approvals_test_command(_args(["sudo", "re" + "boot"]))
+        out = capsys.readouterr().out
+        assert rc == 2
+        assert "ask-approval" in out
+
+    def test_reboot_opt_in_does_not_hide_compound_hardline(self, isolated_approvals,
+                                                           capsys, monkeypatch):
+        monkeypatch.setattr(
+            approval_context, "_get_approval_config",
+            lambda: {"mode": "off", "allow_reboot": True})
+        rc = at.approvals_test_command(_args(["reboot; rm -rf /"]))
+        out = capsys.readouterr().out
+        assert rc == 3
+        assert "recursive delete of root filesystem" in out
+
 
 class TestNormalizationParity:
     """The tester must run the same de-obfuscation path as the runtime."""

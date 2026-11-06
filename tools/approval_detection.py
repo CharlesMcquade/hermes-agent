@@ -121,6 +121,17 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
+# Host power operations share one pattern table between the default hardline floor and the
+# ordinary dangerous-command tier. ``approvals.allow_reboot`` downgrades their enforcement tier;
+# it never makes command detection less precise or disables the other catastrophic floors.
+_REBOOT_PATTERNS = [
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
+    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
+    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+]
+_REBOOT_HARDLINE_DESCRIPTIONS = frozenset(description for _, description in _REBOOT_PATTERNS)
+
 HARDLINE_PATTERNS = [
     # Root path: any root-anchored path whose components collapse to "/" in the shell ("/", "//",
     # "/.", "/./", "/../..", optional trailing glob). Each inter-slash segment must be exactly "."
@@ -150,10 +161,7 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
-    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
-    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
-    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    *_REBOOT_PATTERNS,
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out
@@ -362,8 +370,12 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
-def detect_hardline_command(command: str) -> tuple:
-    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
+def _detect_hardline_command(command: str, *, excluded_descriptions=frozenset()) -> tuple:
+    """Check hardline patterns -> (is_hardline, description).
+
+    ``excluded_descriptions`` supports the operator's power-command tier downgrade without
+    changing the legacy, first-match-wins classification exposed to existing callers.
+    """
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
@@ -377,6 +389,8 @@ def detect_hardline_command(command: str) -> tuple:
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+            if description in excluded_descriptions:
+                continue
             if quote_masked and masked_lower is None:
                 # Positionless rules see quoted prose as DATA, except under shell carriers
                 # (sh -c, eval, source) whose quoted argument is code — those scan raw. bash -c
@@ -388,6 +402,26 @@ def detect_hardline_command(command: str) -> tuple:
             if pattern_re.search(masked_lower if quote_masked else variant_lower):
                 return (True, description)
     return (False, None)
+
+
+def detect_hardline_command(command: str) -> tuple:
+    """Check hardline patterns (NEVER bypassable, even in YOLO)."""
+    return _detect_hardline_command(command)
+
+
+def detect_hardline_for_approval(command: str, *, allow_reboot: bool = False) -> tuple:
+    """Return the effective hardline verdict after the operator's reboot opt-in.
+
+    Power patterns are filtered before scanning, so every unrelated hardline match in every
+    command variant wins. A compound such as ``reboot; rm -rf /`` can never hide a root wipe
+    behind the opted-in first match. Configuration is resolved by the approval layer, keeping
+    command classification free of profile and prompting state.
+    """
+    if not allow_reboot:
+        return detect_hardline_command(command)
+    return _detect_hardline_command(
+        command, excluded_descriptions=_REBOOT_HARDLINE_DESCRIPTIONS
+    )
 
 
 # ---- Dangerous command patterns -----------------------------------------------------------
@@ -508,6 +542,7 @@ DANGEROUS_PATTERNS = [
     (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
+    *_REBOOT_PATTERNS,
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),

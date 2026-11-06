@@ -48,8 +48,11 @@ async def shell_exec(connection, ref, params):
     backend = str(json.loads(policy.terminal_json).get('TERMINAL_ENV') or '').strip().lower()
     if backend not in _LOCAL_BACKENDS:
         raise RuntimeStoreError('unsupported_terminal_backend', field='terminal.backend', detail=backend)
-    from tools.approval_detection import detect_dangerous_command, detect_hardline_command
-    if detect_hardline_command(command)[0] or detect_dangerous_command(command)[0]:
+    from tools import approval_context
+    from tools.approval_detection import detect_dangerous_command, detect_hardline_for_approval
+    if detect_hardline_for_approval(
+            command, allow_reboot=approval_context._allow_reboot_commands())[0] \
+            or detect_dangerous_command(command)[0]:
         raise RuntimeStoreError('dangerous_command')
     return await asyncio.to_thread(_run, command, policy.cwd)
 
