@@ -51,6 +51,8 @@ def releases(tmp_path, monkeypatch, request):
     git(checkout, "checkout", "--detach", commits[0])
     monkeypatch.setattr(main, "PROJECT_ROOT", checkout)
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(checkout))
+    # The fixture intentionally selects this checkout on the test runner's foreign venv.
+    monkeypatch.setenv("PYTHONPATH", str(checkout))
     monkeypatch.delenv("HERMES_MANAGED", raising=False)
 
     responses = {}
