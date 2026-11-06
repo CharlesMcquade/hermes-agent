@@ -174,6 +174,10 @@ async def _admit_once(authority, event, webhook, hooks, committed):
                 # a provider retry or relay re-send resends that, and resolves to this row.
                 from gateway.session_ingress_media import ingress_fingerprint
                 admitted._ingress_sha256 = ingress_fingerprint(committed[0], event.raw_message)
+                if (producer_delivery := getattr(event, '_webhook_delivery', None)) is not None:
+                    # Rewrites carry the authenticated destination forward; the
+                    # process-local cache is intentionally not published yet.
+                    admitted._webhook_delivery = producer_delivery
         if POST_ADMISSION_HOOK in hooks:
             from gateway.run_inbound_consumer import run_post_admission_hook
             consumed, event._consumer_reply = await run_post_admission_hook(

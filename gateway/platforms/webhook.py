@@ -770,19 +770,22 @@ class WebhookAdapter(BasePlatformAdapter):
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         coalesce = route_config.get("coalesce")
-        # deliver_only, cron_job and coalesced events act before (or without) a durable admission, so
-        # the ledger cannot dedupe a provider retry or a replayed signed delivery; the route-scoped
-        # in-memory guard is their only replay defence (main dedupes every route here).
         non_durable = bool(route_config.get("deliver_only") or route_config.get("cron_job")
                            or isinstance(coalesce, dict))
-        if non_durable and not self._record_delivery_id(delivery_identity, now):
-            logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
-            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
-        if delivery_identity in self._pending_deliveries:
-            return _json_error("Delivery admission in progress; retry", 503)
-        # No await between lookup and reservation (one adapter event loop). Only
-        # successful admission becomes a duplicate receipt, never a mere attempt.
-        self._pending_deliveries.add(delivery_identity)
+        handler = getattr(self, "_message_handler", None)
+        runner = getattr(handler, "__self__", None) if handler is not None else None
+        handler_session_authority = getattr(runner, "session_authority", None) if runner is not None else None
+        process_local_receipt = non_durable or not handler_session_authority
+        # Durable routes keep exact-retry, changed-body conflicts and concurrent
+        # waiting in the ledger; only non-durable admission needs these reservations.
+        if process_local_receipt:
+            if delivery_identity in self._pending_deliveries:
+                return _json_error("Delivery admission in progress; retry", 503)
+            seen_at = self._seen_deliveries.get(delivery_identity)
+            if seen_at is not None and now - seen_at < self._idempotency_ttl:
+                logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
+                return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+            self._pending_deliveries.add(delivery_identity)
         try:
             response = await self._admit_delivery(
                 request, route_config, route_name, profile, payload, prompt, event_type, delivery_id, now)
@@ -922,10 +925,11 @@ class WebhookAdapter(BasePlatformAdapter):
             "route": route_name,
             "mirror": route_config.get("mirror_to_session") is True,
             "persistent_session": route_config.get("persistent_session") is True}
-        self._delivery_info[session_chat_id] = delivery
-        self._delivery_info_created[session_chat_id] = now
-        self._delivery_info_order.append((now, session_chat_id))
-        self._prune_delivery_info(now)
+        def publish_delivery_info():
+            self._delivery_info[session_chat_id] = delivery
+            self._delivery_info_created[session_chat_id] = now
+            self._delivery_info_order.append((now, session_chat_id))
+            self._prune_delivery_info(now)
         persistent_session = route_config.get("persistent_session") is True
         sender = payload.get("sender") if isinstance(payload, dict) else None
         if persistent_session:
@@ -964,8 +968,8 @@ class WebhookAdapter(BasePlatformAdapter):
             event.media_urls = [m[0] for m in media]
             event.media_types = [m[1] for m in media]
             event.message_type = MessageType.PHOTO
-        runner = getattr(self._message_handler, "__self__", None)
-        if not getattr(runner, "session_authority", None):
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        if runner is None or not getattr(runner, "session_authority", None):
             # No session authority (fork harness / legacy runner): fire-and-forget dispatch, as the
             # pre-durable path did — the durable producer requires an authority to admit through.
             pending = None
@@ -980,6 +984,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 raise
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
+            publish_delivery_info()
             return "accepted"
         from gateway.platforms.webhook_ingress import admit_producer
         event.timestamp = datetime.fromtimestamp(0, UTC)
@@ -998,13 +1003,14 @@ class WebhookAdapter(BasePlatformAdapter):
             reply = getattr(event, '_consumer_reply', None)
             if reply:
                 from gateway.platforms.webhook_delivery import snapshot_destination
-                await self._deliver_to(snapshot_destination(self, self._delivery_info.get(session_chat_id)),
-                                       session_chat_id, reply)
+                await self._deliver_to(snapshot_destination(self, delivery), session_chat_id, reply)
+            publish_delivery_info()
             return "accepted"
         from gateway.session_authorities import active_authority, authority_for_profile_id
         runner = self._message_handler.__self__
         authority = authority_for_profile_id(runner, receipt.ref.profile_id) or active_authority(runner)
         task = asyncio.create_task(self._finalize_delivery(event, authority, receipt))
+        publish_delivery_info()
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return "accepted"
