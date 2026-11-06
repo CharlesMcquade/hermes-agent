@@ -21,11 +21,12 @@ import sys
 import tempfile
 import types
 
-# Reviewed transition: certifi-security -> duo-ready-r2. Pins are deliberately
-# explicit: a subsequent rebuild or control refresh requires fresh admission.
+# Reviewed transition: hermes-20261105-redeploy-r16 -> hermes-20261105-security-r17.
+# Pins are deliberately explicit: a subsequent rebuild or control refresh requires
+# fresh admission.
 REFRESH_PIN = '37936f249fb61da2310d5b638beffad91d6de2fdda85a031a0df3bdb492bfc45'
-OLD_PIN = 'e9e20da8549dbbc7e68948d6a1a2bf51a5d97c247fe36477db5bff38e7ffdc36'
-NEW_PIN = 'c63697cb67768ef9514501893d4c1ff33fe6fbc3c4fe184cb54e938230c54389'
+OLD_PIN = '0bc1479bf4b5b5e0ef0e478ae2f592425b4e06a2c371ccb8073a8aadd9a3b214'
+NEW_PIN = '2496df2d3cb7b1d6989cfc2c9bca7a7ed3d1cbbd52298bafde197e3ae0ac6e66'
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
            'control_refresh', 'watchdog', 'approved_restart_job')
 ORDER = ['Restart WebUI', 'Reconnect and verify candidate WebUI native identity',

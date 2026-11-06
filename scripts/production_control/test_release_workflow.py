@@ -227,7 +227,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
             'def current_code_sha(): return sha()\n')
         (self.source / 'hermes_cli/_launchers.py').write_text(
             'def ensure_install_launchers(repo, destination):\n'
-            '    (destination / "fixture").write_text("fixture launcher")\n')
+            '    (destination / "fixture").write_text("fixture launcher")\n\n'
+            'def mint_launcher(name, repo, destination, python, site_packages):\n'
+            '    assert name == "hermes" and destination == python.parent\n'
+            '    assert site_packages is None\n'
+            '    target = destination / name\n'
+            '    target.write_text("#!/bin/sh\\n# repo: " + str(repo) + "\\nexec " + str(python) + " -m hermes_cli.main \\\"$@\\\"\\n")\n'
+            '    target.chmod(0o755)\n'
+            '    return target\n')
         self.git(self.source, 'add', '.')
         self.git(self.source, 'commit', '-qm', 'fixture identity')
         sha = workflow.git(self.source, 'rev-parse', 'HEAD')
@@ -259,6 +266,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(built['runtime']['mode'], 'inherited')
         self.assertEqual(built['runtime']['source'], str(old / 'runtime/venv/bin/python'))
         self.assertRegex(built['runtime']['python_version'], r'^\d+\.\d+\.\d+')
+        console = self.root / 'new/runtime/venv/bin/hermes'
+        self.assertTrue(console.is_file())
+        self.assertEqual(console.stat().st_mode & 0o111, 0o111)
+        contents = console.read_text()
+        self.assertIn(str(self.root / 'new/agent'), contents)
+        self.assertIn(str(self.root / 'new/runtime/venv/bin/python'), contents)
         webui = built["services"]["webui"]
         self.assertEqual(webui["env"]["HERMES_WEBUI_PYTHON"], webui["argv"][0])
         # Exercise the actual launcher merge: mutable runtime.env cannot redirect CLI.
