@@ -239,11 +239,9 @@ async def test_route_policy_snapshot_survives_config_change_while_running(harnes
 
 
 @pytest.mark.asyncio
-async def test_new_runs_real_gateway_reset_and_rotates_sqlite_session(harness, monkeypatch):
+async def test_new_runs_real_gateway_reset_and_rotates_sqlite_session(harness):
     from gateway.run import GatewayRunner
     a, store, events, ids, sent = harness
-    # External installer is irrelevant to the composed slash/session lifecycle.
-    monkeypatch.setattr(GatewayRunner, "_init_startup_checks", lambda self: None)
     runner = GatewayRunner(config=GatewayConfig())
     runner.session_store = store
     from gateway.session import AsyncSessionStore

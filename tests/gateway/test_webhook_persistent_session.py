@@ -81,7 +81,9 @@ def test_one_shot_route_unchanged_without_flag():
             route_name="verity-imsg", profile=None, event_type="message")
     asyncio.run(run())
     src = a._captured_source
-    assert src["chat_id"] == "webhook:verity-imsg:d-3"
+    from gateway.platforms.webhook import _WebhookDeliveryIdentity
+    expected = _WebhookDeliveryIdentity.from_parts(None, "verity-imsg", "d-3").session_chat_id
+    assert src["chat_id"] == expected
     assert src["user_id"] == "webhook:verity-imsg"
     assert list(a._delivery_info.values())[0]["persistent_session"] is False
 
@@ -103,5 +105,14 @@ def test_one_shot_session_still_ended_on_processing_complete():
     evt = MessageEvent(text="hi", source=SessionSource(platform=Platform.WEBHOOK, chat_id="fixture"))
     evt.source.chat_id = "webhook:verity-imsg:d-1"
     a._delivery_info[evt.source.chat_id] = {"persistent_session": False}
+    asyncio.run(a.on_processing_complete(evt, None))
+    a._end_webhook_session.assert_awaited_once()
+
+
+def test_missing_persistent_flag_does_not_infer_from_chat_shape():
+    a = _adapter()
+    a._end_webhook_session = AsyncMock()
+    evt = MessageEvent(text="hi", source=SessionSource(
+        platform=Platform.WEBHOOK, chat_id="legacy-unbound", chat_type="dm"))
     asyncio.run(a.on_processing_complete(evt, None))
     a._end_webhook_session.assert_awaited_once()
