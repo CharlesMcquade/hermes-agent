@@ -421,9 +421,10 @@ _OUTPUT_MODE_FLAGS = {"files_only": "-l", "count": "-c"}
 def _parse_search_output(result, output_mode: str, limit: int, offset: int,
                          context: int, warning: Optional[str] = None) -> SearchResult:
     """Parse rg/grep ``| head`` output into a SearchResult (shared by both engines).
-    Exit codes: 0=matches, 1=none, 2=error — but both tools return 2 on PARTIAL
-    errors (one unreadable file), so an error is surfaced only when exit==2 AND no
-    usable payload remains. ``warning`` is attached to files_only/content results."""
+    rg/grep return 2 on partial errors (such as an unreadable file); exit 1 can
+    still carry a real error when ``find -exec`` folds its children's statuses.
+    Preserve non-permission diagnostics with no payload, and warn rather than fail
+    when usable results also exist. ``warning`` rides on files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
     diagnostics, payload = _split_tool_diagnostics(stdout)
     if result.exit_code in _SHELL_EXEC_FAILURE_CODES:
@@ -452,7 +453,11 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
                     if ln.lstrip().startswith(("rg: ", "grep: "))
                     and not _PERMISSION_DENIED_RE.match(ln.strip())
                     and not _OMITTED_DIAGNOSTICS_RE.match(ln.strip())]
-    if result.exit_code == 2 and other_errors:
+    # find -exec folds its children's statuses into exit 1. A hard grep error
+    # with no usable payload must remain an error, not become "no matches".
+    if not payload.strip() and other_errors:
+        return SearchResult(error=f"Search failed: {diagnostics.strip()}", total_count=0)
+    if other_errors:
         error_warning = f"The search reported errors for some paths; results may be incomplete ({other_errors[0]})."
         skipped_warning = f"{error_warning} {skipped_warning}" if skipped_warning else error_warning
     if skipped_warning:
@@ -519,6 +524,9 @@ class SearchMixin:
     ``_exec``, ``_has_command``, ``_expand_path``, ``_escape_shell_arg``,
     ``_escape_native_tool_arg``, ``env``, ``cwd``, ``_command_cache``,
     ``_rg_resolution_cache`` and ``_rg_modified_capability`` from the host class."""
+
+    # The concrete FileOperations host supplies this backend-aware escape helper.
+    _escape_shell_arg: Any
 
     # --- rg resolution --------------------------------------------------------
 
@@ -757,8 +765,11 @@ class SearchMixin:
 
     @staticmethod
     def _hidden_prune_expr(q_roots: list[str]) -> str:
-        """find clause pruning hidden dirs while keeping an explicitly selected dot-named root
-        (dir or single file) — find echoes each start point as given, so ``! -path`` matches it."""
+        """Prune hidden dirs while keeping an explicitly selected dot-named root.
+
+        ``q_roots`` need find-glob escaping via ``_find_literal_path_expressions``
+        before shell quoting: shell quoting alone leaves ``*?[]`` active to find.
+        """
         exemptions = "".join(f" ! -path {root}" for root in q_roots)
         return f"\\( -type d -name '.*'{exemptions} \\) -prune"
 
@@ -1036,7 +1047,8 @@ class SearchMixin:
 
         escaped_path = self._escape_shell_arg(path)
         escaped_pattern = self._escape_shell_arg(pattern)
-        q_roots = [escaped_path]
+        q_roots = [self._escape_shell_arg(root)
+                   for root in _find_literal_path_expressions([path])]
         hidden_prune = self._hidden_prune_expr(q_roots)
         cmd = (
             f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
@@ -1120,7 +1132,9 @@ class SearchMixin:
         # ``./`` so find doesn't parse them as options.
         find_roots = [f"./{root}" if root.startswith("-") else root for root in roots]
         q_roots = [self._escape_shell_arg(root) for root in find_roots]
-        hidden_prune = f" {self._hidden_prune_expr(q_roots)} -o"
+        literal_roots = [self._escape_shell_arg(root)
+                         for root in _find_literal_path_expressions(find_roots)]
+        hidden_prune = f" {self._hidden_prune_expr(literal_roots)} -o"
         protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(roots)]
         protected_prune = f" {self._prune_expr(protected_paths)} -o" if protected_paths else ""
         fetch_limit = offset + limit + 1
@@ -1412,17 +1426,19 @@ class SearchMixin:
                                  protected_paths: list[str]) -> SearchResult:
         """grep fallback via ``find ... -prune -exec grep {} +``, used when the root needs
         path-scoped pruning (macOS protected dirs) or is itself under a dot-directory
-        (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Trade-off: find folds
-        grep's exit code, so a hard grep error surfaces as an empty result."""
+        (#18473: grep's ``--exclude-dir='.*'`` would drop the root). find folds
+        grep's exit code, so the shared parser preserves its non-permission errors."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
         q_root = self._escape_shell_arg(path or ".")
+        q_hidden_root = self._escape_shell_arg(
+            _find_literal_path_expressions([path or "."])[0])
         # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without
         # it ``find <link> -type f`` tests the link itself and hands grep nothing, so a
         # symlinked root answered a confident ``total_count: 0`` on every platform (#116270).
         find_parts = ["find", "-H", q_root]
         if protected_paths:
             find_parts.extend([self._prune_expr(protected_paths), "-o"])
-        find_parts.extend([self._hidden_prune_expr([q_root]), "-o", "-type f"])
+        find_parts.extend([self._hidden_prune_expr([q_hidden_root]), "-o", "-type f"])
         if file_glob:
             find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
         # stderr stays attached (``_exec`` merges it into stdout): find's
