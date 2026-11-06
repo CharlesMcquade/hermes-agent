@@ -1,9 +1,9 @@
 """Auto-generate short session titles from the user's opening message.
 
 Two stages, both off the critical path: an **instant** deterministic title (written before the model
-is called, cannot fail), then an **upgrade** from a small-model call with at most one invalid-output repair
-(cheap tier, thinking off, JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
-and neither replaces a name the user typed."""
+is called, cannot fail), then an **upgrade** from one auxiliary-model call (thinking off,
+JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces
+stage 1 and neither replaces a name the user typed."""
 
 import json
 import logging
@@ -21,9 +21,7 @@ from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
-from agent.title_policy import (
-    MAX_TITLE_ATTEMPTS, TITLE_REPAIR_INSTRUCTION, TITLE_RESPONSE_FORMAT, normalize_title, title_prompt,
-)
+from agent.title_policy import TITLE_RESPONSE_FORMAT, normalize_title, title_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -618,34 +616,24 @@ def generate_title(
     prompt = title_prompt(_title_language())
     messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}]
     try:
-        for attempt in range(MAX_TITLE_ATTEMPTS):
-            # Recheck for each repair: the runtime can change during the first request.
-            try:
-                if runtime_validator is not None and not runtime_validator():
-                    logger.debug("Title generation skipped: runtime validator returned False")
-                    return None
-            except Exception:  # preserve fail-open behavior for a broken validator
-                logger.debug("Title runtime validator raised; proceeding", exc_info=True)
-            response = call_llm(
-                task="title_generation", messages=messages,
-                max_tokens=TITLE_MAX_TOKENS, temperature=None, timeout=timeout, main_runtime=main_runtime,
-                extra_body={"response_format": TITLE_RESPONSE_FORMAT},
-                reasoning_config={"enabled": False},
-            )
-            message = response.choices[0].message
-            content = message.content or ""
-            if not content:
-                content = _title_from_reasoning(message)
-            title = normalize_title(content, user_snippet)
-            if title is not None:
-                return title
-            if attempt + 1 < MAX_TITLE_ATTEMPTS:
-                # A separate auxiliary conversation, not a mutation of the main chat.
-                messages = messages + [
-                    {"role": "assistant", "content": str(content)[:1000]},
-                    {"role": "user", "content": TITLE_REPAIR_INSTRUCTION + user_snippet},
-                ]
-        raise ValueError("Title model returned invalid output after bounded repair")
+        try:
+            if runtime_validator is not None and not runtime_validator():
+                logger.debug("Title generation skipped: runtime validator returned False")
+                return None
+        except Exception:  # Preserve fail-open behavior for a broken validator.
+            logger.debug("Title runtime validator raised; proceeding", exc_info=True)
+        response = call_llm(
+            task="title_generation", messages=messages,
+            max_tokens=TITLE_MAX_TOKENS, temperature=None, timeout=timeout, main_runtime=main_runtime,
+            extra_body={"response_format": TITLE_RESPONSE_FORMAT},
+            reasoning_config={"enabled": False},
+        )
+        message = response.choices[0].message
+        content = message.content or _title_from_reasoning(message)
+        title = normalize_title(content, user_snippet)
+        if title is not None:
+            return title
+        raise ValueError("Title model returned invalid output")
     except Exception as e:
         # Invalid output uses the same failure/fallback contract as a provider error.
         logger.warning("Title generation failed: %s", e)
