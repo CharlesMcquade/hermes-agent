@@ -633,6 +633,10 @@ default-groups = []
 # where extras that only ever coexist on 3.14 (kittentts vs neutts) conflict.
 environments = ["python_version >= '3.14'"]
 override-dependencies = [
+  # CVE-2026-49272: oauthlib's device-flow token endpoint failed to
+  # validate device_code before issuing a bearer token. Keep the Google
+  # SDK transitives on the released validator even though they allow 4.0.0.
+  "oauthlib>=4.0.1,<5",
   # discord.py's latest published version, 2.7.1, pins pynacl at <1.6. however, pynacl 1.5.0 has known vulnerabilities.
   # discord.py has updated pynacl to 1.6 on `main`, but has not yet published a patch release.
   # so, we force-override this to pynacl 1.6. here.
