@@ -6,13 +6,18 @@ import json
 from hermes_state_runtime import RuntimeStoreError
 
 
-def route_digest(adapter, chat_id):
+def route_digest(adapter, chat_id, authenticated_route=None):
     from gateway.platforms.webhook import _WebhookDeliveryIdentity
     adapter._reload_dynamic_routes()
-    try:
-        route_name = _WebhookDeliveryIdentity.route_from_chat_id(chat_id)
-    except (ValueError, TypeError, IndexError):
-        raise RuntimeStoreError('not_found') from None
+    if authenticated_route is not None:
+        if not isinstance(authenticated_route, str) or not authenticated_route:
+            raise RuntimeStoreError('invalid_params')
+        route_name = authenticated_route
+    else:
+        try:
+            route_name = _WebhookDeliveryIdentity.route_from_chat_id(chat_id)
+        except (ValueError, TypeError, IndexError):
+            raise RuntimeStoreError('not_found') from None
     route = adapter._routes.get(route_name)
     if route is None:
         raise RuntimeStoreError('not_found')
@@ -23,7 +28,8 @@ def validate_destination(delivery):
     from gateway.platforms.webhook import _is_known_platform, _REPO_RE
     if (not isinstance(delivery, dict)
             or not {'deliver', 'deliver_extra'} <= set(delivery)
-            or set(delivery) - {'deliver', 'deliver_extra', 'profile', 'mirror', 'route'}
+            or set(delivery) - {'deliver', 'deliver_extra', 'profile', 'mirror', 'route', 'persistent_session'}
+            or ('persistent_session' in delivery and type(delivery['persistent_session']) is not bool)
             or (delivery.get('profile') is not None and not isinstance(delivery['profile'], str))
             or not isinstance(delivery.get('mirror', False), bool)
             or (delivery.get('route') is not None and not isinstance(delivery['route'], str))):
@@ -50,7 +56,13 @@ def validate_destination(delivery):
     if delivery.get('mirror') is True:
         result['mirror'] = True
         if delivery.get('route'):
-            result['route'] = delivery['route']  # the mirror's label only
+            result['route'] = delivery['route']
+    # Persistent conversation ids cannot decode a delivery route. Retain the already-authenticated
+    # producer route even without mirroring so startup and replay can recheck its configuration.
+    if delivery.get('persistent_session') is True:
+        if delivery.get('route') and 'route' not in result:
+            result['route'] = delivery['route']
+        result['persistent_session'] = True
     return result
 
 
@@ -95,6 +107,9 @@ def retained_destination(adapter, chat_id):
     _validate_native(runner, event, envelope.get('provenance'))
     if runner._adapter_for_source(event.source) is not adapter:
         raise RuntimeStoreError('permission_denied')
-    if envelope.get('webhook_route') != route_digest(adapter, chat_id):
+    delivery = validate_destination(envelope.get('webhook_delivery'))
+    authenticated_route = delivery.get('route') if delivery.get('persistent_session') is True else None
+    if envelope.get('webhook_route') != route_digest(
+            adapter, chat_id, authenticated_route=authenticated_route):
         raise RuntimeStoreError('admission_conflict')
-    return validate_destination(envelope.get('webhook_delivery'))
+    return delivery

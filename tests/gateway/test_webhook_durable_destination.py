@@ -105,6 +105,27 @@ async def test_missing_destination_never_counts_as_log_delivery():
     assert (await adapter.send('explicit-log', 'completed answer')).success
 
 
+@pytest.mark.parametrize('value', [None, 0, 1, 'true', 'false', [], {}, ['true']])
+def test_destination_rejects_non_boolean_persistent_session(value):
+    from gateway.platforms.webhook_delivery import validate_destination
+    from hermes_state_runtime import RuntimeStoreError
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        validate_destination({'deliver': 'log', 'deliver_extra': {}, 'persistent_session': value})
+
+
+def test_destination_persistent_projection_is_strict_and_one_shot_unchanged():
+    from gateway.platforms.webhook_delivery import validate_destination
+    base = {'deliver': 'log', 'deliver_extra': {}, 'route': 'owned-route'}
+    legacy = {'deliver': 'log', 'deliver_extra': {}}
+    assert validate_destination(base) == legacy
+    assert validate_destination({**base, 'persistent_session': False}) == legacy
+    assert json.dumps(validate_destination({**base, 'persistent_session': False}),
+                      sort_keys=True, separators=(',', ':')) == json.dumps(
+                          legacy, sort_keys=True, separators=(',', ':'))
+    assert validate_destination({**base, 'persistent_session': True}) == {
+        **legacy, 'route': 'owned-route', 'persistent_session': True}
+
+
 def test_destination_retains_only_fields_consumed_by_sender():
     from gateway.platforms.webhook_delivery import validate_destination
     for target, fields in [('log', {}), ('github_comment', {'repo': 'owned/repo', 'pr_number': '7'}),
@@ -196,3 +217,83 @@ async def test_fenced_webhook_retry_only_observes_existing_receipt(fence):
         assert (await client.post('/webhooks/fixture', data=body, headers=headers)).status == 503
         assert len(authority.db._read_all('SELECT admission_id FROM session_admissions')) == 1
         assert schedules == []
+
+
+@pytest.mark.asyncio
+async def test_persistent_recipes_hold_route_and_per_turn_destination(monkeypatch):
+    """Stub only outbound transport/model execution; admission and reply authority stay real."""
+    config = PlatformConfig(enabled=True, extra={'secret': 'owned-secret', 'routes': {
+        'fixture': {'prompt': '{text}', 'deliver': 'telegram', 'persistent_session': True,
+                    'deliver_extra': {'chat_id': '{sender}'}},
+        'other': {'prompt': '{text}', 'deliver': 'log'}}})
+    adapter = WebhookAdapter(config)
+    app = web.Application()
+    mount_authority(app, adapter)
+    app.router.add_post('/webhooks/{route_name}', adapter._handle_webhook)
+    async with TestClient(TestServer(app)) as client:
+        for delivery, sender in [('persistent-alice', 'alice'), ('persistent-bob', 'bob')]:
+            payload = {'text': 'hello ' + sender, 'sender': sender, 'chat_guid': 'same-chat',
+                       'is_group': False, 'webhook_delivery': {'deliver': 'log'},
+                       'webhook_route': 'other', 'route_config': {'deliver': 'log'}}
+            body = json.dumps(payload).encode()
+            headers = {'X-GitHub-Delivery': delivery, 'X-Hub-Signature-256':
+                       'sha256=' + hmac.new(b'owned-secret', body, hashlib.sha256).hexdigest()}
+            assert (await client.post('/webhooks/fixture', data=body, headers=headers)).status == 202
+
+        runner = adapter._message_handler.__self__
+        authority = runner.session_authority
+        rows = authority.db._read_all('SELECT * FROM session_admissions ORDER BY request_id')
+        assert len(rows) == 2
+        envelopes = [json.loads(row['payload_json'])['native_text_v1'] for row in rows]
+        for envelope, sender in zip(envelopes, ('alice', 'bob')):
+            delivery = envelope['webhook_delivery']
+            assert delivery == {'deliver': 'telegram', 'deliver_extra': {'chat_id': sender},
+                                'route': 'fixture', 'persistent_session': True}
+            assert 'mirror' not in delivery
+
+        from gateway.session_envelope import check_native_route, restore_native
+        restored = [restore_native(json.loads(row['payload_json']), runner) for row in rows]
+        assert restored[0].source.chat_id == restored[1].source.chat_id
+        for row, event in zip(rows, restored):
+            entry = runner.session_store.lookup_by_session_key(
+                json.loads(row['payload_json'])['native_text_v1']['route'])
+            await check_native_route(runner, json.loads(row['payload_json']), row['target_session_id'],
+                                     entry.origin, adapter)
+            assert event._webhook_delivery['deliver_extra']['chat_id'] in {'alice', 'bob'}
+
+        # A same-conversation latest-cache entry must never replace either restored turn's recipe.
+        adapter._delivery_info[restored[0].source.chat_id] = {
+            'deliver': 'telegram', 'deliver_extra': {'chat_id': 'latest'},
+            'route': 'fixture', 'persistent_session': True}
+        sent = []
+        async def transport(platform, content, delivery):
+            sent.append((content, delivery['deliver_extra']['chat_id']))
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True)
+        adapter.gateway_runner = runner
+        adapter._deliver_cross_platform = transport
+        from gateway.platforms.base import BasePlatformAdapter
+        async def execute(self, event):
+            return await self.send(event.source.chat_id, 'reply ' + event.message_id)
+        monkeypatch.setattr(BasePlatformAdapter, 'handle_message', execute)
+        for event in restored:
+            await adapter.handle_message(event)
+        assert sent == [('reply persistent-alice', 'alice'), ('reply persistent-bob', 'bob')]
+
+        from gateway.platforms.webhook_delivery import route_digest
+        from hermes_state_runtime import RuntimeStoreError
+        with pytest.raises(RuntimeStoreError, match='not_found'):
+            route_digest(adapter, restored[0].source.chat_id)
+        assert route_digest(adapter, restored[0].source.chat_id,
+                            authenticated_route='fixture') == envelopes[0]['webhook_route']
+
+        mismatched = json.loads(rows[0]['payload_json'])
+        mismatched['native_text_v1']['webhook_delivery']['route'] = 'other'
+        entry = runner.session_store.lookup_by_session_key(envelopes[0]['route'])
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            await check_native_route(runner, mismatched, rows[0]['target_session_id'],
+                                     entry.origin, adapter)
+        adapter._routes.pop('fixture')
+        with pytest.raises(RuntimeStoreError, match='not_found'):
+            await check_native_route(runner, json.loads(rows[0]['payload_json']),
+                                     rows[0]['target_session_id'], entry.origin, adapter)

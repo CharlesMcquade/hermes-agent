@@ -16,17 +16,19 @@ from tests.gateway.fixtures.webhook_route_authority import mount_authority
 
 
 @asynccontextmanager
-async def settled_before_finalizer(*, compress=False):
+async def settled_before_finalizer(*, compress=False, persistent=False):
     config = PlatformConfig(enabled=True, extra={
         "secret": "owned-secret",
-        "routes": {"fixture": {"prompt": "{text}", "deliver": "log"}},
+        "routes": {"fixture": {"prompt": "{text}", "deliver": "log",
+                                "persistent_session": persistent}},
     })
     adapter = WebhookAdapter(config)
     app = web.Application()
     mount_authority(app, adapter)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     async with TestClient(TestServer(app)) as client:
-        body = json.dumps({"text": "one turn only"}).encode()
+        body = json.dumps({"text": "one turn only", **({"chat_guid": "persistent-chat"}
+                                                       if persistent else {})}).encode()
         headers = {
             "X-GitHub-Delivery": "settled-before-finalizer",
             "X-Hub-Signature-256": "sha256=" + hmac.new(
@@ -169,3 +171,38 @@ async def test_duplicate_request_finalizes_settled_webhook_without_reexecution()
         assert authority.db.get_session(row["target_session_id"])["end_reason"] == "webhook_complete"
         assert scheduled == []
         assert len(authority.db._read_all("SELECT * FROM session_admissions")) == 1
+
+
+@pytest.mark.asyncio
+async def test_persistent_duplicate_and_recovery_keep_only_the_original_session_open():
+    async with settled_before_finalizer(persistent=True) as (
+        client, body, headers, _runner, authority, row
+    ):
+        scheduled = []
+        authority._schedule = scheduled.append
+        sid = row["target_session_id"]
+        response = await client.post("/webhooks/fixture", data=body, headers=headers)
+
+        assert response.status == 200, await response.text()
+        assert (await response.json())["status"] == "duplicate"
+        assert authority.db.get_session(sid)["ended_at"] is None
+        assert scheduled == []
+        assert len(authority.db._read_all("SELECT * FROM session_admissions")) == 1
+        assert len(authority.db._read_all("SELECT id FROM sessions WHERE source='webhook'")) == 1
+
+        from gateway.platforms.webhook_ingress import recover_webhook_finalizations
+        assert await recover_webhook_finalizations(authority) == {sid: "unchanged"}
+        assert authority.db.get_session(sid)["ended_at"] is None
+
+        # A changed body with the same provider id is not an exact durable retry.
+        adapter = authority.runner.adapters[next(iter(authority.runner.adapters))]
+        adapter._seen_deliveries.clear()
+        changed = json.dumps({"text": "changed", "chat_guid": "persistent-chat"}).encode()
+        headers["X-Hub-Signature-256"] = "sha256=" + hmac.new(
+            b"owned-secret", changed, hashlib.sha256
+        ).hexdigest()
+        mismatch = await client.post("/webhooks/fixture", data=changed, headers=headers)
+        assert mismatch.status == 503
+        assert scheduled == []
+        assert len(authority.db._read_all("SELECT * FROM session_admissions")) == 1
+        assert authority.db.get_session(sid)["ended_at"] is None

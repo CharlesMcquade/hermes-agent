@@ -200,6 +200,11 @@ async def prepare_native(runner, event):
     # Preserve dynamic trust fields too: validation must reject forged ones,
     # not silently discard them while freezing the caller's source identity.
     frozen = _adapter_event(event, source=copy(event.source))
+    producer_delivery = getattr(event, '_webhook_delivery', None)
+    if producer_delivery is not None:
+        # dataclasses.replace drops adapter-pinned dynamic state; retain this trusted recipe before
+        # the authorization yield, especially for persistent conversation ids with no cache key.
+        frozen._webhook_delivery = deepcopy(producer_delivery)
     fresh_roles = await reauthorize_roles(runner, frozen.source, provenance)
     encoded_source = _validate_native(runner, frozen, provenance, fresh_roles)
     # Copy + SHA-256 + fsyncs of up to max_inbound_media_bytes stay off the owner loop; the
@@ -243,9 +248,14 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
         adapter = runner._adapter_for_source(event.source)
         if provenance is None:
             raise RuntimeStoreError('permission_denied')
-        delivery = snapshot_destination(adapter, adapter._delivery_info.get(event.source.chat_id))
+        producer_delivery = getattr(event, '_webhook_delivery', None)
+        if producer_delivery is None:
+            producer_delivery = adapter._delivery_info.get(event.source.chat_id)
+        delivery = snapshot_destination(adapter, producer_delivery)
         envelope['webhook_delivery'] = delivery
-        envelope['webhook_route'] = route_digest(adapter, event.source.chat_id)
+        authenticated_route = delivery.get('route') if delivery.get('persistent_session') is True else None
+        envelope['webhook_route'] = route_digest(
+            adapter, event.source.chat_id, authenticated_route=authenticated_route)
     if event.source.role_authorized:
         envelope['reauthorize'] = 'roles'
     if provenance is not None:
@@ -314,6 +324,9 @@ def restore_native(payload, runner=None):
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
                         **deepcopy(envelope['event']))
+    if 'webhook_delivery' in envelope:
+        from gateway.platforms.webhook_delivery import validate_destination
+        event._webhook_delivery = deepcopy(validate_destination(envelope['webhook_delivery']))
     if 'automation' in envelope:
         event.internal = True
         if envelope['automation'].get('heartbeat'):
@@ -350,7 +363,9 @@ async def check_native_route(runner, payload, session_id, available_source, adap
     if event.source.platform.value == 'webhook':
         from gateway.platforms.webhook_delivery import route_digest, validate_destination
         envelope = payload['native_text_v1']
-        validate_destination(envelope.get('webhook_delivery'))
-        if envelope.get('webhook_route') != route_digest(adapter, event.source.chat_id):
+        delivery = validate_destination(envelope.get('webhook_delivery'))
+        authenticated_route = delivery.get('route') if delivery.get('persistent_session') is True else None
+        if envelope.get('webhook_route') != route_digest(
+                adapter, event.source.chat_id, authenticated_route=authenticated_route):
             raise RuntimeStoreError('admission_conflict')
     return event.source, route

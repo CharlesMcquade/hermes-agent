@@ -1013,8 +1013,10 @@ class WebhookAdapter(BasePlatformAdapter):
         from hermes_state_runtime import get_session_admission
         # Fork (P04): routes with ``persistent_session: true`` keep the conversation session open
         # across turns; the session ends only via /new, /reset, or the operator's own cleanup.
-        delivery = getattr(event, "_webhook_delivery", None) or self._delivery_info.get(event.source.chat_id, {})
-        if delivery.get("persistent_session") or (not delivery and event.source.chat_type in ("dm", "group")):
+        delivery = getattr(event, "_webhook_delivery", None)
+        if delivery is None:
+            delivery = self._delivery_info.get(event.source.chat_id, {})
+        if delivery.get("persistent_session") is True:
             logger.debug("[webhook] Keeping persistent session open for %s", event.source.chat_id)
             return
         try:
@@ -1037,7 +1039,7 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery = getattr(event, "_webhook_delivery", None)
         if delivery is None:
             delivery = self._delivery_info.get(event.source.chat_id, {})
-        if delivery.get("persistent_session") or (not delivery and event.source.chat_type in ("dm", "group")):
+        if delivery.get("persistent_session") is True:
             logger.debug("[webhook] Keeping persistent session open for %s", event.source.chat_id)
             return
         await self._end_webhook_session(event, event.source.chat_id)

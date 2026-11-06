@@ -242,6 +242,7 @@ async def _webhook_retry(authority, event, payload, rows):
     # One-shot finalization ends the route. Resolve an existing provider receipt
     # before SessionStore would rotate it into a new physical session.
     from gateway.session_ingress_media import ingress_fingerprint
+    from gateway.platforms.webhook_delivery import validate_destination
     from hermes_state_runtime import get_session_admission
     if not rows:
         return None
@@ -263,6 +264,9 @@ async def _webhook_retry(authority, event, payload, rows):
         raise RuntimeStoreError('admission_conflict')
     event._webhook_duplicate = True
     receipt = authority._receipt(row)
+    if ('webhook_delivery' in retained
+            and validate_destination(retained['webhook_delivery']).get('persistent_session') is True):
+        return receipt
     finalize_webhook(authority, receipt)
     return receipt
 
@@ -315,6 +319,10 @@ async def recover_webhook_finalizations(authority):
             adapter = authority.runner._adapter_for_source(entry.origin) if entry.origin is not None else None
             target = authority.physical_target(SessionRef(authority.profile_id, sid))
             await check_native_route(authority.runner, row['payload'], target, entry.origin, adapter)
+            from gateway.platforms.webhook_delivery import validate_destination
+            if validate_destination(envelope['webhook_delivery']).get('persistent_session') is True:
+                results[sid] = 'unchanged'
+                continue
             results[sid] = 'finalized' if finalize_webhook(
                 authority, authority._receipt(row)) else 'unchanged'
         except (KeyError, RuntimeStoreError):
