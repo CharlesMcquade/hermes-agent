@@ -55,16 +55,16 @@ def _pipe_marker_printf(marker: str) -> str:
     return f"printf '\\n{marker}%s{marker}\\n' \"${{__hermes_ps[*]-}}\""
 
 
-def _eval_capturing_pipestatus(escaped: str) -> str:
-    """``eval`` the command and keep its last pipeline's ``PIPESTATUS`` as side data.
+def _capturing_pipestatus(command: str) -> str:
+    """Run the command once and keep its last pipeline's ``PIPESTATUS`` as side data.
 
-    The array must be read inside the same ``eval`` (afterwards it holds only ``eval``'s
-    status), while ``$?`` stays the exit code: the two differ for ``!``, ``if``/``while``,
-    ``pipefail`` and parse errors. The blank line stops the capture joining a command
-    continued by a trailing backslash. The restore sits on the left of ``&&`` so its
-    non-zero status fires neither a user's ``ERR`` trap a second time nor ``set -e``.
+    A second ``eval`` parse changes malformed-command exit codes and consumes a trailing
+    backslash. Emitting the original text preserves raw-shell parsing, including syntax
+    errors. The blank line stops the capture joining a command continued by a trailing
+    backslash. The restore sits on the left of ``&&`` so its non-zero status fires neither
+    a user's ``ERR`` trap a second time nor ``set -e``.
     """
-    return f"eval '{escaped}\n\n__hermes_rc=$? __hermes_ps=(\"${{PIPESTATUS[@]}}\"); (exit $__hermes_rc) && :'"
+    return f"{command}\n\n__hermes_rc=$? __hermes_ps=(\"${{PIPESTATUS[@]}}\"); (exit $__hermes_rc) && :"
 
 
 def _can_capture_pipestatus(command: str) -> bool:
@@ -178,6 +178,14 @@ def _wrap_command_script(
     """
     escaped = command.replace("'", "'\\''")
     capture = bool(pipe_marker) and _can_capture_pipestatus(command)
+    if command.endswith("\\"):
+        # An exact-EOF parser preserves the trailing backslash without letting it consume
+        # wrapper lines. Keep the usual same-shell eval everywhere else so state persists.
+        execution = f"bash -c {shlex.quote(command)}"
+    elif capture:
+        execution = _capturing_pipestatus(command)
+    else:
+        execution = f"eval '{escaped}'"
     save, restore = _passthrough_save_restore(passthrough_names)
     parts = list(save)
     if snapshot_ready:
@@ -188,7 +196,7 @@ def _wrap_command_script(
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
         f"builtin cd -- {quoted_cwd} || exit 126",
-        _eval_capturing_pipestatus(escaped) if capture else f"eval '{escaped}'",
+        execution,
         "__hermes_ec=$?",
         "umask 077"]
     if snapshot_ready and persist_env:

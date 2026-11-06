@@ -50,25 +50,29 @@ def _seen(result: subprocess.CompletedProcess) -> tuple[int, str, str]:
 
 
 @pytest.mark.parametrize(
-    ("command", "exit_code", "stdout"),
+    "command",
     [
-        ("if false; then echo yes; fi", 0, ""),
-        ("while read line; do echo \"$line\"; done < /dev/null", 0, ""),
-        ("set -o pipefail; false | true", 1, ""),
-        ("! false", 0, ""),
-        ("! true", 1, ""),
-        ("echo 'unbalanced", 2, ""),
-        ('echo "unbalanced', 2, ""),
-        ("echo $(echo unclosed", 2, ""),
-        ("echo hi \\", 0, "hi \\\n"),
-        ("cat <<'EOF'\nunterminated heredoc", 0, "unterminated heredoc\n"),
-        ("exit 3", 3, ""),
-        ("trap 'echo T' ERR; false", 1, "T\n"),
+        "if false; then echo yes; fi",
+        "while read line; do echo \"$line\"; done < /dev/null",
+        "set -o pipefail; false | true",
+        "! false",
+        "! true",
+        "echo 'unbalanced",
+        'echo "unbalanced',
+        "echo $(echo unclosed",
+        "echo hi \\",
+        "cat <<'EOF'\nunterminated heredoc",
+        "exit 3",
+        "trap 'echo T' ERR; false",
     ],
 )
-def test_capturing_pipestatus_changes_nothing_the_model_sees(command, exit_code, stdout):
-    """The capture is side data: the shell's own ``$?`` and output, no wrapper text."""
+def test_capturing_pipestatus_changes_nothing_the_model_sees(command):
+    """The capture is side data: the shell's own ``$?`` and output, no wrapper text.
+
+    Raw bash is the oracle because trailing-backslash handling differs between bash releases.
+    """
+    raw = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
     seen_code, seen_stdout, seen_stderr = _seen(_run_result(command))
 
-    assert (seen_code, seen_stdout) == (exit_code, stdout)
+    assert (seen_code, seen_stdout) == (raw.returncode, raw.stdout)
     assert "__hermes" not in seen_stderr
