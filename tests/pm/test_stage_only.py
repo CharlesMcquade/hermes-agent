@@ -104,6 +104,27 @@ def test_bionic_deb_stages_real_packages_without_host_execution(tmp_path, monkey
 
 
 @pytest.mark.platforms("linux", arch="x86_64")
+def test_staged_binary_signing_requires_darwin_host_and_target(tmp_path, monkeypatch):
+    """Target gating is explicit; never execute codesign in these checks."""
+    from pm import packages
+
+    signed = []
+    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", signed.append)
+    binary = tmp_path / "python-not-executed"
+    binary.write_bytes(b"not executed")
+    monkeypatch.setattr(packages.sys, "platform", "darwin")
+    packages._sign_binary_for_target(binary, "darwin-arm64")
+    assert signed == [binary]
+    for target in ("linux-arm64", "linux-arm64-bionic", "win32-x64"):
+        packages._sign_binary_for_target(binary, target)
+    assert signed == [binary]
+
+    monkeypatch.setattr(packages.sys, "platform", "linux")
+    packages._sign_binary_for_target(binary, "darwin-arm64")
+    assert signed == [binary]
+
+
+@pytest.mark.platforms("linux")
 def test_real_node_foreign_stage_checks_bytes_without_exec(tmp_path, monkeypatch):
     import io
     import zipfile

@@ -63,6 +63,13 @@ _NODE_PLAT = {
 }
 
 
+def _sign_binary_for_target(binary, target: str) -> None:
+    """Sign staged bytes only when both the host and target are Darwin."""
+    if binary is not None and sys.platform == "darwin" and target.startswith("darwin-"):
+        from hermes_cli.macos_signing import sign_managed_python
+        sign_managed_python(binary)
+
+
 class BinaryPackage(Package):
     """A downloaded archive exposing one binary. Covers most tools."""
 
@@ -255,10 +262,7 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
         binary = self.binary(staged, target)
-        if binary is not None and sys.platform == "darwin":
-            from hermes_cli.macos_signing import sign_managed_python
-
-            sign_managed_python(binary)
+        _sign_binary_for_target(binary, target)
         # python-build-standalone ships the x64 VC runtime (vcruntime140_1.dll)
         # beside ARM64 Windows Python; it cannot load on ARM64 and would fail
         # the arch guard. Drop it HERE, before publish: the tree digest is
