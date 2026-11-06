@@ -104,6 +104,17 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
+# Host power operations share one pattern table between the default hardline floor and the
+# ordinary dangerous-command tier. ``approvals.allow_reboot`` downgrades their enforcement tier;
+# it never makes command detection less precise or disables the other catastrophic floors.
+_REBOOT_PATTERNS = [
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
+    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
+    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+]
+_REBOOT_HARDLINE_DESCRIPTIONS = frozenset(description for _, description in _REBOOT_PATTERNS)
+
 HARDLINE_PATTERNS = [
     # Root path: any root-anchored path whose components collapse to "/" in the shell ("/", "//",
     # "/.", "/./", "/../..", optional trailing glob). Each inter-slash segment must be exactly "."
@@ -133,10 +144,7 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
-    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
-    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
-    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    *_REBOOT_PATTERNS,
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out
@@ -299,6 +307,7 @@ DANGEROUS_PATTERNS = [
     (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
+    *_REBOOT_PATTERNS,
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),

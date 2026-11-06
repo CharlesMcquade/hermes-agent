@@ -29,7 +29,8 @@ from tools.approval_context import (
     get_current_session_key,
 )
 from tools.approval_detection import (
-    _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
+    _REBOOT_HARDLINE_DESCRIPTIONS, _approval_key_aliases, _check_sudo_stdin_guard,
+    detect_dangerous_command, detect_hardline_command,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -1087,7 +1088,14 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     from agent.runtime_self_protection import command_deletes_runtime
 
     is_hardline, hardline_desc = detect_hardline_command(command)
-    if is_hardline:
+    # Host power operations are routine for operators managing their own machines.
+    # The explicit opt-in downgrades only this family to normal approval; all
+    # subsequent floors and the user's deny rules still run.
+    reboot_downgrade_allowed = (
+        hardline_desc in _REBOOT_HARDLINE_DESCRIPTIONS
+        and approval_context._allow_reboot_commands()
+    )
+    if is_hardline and not reboot_downgrade_allowed:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc, command)
     runtime_target = command_deletes_runtime(command)
