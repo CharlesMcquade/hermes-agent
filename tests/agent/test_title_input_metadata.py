@@ -62,7 +62,14 @@ def test_title_paths_use_same_clean_input(monkeypatch, wrapped, clean):
 ])
 def test_metadata_cannot_create_a_title_or_consume_opening_turn(monkeypatch, tmp_path, message):
     from hermes_state import SessionDB
+    import hermes_state_dbfile
 
+    # State's Darwin WAL-holder scan shares the stdlib threading module. Keep
+    # its real primitives separate so this mock observes title scheduling only.
+    # This module's threading accesses are limited to Lock and Thread.
+    monkeypatch.setattr(hermes_state_dbfile, "threading", SimpleNamespace(
+        Lock=titles.threading.Lock, Thread=titles.threading.Thread,
+    ))
     start = Mock()
     monkeypatch.setattr(titles.threading, "Thread", start)
     with SessionDB(tmp_path / "state.db") as db:
