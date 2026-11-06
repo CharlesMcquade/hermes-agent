@@ -10,6 +10,7 @@ the application entry is an inert receipt.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shlex
 import shutil
@@ -214,10 +215,29 @@ def test_a_stdlib_named_file_in_the_tree_never_runs_before_the_repair(tmp_path, 
     ran = tmp_path / "SHADOW_RAN"
     shadow = {"shutil.py": f"open({str(ran)!r}, 'w').close()\nraise ImportError('shadow')\n"} if shadowed else {}
     root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_bootstrap.py", shadow)
+    assert not ran.exists(), "shadow ran while arming the checkout or minting its launcher"
+    assert not ran.exists(), "shadow ran before the minted launcher started"
     launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
                             errors="replace", timeout=60, check=False)
     assert not ran.exists(), launch.stderr
     assert launch.returncode == 0 and "APP_REACHED" in launch.stdout, launch.stderr
+    assert (root / "hermes_bootstrap.py").read_bytes() == original
+    assert not (root / ".git/hermes-update-pull").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_print_runtime_command_uses_the_same_pre_checkout_recovery_admission(tmp_path):
+    ran = tmp_path / "SHADOW_RAN"
+    shadow = {"shutil.py": f"open({str(ran)!r}, 'w').close()\nraise ImportError('shadow')\n"}
+    root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_bootstrap.py", shadow)
+    assert not ran.exists(), "shadow ran while arming the checkout or minting its launcher"
+    launch = subprocess.run([str(launcher), "--print-runtime-command"], cwd=tmp_path, env=env,
+                            capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            timeout=60, check=False)
+    assert not ran.exists(), launch.stderr
+    assert launch.returncode == 0, launch.stderr
+    command = json.loads(launch.stdout)
+    assert command[:3] == [sys.executable, "-I", "-c"]
     assert (root / "hermes_bootstrap.py").read_bytes() == original
     assert not (root / ".git/hermes-update-pull").exists()
 

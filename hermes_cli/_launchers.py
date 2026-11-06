@@ -340,8 +340,8 @@ def mint_launcher(
 
 
 # A killed move can tear the repair's own code (``hermes_bootstrap``, ``hermes_cli``). With the
-# marker still there, a launcher whose checkout import failed runs the copy of the repair that the
-# updater published beside the marker (``update_cmd_commit.publish_recovery_closure``) once every
+# marker still there, the launcher runs the saved repair before putting the checkout on sys.path;
+# it trusts the copy that the updater published beside the marker (``update_cmd_commit.publish_recovery_closure``) once every
 # file hashes to the blob id its manifest names; a missing, torn or foreign closure (or none, from
 # an updater predating it) is rebuilt from git's objects at the marker's ``pre`` with the recorded
 # git or an absolute PATH entry (never one from the current directory) and verified the same way.
@@ -362,7 +362,7 @@ def _hermes_closure_repair():
         return
     pre = fields.get('pre', '').strip()
     if not re.fullmatch('[0-9a-f]{40}|[0-9a-f]{64}', pre):
-        return
+        raise SystemExit(1)
     closure = git / __CLOSURE_DIR__ / pre
     files = (*__CLOSURE__, __INIT__)
 
@@ -384,7 +384,7 @@ def _hermes_closure_repair():
             exe = next((os.path.join(d, n) for d in os.environ.get('PATH', '').split(os.pathsep) if os.path.isabs(d)
                         for n in names if os.path.isfile(os.path.join(d, n))), '')
         if not exe:
-            return
+            raise SystemExit(1)
 
         def git_out(*args):
             done = subprocess.run([exe, '--no-replace-objects', '-C', str(root), *args], capture_output=True, timeout=60,
@@ -416,7 +416,7 @@ def _hermes_closure_repair():
         finally:
             shutil.rmtree(staging, ignore_errors=True)
         if not verified():
-            return
+            raise SystemExit(1)
     for name in [n for n in sys.modules if n.split('.')[0] in ('hermes_cli', 'hermes_bootstrap', 'hermes_constants', 'pm')]:
         del sys.modules[name]
     tree = os.path.normcase(os.path.realpath(root))
@@ -476,8 +476,11 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         "import contextlib, hashlib, io, pathlib, shutil, subprocess\n"
         "os.environ.pop('PYTHONHOME', None)\n"
         "os.environ.pop('PYTHONPATH', None)\n"
-        f"sys.path.insert(0, {root!r})\n"
         + closure_repair +
+        # Admission is stdlib-only and precedes every checkout path/import. In particular, an absent
+        # bootstrap must not resolve through another installed Hermes and continue with a torn tree.
+        "_hermes_closure_repair()\n"
+        f"sys.path.insert(0, {root!r})\n"
         "if sys.argv[1:2] == ['--print-runtime-command']:\n"
         "    sys.dont_write_bytecode = True\n"
         "    from pathlib import Path\n"
