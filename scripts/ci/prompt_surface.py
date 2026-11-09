@@ -112,7 +112,13 @@ def _scrub(text: str, home: Path) -> str:
         str(home): "<HOME>",
         f"{_platform.system()} ({_platform.release()})": "<HOST_OS>",
     }.items(), key=lambda kv: -len(kv[0])):
+        if '/profiles/' in text:
+            print('SCRUB_INPUT_HOME=' + repr(str(home)), file=sys.stderr)
+            print('SCRUB_REPLACE_TARGET=' + repr(raw), file=sys.stderr)
+            print('SCRUB_MATCH_BEFORE=' + repr(raw in text), file=sys.stderr)
         text = text.replace(raw, token)
+        if '/profiles/' in text:
+            print('SCRUB_RETAINED_AFTER=' + repr(raw in text), file=sys.stderr)
     return text
 
 
@@ -213,6 +219,8 @@ def render(out: Path) -> int:
             [sys.executable, str(Path(__file__).resolve()), "_child", str(staging)],
             env=env, cwd=tmp, capture_output=True, text=True, encoding="utf-8", timeout=600, check=False,
         )
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
         if proc.returncode != 0:
             sys.stderr.write(proc.stderr[-6000:])
             return proc.returncode
