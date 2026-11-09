@@ -44,6 +44,22 @@ def test_committed_prompt_surface_is_current(tmp_path):
     )
 
 
+def test_scrub_redacts_unresolved_home_alias_too(tmp_path, monkeypatch):
+    alias_home = Path("/var/tmp/r18-alias-home")
+    monkeypatch.setenv("HOME", str(alias_home))
+    canonical_home = tmp_path / "canonical-home"
+    text = (
+        f"profiles: {alias_home / '.hermes'}/profiles/<name>\n"
+        f"workspace: {alias_home}/workspace\n"
+        f"default: {canonical_home}/workspace"
+    )
+    normalized = prompt_surface._scrub(text, canonical_home)
+    assert str(alias_home) not in normalized
+    assert str(canonical_home) not in normalized
+    assert "<HERMES_HOME>/profiles/<name>" in normalized
+    assert normalized.count("<HOME>/workspace") == 2
+
+
 def test_summary_names_the_surface_and_tool_that_changed(tmp_path):
     base = prompt_surface.SNAPSHOT
     head = tmp_path / "head"

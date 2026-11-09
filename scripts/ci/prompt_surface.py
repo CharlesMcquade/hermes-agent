@@ -107,11 +107,19 @@ class _ImportFailures(logging.Handler):
 
 def _scrub(text: str, home: Path) -> str:
     import platform as _platform
-    for raw, token in sorted({
+    substitutions = {
         str(home / ".hermes"): "<HERMES_HOME>",
         str(home): "<HOME>",
         f"{_platform.system()} ({_platform.release()})": "<HOST_OS>",
-    }.items(), key=lambda kv: -len(kv[0])):
+    }
+    # HOME may retain a symlink alias (e.g. /var/tmp) while home is canonical.
+    # Redact both spellings so a snapshot never depends on task-specific paths.
+    raw_home = os.environ.get("HOME")
+    if raw_home:
+        alias_home = Path(raw_home).expanduser()
+        substitutions[str(alias_home / ".hermes")] = "<HERMES_HOME>"
+        substitutions[str(alias_home)] = "<HOME>"
+    for raw, token in sorted(substitutions.items(), key=lambda kv: -len(kv[0])):
         text = text.replace(raw, token)
     return text
 
