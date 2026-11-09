@@ -187,7 +187,7 @@ class TestIdempotence:
 # ---------------------------------------------------------------------------
 
 class TestUnreadableExistingConfig:
-    def test_apply_refuses_to_overwrite_unreadable_config(self, trap_config: Path):
+    def test_apply_refuses_to_overwrite_unreadable_config(self, trap_config: Path, monkeypatch):
         """apply_migration must not clobber an existing config.yaml it can't
         read. It reads the file first (which raises on an unreadable file), and
         the require_readable_config_before_write guard before the write is a
@@ -200,6 +200,16 @@ class TestUnreadableExistingConfig:
         original = trap_config.read_bytes()
 
         os.chmod(trap_config, 0o000)
+        # Root can read mode-000 files, so preserve the assertion cross-uid by
+        # injecting the same OS failure at the exact read the migration owns.
+        real_open = Path.open
+
+        def unreadable_open(path, *args, **kwargs):
+            if path == trap_config and args and args[0] == "r":
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", unreadable_open)
         try:
             with pytest.raises((PermissionError, RuntimeError, OSError)):
                 apply_migration(trap_config, issues, backup=False)

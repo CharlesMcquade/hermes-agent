@@ -711,9 +711,13 @@ class TestSessionIsolation:
         # adapter is the legacy handle_message harness and would never reach this admission seam.
         adapter._message_handler = SimpleNamespace(__self__=SimpleNamespace())  # type: ignore[assignment]
         captured_events = []
+        captured_destinations = {}
 
         async def _capture(_adapter, event):
             captured_events.append(event)
+            # Durable admission carries the unique callback on this event. The
+            # retained lookup is published only after admission succeeds.
+            captured_destinations[event.text] = event._webhook_delivery["deliver_extra"]["chat_id"]
             raise RuntimeError("captured before admission")
 
         monkeypatch.setattr(webhook_ingress, "admit_producer", _capture)
@@ -742,7 +746,7 @@ class TestSessionIsolation:
         assert (high.source.profile, high.source.user_id) == ("shared-profile", "webhook:build")
         assert (low.source.profile, low.source.user_id) == ("shared-profile", "webhook:build:external")
         assert (other.source.profile, other.source.user_id) == ("other-profile", "webhook:build")
-        assert [adapter._delivery_info[e.source.chat_id]["deliver_extra"]["chat_id"] for e in (high, low, other)] == [
+        assert [captured_destinations[e.text] for e in (high, low, other)] == [
             "high-chat", "low-chat", "other-chat"]
 
 
