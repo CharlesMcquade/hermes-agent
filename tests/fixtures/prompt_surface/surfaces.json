@@ -5,9 +5,12 @@
       "stable": 1829,
       "volatile": 1268
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 12789,
     "tools": [
       "browser_cdp",
+      "browser_cdp_extension",
+      "browser_cdp_remote",
+      "browser_cdp_sidecar",
       "browser_dialog",
       "browser_exec",
       "clarify",
@@ -38,9 +41,12 @@
       "stable": 1225,
       "volatile": 1268
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 12789,
     "tools": [
       "browser_cdp",
+      "browser_cdp_extension",
+      "browser_cdp_remote",
+      "browser_cdp_sidecar",
       "browser_dialog",
       "browser_exec",
       "clarify",
@@ -71,9 +77,12 @@
       "stable": 1646,
       "volatile": 1266
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 12789,
     "tools": [
       "browser_cdp",
+      "browser_cdp_extension",
+      "browser_cdp_remote",
+      "browser_cdp_sidecar",
       "browser_dialog",
       "browser_exec",
       "clarify",
@@ -104,9 +113,12 @@
       "stable": 2420,
       "volatile": 1264
     },
-    "tool_tokens": 11398,
+    "tool_tokens": 12944,
     "tools": [
       "browser_cdp",
+      "browser_cdp_extension",
+      "browser_cdp_remote",
+      "browser_cdp_sidecar",
       "browser_dialog",
       "browser_exec",
       "clarify",
@@ -137,9 +149,12 @@
       "stable": 1225,
       "volatile": 1268
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 12789,
     "tools": [
       "browser_cdp",
+      "browser_cdp_extension",
+      "browser_cdp_remote",
+      "browser_cdp_sidecar",
       "browser_dialog",
       "browser_exec",
       "clarify",
@@ -170,9 +185,12 @@
       "stable": 1211,
       "volatile": 1268
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 12789,
     "tools": [
       "browser_cdp",
+      "browser_cdp_extension",
+      "browser_cdp_remote",
+      "browser_cdp_sidecar",
       "browser_dialog",
       "browser_exec",
       "clarify",
@@ -203,9 +221,12 @@
       "stable": 1473,
       "volatile": 1269
     },
-    "tool_tokens": 11898,
+    "tool_tokens": 13444,
     "tools": [
       "browser_cdp",
+      "browser_cdp_extension",
+      "browser_cdp_remote",
+      "browser_cdp_sidecar",
       "browser_dialog",
       "browser_exec",
       "clarify",
@@ -237,9 +258,12 @@
       "stable": 1244,
       "volatile": 1269
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 12789,
     "tools": [
       "browser_cdp",
+      "browser_cdp_extension",
+      "browser_cdp_remote",
+      "browser_cdp_sidecar",
       "browser_dialog",
       "browser_exec",
       "clarify",
@@ -270,9 +294,12 @@
       "stable": 1330,
       "volatile": 1269
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 12789,
     "tools": [
       "browser_cdp",
+      "browser_cdp_extension",
+      "browser_cdp_remote",
+      "browser_cdp_sidecar",
       "browser_dialog",
       "browser_exec",
       "clarify",

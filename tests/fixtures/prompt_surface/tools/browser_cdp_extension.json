@@ -1,0 +1,39 @@
+{
+  "description": "Send a CDP command to a browser tab via the connected browser extension. It uses the extension's chrome.debugger API. This does NOT require --remote-debugging-port — the extension uses its native debugger permission.\n\nThe extension must be connected to the Hermes gateway WebSocket and have registered as a CDP relay. Use 'cdp.listTabs' (via browser_cdp_extension with method='cdp.listTabs') to list tabs, then use tab IDs for targeting.\n\n**CDP method reference:** https://chromedevtools.github.io/devtools-protocol/\n\n**Common patterns:**\n- List tabs: method='cdp.listTabs' (special — returns Chrome tab list)\n- Evaluate JS: method='Runtime.evaluate', params={'expression': 'document.title', 'returnByValue': true}, target={'active': true}\n- Navigate: method='Page.navigate', params={'url': 'https://...'}, target={'tabId': 123}\n- Screenshot: method='Page.captureScreenshot', target={'active': true}\n\n**Targeting:**\n- {tabId: N} — specific tab (from cdp.listTabs)\n- {active: true} — active tab (default)\n- {url: 'youtube'} — first tab whose URL contains the string\n- {index: 0} — tab at this index in the current window",
+  "name": "browser_cdp_extension",
+  "parameters": {
+    "properties": {
+      "method": {
+        "description": "CDP method name (e.g. 'Runtime.evaluate', 'Page.navigate', 'Page.captureScreenshot'). Use 'cdp.listTabs' to list available tabs.",
+        "type": "string"
+      },
+      "params": {
+        "additionalProperties": true,
+        "description": "CDP method parameters. Omit or pass {} for methods that take no parameters.",
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "relay_id": {
+        "description": "Optional relay ID when multiple extensions are connected. Auto-selects if omitted.",
+        "type": "string"
+      },
+      "target": {
+        "additionalProperties": true,
+        "description": "Tab targeting. {tabId: N} for a specific tab, {active: true} for the active tab (default), {url: 'partial'} to find by URL, {index: N} for tab index.",
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "timeout": {
+        "default": 30,
+        "description": "Timeout in seconds (default 30, max 300).",
+        "type": "number"
+      }
+    },
+    "required": [
+      "method"
+    ],
+    "type": "object"
+  }
+}

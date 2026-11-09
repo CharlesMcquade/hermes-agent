@@ -1,0 +1,36 @@
+{
+  "description": "Send a raw CDP command to a remote browser endpoint. This is the remote variant of browser_cdp — it accepts an explicit 'endpoint' parameter (e.g. PPC Chrome via Tailscale) instead of reading from config, so you can control a remote browser without changing the local browser.cdp_url setting.\n\n**Default endpoint:** PPC Chrome at http://100.119.168.29:9223 (via Tailscale portproxy 9223 → localhost 9222). Override with the 'endpoint' parameter for other remote browsers.\n\n**CDP method reference:** https://chromedevtools.github.io/devtools-protocol/\n\n**Common patterns:**\n- List tabs: method='Target.getTargets', params={}\n- Navigate a tab: method='Page.navigate', params={'url': 'https://...'}, target_id=<tabId>\n- Eval in a tab: method='Runtime.evaluate', params={'expression': '...', 'returnByValue': true}, target_id=<tabId>\n- Activate a tab (bring to front): method='Target.activateTarget', params={'targetId': '<tabId>'}\n- Create new tab: method='Target.createTarget', params={'url': 'https://...'}\n\n**Usage rules:**\n- Browser-level methods (Target.*, Browser.*, Storage.*): omit target_id.\n- Page-level methods (Page.*, Runtime.*, DOM.*, Emulation.*): pass target_id from Target.getTargets.\n- Each call is stateless — no session persistence between calls.\n- If the remote browser is asleep/offline, you'll get a connection error.",
+  "name": "browser_cdp_remote",
+  "parameters": {
+    "properties": {
+      "endpoint": {
+        "description": "CDP endpoint URL (HTTP or WS). Defaults to PPC Chrome at http://100.119.168.29:9223. Pass a different URL to control another remote browser.",
+        "type": "string"
+      },
+      "method": {
+        "description": "CDP method name, e.g. 'Target.getTargets', 'Runtime.evaluate', 'Page.navigate'.",
+        "type": "string"
+      },
+      "params": {
+        "additionalProperties": true,
+        "description": "Method-specific parameters as a JSON object. Omit or pass {} for methods that take no parameters.",
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "target_id": {
+        "description": "Optional. Target/tab ID from Target.getTargets result (each entry's 'targetId'). Use for page-level methods.",
+        "type": "string"
+      },
+      "timeout": {
+        "default": 30,
+        "description": "Timeout in seconds (default 30, max 300).",
+        "type": "number"
+      }
+    },
+    "required": [
+      "method"
+    ],
+    "type": "object"
+  }
+}

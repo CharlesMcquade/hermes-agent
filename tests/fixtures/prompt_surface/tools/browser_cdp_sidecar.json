@@ -1,0 +1,39 @@
+{
+  "description": "Send CDP commands through Verity Sidecar's authenticated WebUI-tab relay. This uses the browser extension's chrome.debugger permission and the same signed-in WebUI auth channel; it does not require --remote-debugging-port or /api/ws.\n\nUse method='cdp.listRelays' to see connected sidecars and method='cdp.listTabs' to list browser tabs.\n\nCDP reference: https://chromedevtools.github.io/devtools-protocol/",
+  "name": "browser_cdp_sidecar",
+  "parameters": {
+    "properties": {
+      "method": {
+        "description": "CDP method name (e.g. Runtime.evaluate, Page.navigate). Special: cdp.listRelays, cdp.listTabs, cdp.detach.",
+        "type": "string"
+      },
+      "params": {
+        "additionalProperties": true,
+        "description": "CDP method parameters.",
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "relay_id": {
+        "description": "Optional relay id if multiple sidecars are connected.",
+        "type": "string"
+      },
+      "target": {
+        "additionalProperties": true,
+        "description": "Tab target: {tabId:N}, {active:true}, {url:'partial'}, or {index:N}.",
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "timeout": {
+        "default": 30,
+        "description": "Timeout in seconds (default 30, max 300).",
+        "type": "number"
+      }
+    },
+    "required": [
+      "method"
+    ],
+    "type": "object"
+  }
+}
