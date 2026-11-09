@@ -304,6 +304,15 @@ async def execute_admission(authority, ref, row):
         if 'local_automation_v1' in row['payload']:
             from gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
+        elif live.source.platform.value == 'local':
+            # Execution consumes the restored routing snapshot, not a potentially stale route entry
+            # that get_or_create_session() may replace before transcript loading.  This is critical
+            # after a compressed root restarts with queued viewer input: the receipt names the
+            # continuation holding the summary; an empty replacement must never be replayed instead.
+            from gateway.session_local_recovery import transcript_target
+            event.metadata.update(gateway_session_key=live.route,
+                                  gateway_session_id=transcript_target(authority, ref),
+                                  gateway_session_strict=True)
     if event.internal and 'gateway_session_id' in event.metadata:
         # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.
