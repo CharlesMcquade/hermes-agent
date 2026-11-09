@@ -632,17 +632,36 @@ class SessionTranscriptMixin:
         """Load all messages from a session's transcript (state.db is canonical). Reads follow the
         same routing writes use — the in-memory reroute map, then the durable compression tip —
         otherwise the transcript "vanishes" while every message sits under the child."""
+        requested_id = session_id
+        probe_tip_error = None
         if not self._db_for_session_id(session_id):
             return []
         session_id = self._follow_reroutes(session_id)
+        rerouted_id = session_id
         with contextlib.suppress(Exception):
             # Durable successor survives restart; the reroute map doesn't.
             db = self._db_for_session_id(session_id)
             session_id = db.get_compression_tip(session_id) or session_id
         try:
             # repair_alternation: this feeds LIVE REPLAY; heal a durable user;user wedge once here.
-            return self._db_for_session_id(session_id).get_messages_as_conversation(
+            history = self._db_for_session_id(session_id).get_messages_as_conversation(
                 session_id, repair_alternation=True)
+            import os
+            if os.environ.get('HERMES_R18_TRANSCRIPT_PROBE') == '1':
+                import json
+                db = self._db_for_session_id(session_id)
+                try:
+                    tip = db.get_compression_tip(rerouted_id)
+                except Exception as exc:
+                    tip, probe_tip_error = None, type(exc).__name__
+                print('R18_TRANSCRIPT_PROBE ' + json.dumps({
+                    'phase': 'transcript', 'requested': requested_id,
+                    'rerouted': rerouted_id, 'selected': session_id, 'tip': tip,
+                    'tip_error': probe_tip_error, 'count': len(history),
+                    'summary': 'SUMMARY_RETAINED_FACTS' in json.dumps(history),
+                    'pressure_1': 'PRESSURE_1 ' in json.dumps(history),
+                }), flush=True)
+            return history
         except Exception as e:
             # Empty history is valid data; a failed canonical read is not — live-replay callers
             # must fail closed, not start from [].

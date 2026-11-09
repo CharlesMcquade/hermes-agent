@@ -315,9 +315,23 @@ async def execute_admission(authority, ref, row):
             # after a compressed root restarts with queued viewer input: the receipt names the
             # continuation holding the summary; an empty replacement must never be replayed instead.
             from gateway.session_local_recovery import transcript_target
+            _probe_target = transcript_target(authority, ref)
             event.metadata.update(gateway_session_key=live.route,
-                                  gateway_session_id=transcript_target(authority, ref),
+                                  gateway_session_id=_probe_target,
                                   gateway_session_strict=True)
+            import os
+            if os.environ.get('HERMES_R18_TRANSCRIPT_PROBE') == '1':
+                import json
+                try:
+                    _tip = authority.db.get_compression_tip(ref.session_id)
+                    _tip_error = None
+                except Exception as exc:
+                    _tip, _tip_error = None, type(exc).__name__
+                print('R18_TRANSCRIPT_PROBE ' + json.dumps({
+                    'phase': 'admission', 'text': event.text,
+                    'ref': ref.session_id, 'route': live.route,
+                    'target': _probe_target, 'tip': _tip, 'tip_error': _tip_error,
+                }), flush=True)
     if event.internal and 'gateway_session_id' in event.metadata:
         # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.
