@@ -594,14 +594,20 @@ def _poll_job(client, job_id, deadline_s=15, until=("paused", "done", "error")):
 
 
 def _pause_when_flowing(client, job_id):
-    """Pause once bytes are actually moving, so the pause lands mid-flight
-    (the downloader stops between chunks) rather than before the probe."""
+    """Pause after a real ranged request starts, using the live pause gate.
+
+    Progress may be published only after a full response completes. Waiting for
+    done_bytes can therefore miss the valid pause window entirely.
+    """
+    from tests.pm._range_server import RangeHandler
     last_status, last_pause = None, None
     deadline = time.time() + 15
     while time.time() < deadline:
         status = client.get(f"/api/local-models/jobs/{job_id}").json()
         last_status = status
-        if (status.get("done_bytes") or 0) > 0:
+        if status.get("status") in {"done", "error"}:
+            raise AssertionError(f"download settled before its pause window: {status!r}")
+        if status.get("can_pause") and RangeHandler.ranges_seen:
             break
         time.sleep(0.03)
     deadline = time.time() + 15
