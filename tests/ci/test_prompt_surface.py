@@ -39,10 +39,14 @@ def test_committed_prompt_surface_is_current(tmp_path):
     if differences:
         # Harness-only evidence from this exact canonical invocation; preserve
         # the original assertion and only archive under the disposable root.
-        # capture_validation_artifacts is supplied by the isolated CoreWeave
-        # harness on PYTHONPATH, not by the Agent repository/production runtime.
-        from capture_validation_artifacts import export_validation_tree  # type: ignore[reportMissingImports]
-        export_validation_tree(rendered)
+        # Load the harness-only exporter from its explicit mounted path. The
+        # canonical runner intentionally clears PYTHONPATH; do not fight it.
+        probe_path = Path('/harness/capture_validation_artifacts.py').resolve(strict=True)
+        probe_spec = importlib.util.spec_from_file_location('_r18_canonical_probe', probe_path)
+        assert probe_spec is not None and probe_spec.loader is not None
+        probe_module = importlib.util.module_from_spec(probe_spec)
+        probe_spec.loader.exec_module(probe_module)
+        probe_module.export_validation_tree(rendered)
     assert not differences, (
         "The system prompt or tool schemas changed. Regenerate the snapshot and commit it with the "
         "change (merging it needs a hermes-agent-core approval):\n"
