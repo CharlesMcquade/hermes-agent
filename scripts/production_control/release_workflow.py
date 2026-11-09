@@ -618,6 +618,20 @@ def prepare(cfg):
               'production_restarted': False, 'gates': {}, 'report': str(run_dir / 'report.json')}
     try:
         scripts = Path(__file__).resolve().parent
+        # Application tests are deliberately bounded to the exact source delta
+        # plus named neighbors. Full upstream suites are opt-in diagnostics,
+        # never an implicit release gate or remotely scheduled side effect.
+        import release_validation
+        application = release_validation.validate(cfg, run_dir / 'application-validation')
+        if application['status'] != 'passed':
+            raise RuntimeError('Exact-delta application validation failed: ' + application.get('failed_repository', 'unknown'))
+        report['gates']['application_validation'] = {
+            'status': application['status'],
+            'local_only': application['local_only'],
+            'remote_jobs_created': application['remote_jobs_created'],
+            'total_tests_files': application['total_tests_files'],
+            'report': str(run_dir / 'application-validation/report.json'),
+        }
         with tempfile.TemporaryDirectory(prefix='release-tests-', dir=cfg['scratch']) as temp:
             env = isolated_env(Path(temp), [scripts])
             env['HERMES_CANARY_SCRATCH'] = cfg['scratch']
@@ -670,17 +684,33 @@ def prepare(cfg):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
-    parser.add_argument('action', choices=('build', 'verify', 'prepare', 'drift'))
+    parser.add_argument('--evidence', type=Path, help='New output directory for the validate action')
+    parser.add_argument('action', choices=('build', 'verify', 'prepare', 'drift', 'validate'))
     args = parser.parse_args()
     try:
         cfg = config_read(args.config)
-        report = {'build': build, 'verify': verify, 'prepare': prepare, 'drift': drift}[args.action](cfg)
-        summary = {k: v for k, v in report.items() if k != 'gates'}
+        if args.action == 'validate':
+            import release_validation
+            evidence = args.evidence or Path(cfg['evidence_dir']) / ('validation-' + str(time.time_ns()))
+            report = release_validation.validate(cfg, evidence)
+        else:
+            report = {'build': build, 'verify': verify, 'prepare': prepare, 'drift': drift}[args.action](cfg)
+        if args.action == 'validate':
+            summary = {key: value for key, value in report.items()
+                       if key not in ('repositories', 'baseline')}
+            summary['repositories'] = {
+                name: {key: value for key, value in item.items() if key != 'changed_files'}
+                for name, item in report['repositories'].items()
+            }
+        else:
+            summary = {k: v for k, v in report.items() if k != 'gates'}
         print(json.dumps(summary, indent=2))
         if args.action == 'prepare':
             return 0 if report['status'] == 'APP_SMOKE_PASSED_PENDING_GATE_CHECKED' else 2
         if args.action == 'drift':
             return 0 if report['status'] == 'clean' else 2
+        if args.action == 'validate':
+            return 0 if report['status'] == 'passed' else 1
     except Exception as exc:
         print(json.dumps({'status': 'NOT_READY', 'error': str(exc)}), file=sys.stderr)
         return 1
