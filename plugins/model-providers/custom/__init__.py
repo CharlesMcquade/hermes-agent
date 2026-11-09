@@ -224,11 +224,6 @@ class CustomProfile(ProviderProfile):
 
                 # Otherwise clamp the internal ladder onto the widest
                 # OpenAI-compatible wire vocabulary (shared upstream policy).
-                from agent.reasoning_effort import (
-                    OPENAI_COMPAT_WIRE_EFFORTS,
-                    clamp_effort,
-                )
-
                 top_level["reasoning_effort"] = clamp_effort(
                     _effort,
                     _supported or OPENAI_COMPAT_WIRE_EFFORTS,

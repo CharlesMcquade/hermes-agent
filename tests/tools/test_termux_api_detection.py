@@ -186,6 +186,8 @@ class TestDetectAudioEnvironmentTermuxFallback:
             if name == "termux-microphone-record" else None,
         )
 
+        # Host-container detection is unrelated to the simulated Android host.
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
 

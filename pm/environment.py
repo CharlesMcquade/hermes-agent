@@ -106,8 +106,13 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     failed → BuildFailure; anything else (fetch, tooling) → plain InstallError
     with the tail of the output.
     """
-    cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
+    detail = output.strip()
     lowered = output.lower()
+    if any(marker in lowered for marker in _RESOLVER_MARKERS) and len(detail) > 600:
+        # uv names the affected workspace package in the first resolver line; keep it
+        # alongside the tail that explains the conflict instead of truncating its identity.
+        detail = f"{detail[:300]}\n…\n{detail[-300:]}"
+    cause = f"uv {stage} exited {returncode}: {detail}"
     if _UNDATED_PIN in lowered or all(marker in lowered for marker in _UNDATED_FILE):
         return InstallError("venv", cause, UNDATED_INDEX_HINT)
     if any(marker in lowered for marker in _RESOLVER_MARKERS):

@@ -4787,6 +4787,7 @@
   "api_mode": "chat_completions",
   "base_url": "http://127.0.0.1:8080/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -4846,6 +4847,7 @@
   },
   "model": "my-local-model",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -4904,6 +4906,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
