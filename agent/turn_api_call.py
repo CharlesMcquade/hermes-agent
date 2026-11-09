@@ -105,6 +105,16 @@ def perform_api_call(
             }, default=str) + '\n')
 
     def _perform_api_call(next_api_kwargs):
+        _probe_next = json.dumps(next_api_kwargs.get('messages', next_api_kwargs.get('input', [])), default=str)
+        if os.environ.get('HERMES_R18_TRANSCRIPT_PROBE') == '1' and 'FOLLOWER_' in _probe_next:
+            trace = os.path.join(os.environ['HERMES_HOME'], 'r18-transcript-trace.jsonl')
+            with open(trace, 'a', encoding='utf-8') as output:
+                output.write(json.dumps({
+                    'phase': 'after_middleware', 'message_count': len(next_api_kwargs.get('messages', [])),
+                    'session': getattr(agent, 'session_id', None),
+                    'summary': 'SUMMARY_RETAINED_FACTS' in _probe_next,
+                    'pressure_1': 'PRESSURE_1 ' in _probe_next,
+                }, default=str) + '\n')
         if agent.api_mode == "codex_responses":
             from agent.codex_responses_adapter import drops_replay_item_ids
 

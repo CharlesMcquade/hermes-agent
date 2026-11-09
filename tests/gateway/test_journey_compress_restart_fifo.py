@@ -193,6 +193,12 @@ def test_followers_survive_compression_and_restart_in_order_exactly_once(tmp_pat
         sid, compacting = before['sid'], before['compacting']
         trace = home / 'r18-transcript-trace.jsonl'
         print('R18_TRACE_BEGIN\n' + (trace.read_text() if trace.exists() else 'TRACE_FILE_MISSING'))
+        request_rows = [{'model': r['model'], 'text': str(r['text'])[:48],
+                         'summary': 'SUMMARY_RETAINED_FACTS' in r['wire'],
+                         'separate_pressure_1': any(str(m.get('content', '')).startswith('PRESSURE_1 ')
+                                                    for m in json.loads(r['wire']))}
+                        for r in peer.requests if str(r['text']) in FOLLOWERS]
+        print('R18_REQUEST_MODELS ' + json.dumps(request_rows))
         order = [r['text'] for r in peer.requests if r['model'] == 'original' and r['text'] in FOLLOWERS]
         assert order == list(FOLLOWERS), order
         assert executed(compacting['text'][:12]) == before['compacting_requests'], 'compacted turn replayed'
