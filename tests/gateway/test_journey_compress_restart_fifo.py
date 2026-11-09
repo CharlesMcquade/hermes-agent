@@ -88,7 +88,11 @@ def test_followers_survive_compression_and_restart_in_order_exactly_once(tmp_pat
         'auxiliary': {'title_generation': {'enabled': False},
                       'compression': {'provider': 'custom', 'model': 'summary', 'base_url': url}},
         'compression': {'protect_first_n': 1, 'protect_last_n': 2, 'threshold_tokens': 12000,
-                        'threshold': 0.5, 'in_place': False},
+                        'threshold': 0.5, 'in_place': False,
+                        # This journey requires PRESSURE_1 inside the compacted middle. Lean's
+                        # larger recency budget can legitimately retain that whole turn; legacy
+                        # exercises the intended 0.20 ratio-bounded tail instead of disabling it.
+                        'tail_mode': 'legacy', 'target_ratio': 0.20},
         'platform_toolsets': {'cli': []}}))
     (home / 'models_dev_cache.json').write_text(json.dumps({'custom': {'id': 'custom', 'models': {
         name: {'id': name, 'name': name, 'limit': {'context': 64000 if name == 'original' else 1000000,
