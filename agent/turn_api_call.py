@@ -90,6 +90,20 @@ def perform_api_call(
 
     _use_streaming = _should_stream(agent)
 
+    import json, os
+    _probe_wire = api_kwargs.get('messages', api_kwargs.get('input', []))
+    _probe_wire = json.dumps(_probe_wire, default=str)
+    if os.environ.get('HERMES_R18_TRANSCRIPT_PROBE') == '1' and 'FOLLOWER_' in _probe_wire:
+        trace = os.path.join(os.environ['HERMES_HOME'], 'r18-transcript-trace.jsonl')
+        with open(trace, 'a', encoding='utf-8') as output:
+            output.write(json.dumps({
+                'phase': 'provider_kwargs', 'message_count': len(api_kwargs.get('messages', [])),
+                'session': getattr(agent, 'session_id', None),
+                'summary': 'SUMMARY_RETAINED_FACTS' in _probe_wire,
+                'pressure_1': 'PRESSURE_1 ' in _probe_wire,
+                'mode': getattr(agent, 'api_mode', None),
+            }, default=str) + '\n')
+
     def _perform_api_call(next_api_kwargs):
         if agent.api_mode == "codex_responses":
             from agent.codex_responses_adapter import drops_replay_item_ids

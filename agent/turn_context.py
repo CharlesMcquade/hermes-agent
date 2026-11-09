@@ -1414,6 +1414,19 @@ def build_turn_context(
 
     _persist_turn_start(agent, messages, conversation_history, pending_cli_message)
 
+    if os.environ.get('HERMES_R18_TRANSCRIPT_PROBE') == '1' and user_message in ('FOLLOWER_1', 'FOLLOWER_2'):
+        trace = os.path.join(os.environ['HERMES_HOME'], 'r18-transcript-trace.jsonl')
+        with open(trace, 'a', encoding='utf-8') as output:
+            output.write(json.dumps({
+                'phase': 'context_return', 'text': user_message,
+                'session': getattr(agent, 'session_id', None),
+                'message_count': len(messages), 'history_count': len(conversation_history or []),
+                'message_summary': 'SUMMARY_RETAINED_FACTS' in json.dumps(messages, default=str),
+                'history_summary': 'SUMMARY_RETAINED_FACTS' in json.dumps(conversation_history, default=str),
+                'pressure_1': 'PRESSURE_1 ' in json.dumps(messages, default=str),
+                'compacted': compaction.compressed, 'blocked': compaction.blocked,
+            }, default=str) + '\n')
+
     return TurnContext(
         user_message=user_message, original_user_message=original_user_message, messages=messages,
         conversation_history=conversation_history, active_system_prompt=active_system_prompt,
@@ -1556,4 +1569,14 @@ def build_api_messages(
         effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
+    _probe_api_text = json.dumps(api_messages, default=str)
+    if os.environ.get('HERMES_R18_TRANSCRIPT_PROBE') == '1' and 'FOLLOWER_' in _probe_api_text:
+        trace = os.path.join(os.environ['HERMES_HOME'], 'r18-transcript-trace.jsonl')
+        with open(trace, 'a', encoding='utf-8') as output:
+            output.write(json.dumps({
+                'phase': 'wire_messages', 'message_count': len(api_messages),
+                'session': getattr(agent, 'session_id', None),
+                'summary': 'SUMMARY_RETAINED_FACTS' in _probe_api_text,
+                'pressure_1': 'PRESSURE_1 ' in _probe_api_text,
+            }, default=str) + '\n')
     return api_messages, effective_system
