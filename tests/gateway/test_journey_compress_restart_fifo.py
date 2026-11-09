@@ -96,7 +96,7 @@ def test_followers_survive_compression_and_restart_in_order_exactly_once(tmp_pat
         for name in ('original', 'summary')}}}))
     env = child_env() | dict(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                              PYTHONPATH=str(root), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url,
-                             PYTHONUNBUFFERED='1')
+                             PYTHONUNBUFFERED='1', HERMES_R18_TRANSCRIPT_PROBE='1')
 
     def rows(sql, args=()):
         with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
@@ -191,6 +191,8 @@ def test_followers_survive_compression_and_restart_in_order_exactly_once(tmp_pat
         with daemon(root, home, env, barrier=False) as (_, desc):
             final = asyncio.run(second(desc))
         sid, compacting = before['sid'], before['compacting']
+        trace = home / 'r18-transcript-trace.jsonl'
+        print('R18_TRACE_BEGIN\n' + (trace.read_text() if trace.exists() else 'TRACE_FILE_MISSING'))
         order = [r['text'] for r in peer.requests if r['model'] == 'original' and r['text'] in FOLLOWERS]
         assert order == list(FOLLOWERS), order
         assert executed(compacting['text'][:12]) == before['compacting_requests'], 'compacted turn replayed'

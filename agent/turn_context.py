@@ -1233,16 +1233,18 @@ def build_turn_context(
     import os
     if os.environ.get('HERMES_R18_TRANSCRIPT_PROBE') == '1' and user_message in ('FOLLOWER_1', 'FOLLOWER_2'):
         import json
-        print('R18_TRANSCRIPT_PROBE ' + json.dumps({
-            'phase': 'agent_recovery', 'text': user_message,
-            'before_session': _probe_before_session,
-            'after_session': getattr(agent, 'session_id', None),
-            'replaced': recovered_history is not None,
-            'before_summary': 'SUMMARY_RETAINED_FACTS' in json.dumps(_probe_before_history),
-            'after_summary': 'SUMMARY_RETAINED_FACTS' in json.dumps(conversation_history),
-            'before_pressure_1': 'PRESSURE_1 ' in json.dumps(_probe_before_history),
-            'after_pressure_1': 'PRESSURE_1 ' in json.dumps(conversation_history),
-        }), flush=True)
+        trace = os.path.join(os.environ['HERMES_HOME'], 'r18-transcript-trace.jsonl')
+        with open(trace, 'a', encoding='utf-8') as output:
+            output.write(json.dumps({
+                'phase': 'agent_recovery', 'text': user_message,
+                'before_session': _probe_before_session,
+                'after_session': getattr(agent, 'session_id', None),
+                'replaced': recovered_history is not None,
+                'before_summary': 'SUMMARY_RETAINED_FACTS' in json.dumps(_probe_before_history, default=str),
+                'after_summary': 'SUMMARY_RETAINED_FACTS' in json.dumps(conversation_history, default=str),
+                'before_pressure_1': 'PRESSURE_1 ' in json.dumps(_probe_before_history, default=str),
+                'after_pressure_1': 'PRESSURE_1 ' in json.dumps(conversation_history, default=str),
+            }, default=str) + '\n')
     # After recovery, so the bot-to-bot chain is keyed by the session id this turn's sends use.
     from agent.bot_chain import on_turn_start as _bot_chain_turn_start
     _bot_chain_turn_start(agent, turn_author, persist_user_display_kind, persist_user_message or user_message)

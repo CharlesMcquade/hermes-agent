@@ -327,11 +327,13 @@ async def execute_admission(authority, ref, row):
                     _tip_error = None
                 except Exception as exc:
                     _tip, _tip_error = None, type(exc).__name__
-                print('R18_TRANSCRIPT_PROBE ' + json.dumps({
-                    'phase': 'admission', 'text': event.text,
-                    'ref': ref.session_id, 'route': live.route,
-                    'target': _probe_target, 'tip': _tip, 'tip_error': _tip_error,
-                }), flush=True)
+                trace = os.path.join(os.environ['HERMES_HOME'], 'r18-transcript-trace.jsonl')
+                with open(trace, 'a', encoding='utf-8') as output:
+                    output.write(json.dumps({
+                        'phase': 'admission', 'text': event.text,
+                        'ref': ref.session_id, 'route': live.route,
+                        'target': _probe_target, 'tip': _tip, 'tip_error': _tip_error,
+                    }, default=str) + '\n')
     if event.internal and 'gateway_session_id' in event.metadata:
         # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.

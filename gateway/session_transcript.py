@@ -654,13 +654,15 @@ class SessionTranscriptMixin:
                     tip = db.get_compression_tip(rerouted_id)
                 except Exception as exc:
                     tip, probe_tip_error = None, type(exc).__name__
-                print('R18_TRANSCRIPT_PROBE ' + json.dumps({
-                    'phase': 'transcript', 'requested': requested_id,
-                    'rerouted': rerouted_id, 'selected': session_id, 'tip': tip,
-                    'tip_error': probe_tip_error, 'count': len(history),
-                    'summary': 'SUMMARY_RETAINED_FACTS' in json.dumps(history),
-                    'pressure_1': 'PRESSURE_1 ' in json.dumps(history),
-                }), flush=True)
+                trace = os.path.join(os.environ['HERMES_HOME'], 'r18-transcript-trace.jsonl')
+                with open(trace, 'a', encoding='utf-8') as output:
+                    output.write(json.dumps({
+                        'phase': 'transcript', 'requested': requested_id,
+                        'rerouted': rerouted_id, 'selected': session_id, 'tip': tip,
+                        'tip_error': probe_tip_error, 'count': len(history),
+                        'summary': 'SUMMARY_RETAINED_FACTS' in json.dumps(history),
+                        'pressure_1': 'PRESSURE_1 ' in json.dumps(history),
+                    }, default=str) + '\n')
             return history
         except Exception as e:
             # Empty history is valid data; a failed canonical read is not — live-replay callers
