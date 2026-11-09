@@ -39,7 +39,9 @@ def test_committed_prompt_surface_is_current(tmp_path):
     if differences:
         # Harness-only evidence from this exact canonical invocation; preserve
         # the original assertion and only archive under the disposable root.
-        from capture_validation_artifacts import export_validation_tree
+        # capture_validation_artifacts is supplied by the isolated CoreWeave
+        # harness on PYTHONPATH, not by the Agent repository/production runtime.
+        from capture_validation_artifacts import export_validation_tree  # type: ignore[reportMissingImports]
         export_validation_tree(rendered)
     assert not differences, (
         "The system prompt or tool schemas changed. Regenerate the snapshot and commit it with the "
