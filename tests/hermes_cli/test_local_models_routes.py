@@ -599,17 +599,23 @@ def _pause_when_flowing(client, job_id):
     deadline = time.time() + 15
     while time.time() < deadline:
         status = client.get(f"/api/local-models/jobs/{job_id}").json()
+        last_status = status
         if (status.get("done_bytes") or 0) > 0:
             break
         time.sleep(0.03)
     deadline = time.time() + 15
+    last_status, last_pause = None, None
     while time.time() < deadline:
         pr = client.post("/api/local-models/download/pause",
                          json={"job_id": job_id})
-        if pr.status_code == 200 and pr.json().get("paused") is True:
+        last_pause = pr.json()
+        if pr.status_code == 200 and last_pause.get("paused") is True:
             return
         time.sleep(0.03)
-    raise AssertionError("pause never reached the live download handle")
+    raise AssertionError(
+        "pause never reached the live download handle: "
+        f"status={status!r}, pause={last_pause!r}"
+    )
 
 
 _BIG_BODY = bytes(range(256)) * (8 * 1024 * 1024 // 256)  # 8 MiB, deterministic
