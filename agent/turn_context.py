@@ -1416,6 +1416,7 @@ def build_turn_context(
 
     if os.environ.get('HERMES_R18_TRANSCRIPT_PROBE') == '1' and user_message in ('FOLLOWER_1', 'FOLLOWER_2'):
         trace = os.path.join(os.environ['HERMES_HOME'], 'r18-transcript-trace.jsonl')
+        import json
         with open(trace, 'a', encoding='utf-8') as output:
             output.write(json.dumps({
                 'phase': 'context_return', 'text': user_message,
@@ -1569,6 +1570,7 @@ def build_api_messages(
         effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
+    import json, os
     _probe_api_text = json.dumps(api_messages, default=str)
     if os.environ.get('HERMES_R18_TRANSCRIPT_PROBE') == '1' and 'FOLLOWER_' in _probe_api_text:
         trace = os.path.join(os.environ['HERMES_HOME'], 'r18-transcript-trace.jsonl')
