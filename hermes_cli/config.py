@@ -496,10 +496,10 @@ def _secure_dir(path):
     return apply_secure_dir_policy(path)
 
 
-def _secure_file(path):
+def _secure_file(path, *, newly_created=False):
     """chmod a file 0600. Skipped when managed (activation sets 0640 group-readable) or in a
-    container (mounts often need broader permissions)."""
-    if is_managed() or _container_or_chmod_skipped():
+    container (mounts often need broader permissions), except for a regular file we just created."""
+    if is_managed() or (not newly_created and _container_or_chmod_skipped()):
         return
     try:
         if os.path.exists(str(path)):
@@ -518,7 +518,7 @@ def seed_config_file(config_path: Path, template: Optional[Path] = None) -> bool
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if template.exists():
         shutil.copy2(template, config_path)
-        _secure_file(config_path)
+        _secure_file(config_path, newly_created=True)
         return True
     save_config(DEFAULT_CONFIG)
     return False
