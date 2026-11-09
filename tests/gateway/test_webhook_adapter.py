@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -706,6 +707,9 @@ class TestSessionIsolation:
         durable admission seam; the HTTP ack itself waits for that admission)."""
         from gateway.platforms import webhook_ingress
         adapter = _make_adapter()
+        # Select the durable producer path explicitly, as the coalescing fixture does. An unbound
+        # adapter is the legacy handle_message harness and would never reach this admission seam.
+        adapter._message_handler = SimpleNamespace(__self__=SimpleNamespace())  # type: ignore[assignment]
         captured_events = []
 
         async def _capture(_adapter, event):

@@ -134,6 +134,57 @@ async def test_max_wait_caps_starvation_and_unresolved_key_dispatches_immediatel
 
 
 @pytest.mark.asyncio
+async def test_bound_runner_admission_failure_is_not_acked_or_legacy_dispatched(monkeypatch):
+    """A bound runner cannot silently fall back to background handle_message dispatch: admission
+    failure must propagate as a retryable HTTP 503, with neither a receipt nor delivery authority."""
+    adapter = _make_adapter(routes={"pr": {"secret": _INSECURE_NO_AUTH, "prompt": "PR 7"}})
+    _capture_admissions(adapter, monkeypatch)
+    legacy_calls = []
+
+    async def _legacy(event):
+        legacy_calls.append(event)
+
+    async def _reject(_adapter, event):
+        raise RuntimeError("authority unavailable")
+
+    adapter.handle_message = _legacy
+    monkeypatch.setattr(webhook_ingress, "admit_producer", _reject)
+
+    response = await adapter._handle_webhook(_mock_request(_payload(7), delivery_id="failed"))
+
+    assert response.status == 503
+    assert legacy_calls == []
+    assert adapter._seen_deliveries == {}
+    assert adapter._pending_deliveries == set()
+    assert adapter._delivery_info == {}
+
+
+@pytest.mark.asyncio
+async def test_failed_coalesced_admission_releases_every_receipt(monkeypatch):
+    """The early coalesced ack is only reversible if a later admission failure releases both the
+    latest delivery and every superseded sibling, without publishing an uncommitted destination."""
+    adapter = _make_adapter(routes={"pr": _coalesce_route(key="pull_request.number", window_seconds=60)})
+    _capture_admissions(adapter, monkeypatch)
+    for delivery_id in ("first", "latest"):
+        response = await adapter._handle_webhook(_mock_request(_payload(7), delivery_id=delivery_id))
+        assert response.status == 202
+    assert len(adapter._seen_deliveries) == 2
+
+    attempts = []
+
+    async def _reject(_adapter, event):
+        attempts.append(event.message_id)
+        raise RuntimeError("authority unavailable")
+
+    monkeypatch.setattr(webhook_ingress, "admit_producer", _reject)
+    await adapter.disconnect()
+
+    assert attempts == ["latest"]
+    assert adapter._seen_deliveries == {}
+    assert adapter._delivery_info == {}
+
+
+@pytest.mark.asyncio
 async def test_disconnect_flushes_pending_groups(monkeypatch):
     adapter = _make_adapter(routes={"pr": _coalesce_route(key="pull_request.number", window_seconds=60)})
     admitted = _capture_admissions(adapter, monkeypatch)

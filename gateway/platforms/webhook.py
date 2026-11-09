@@ -969,9 +969,11 @@ class WebhookAdapter(BasePlatformAdapter):
             event.media_types = [m[1] for m in media]
             event.message_type = MessageType.PHOTO
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        if runner is None or not getattr(runner, "session_authority", None):
-            # No session authority (fork harness / legacy runner): fire-and-forget dispatch, as the
-            # pre-durable path did — the durable producer requires an authority to admit through.
+        if runner is None:
+            # Unbound legacy runner: fire-and-forget dispatch, as the pre-durable path did. A bound
+            # runner MUST use the durable seam even before its authority is available: falling back
+            # here would recursively re-enter handle_message, bypass admission, and ack a run that
+            # can subsequently fail in an unobserved background task.
             pending = None
             try:
                 pending = self.handle_message(event)
