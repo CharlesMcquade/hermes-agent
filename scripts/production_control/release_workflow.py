@@ -347,11 +347,18 @@ def build(cfg):
     (root / 'agent/.hermes/bin').mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='release-launchers-', dir=scratch) as temp:
         env = isolated_env(Path(temp), [root / 'agent'])
-        code = ('from pathlib import Path; from hermes_cli._launchers import ensure_install_launchers; '
-                f'r=Path({str(root / "agent")!r}); ensure_install_launchers(r,r/".hermes/bin")')
+        code = ('from pathlib import Path; from hermes_cli._launchers import ensure_install_launchers, mint_launcher; '
+                f'r=Path({str(root / "agent")!r}); p=Path({str(python)!r}); '
+                'ensure_install_launchers(r,r/".hermes/bin"); '
+                'command=mint_launcher("hermes",r,p.parent,p,None); '
+                'assert command == p.parent / "hermes"')
+        # A fresh genesis has dependencies but no root-package console script.
+        # Mint against this sealed snapshot, never the mutable donor checkout;
+        # the native-route proof requires a candidate-local console before seal.
         contained_command([str(python), '-B', '-s', '-c', code], Path(temp),
                           [root / 'agent', root / 'runtime'],
-                          writes=[root / 'agent/.hermes/bin'], exec_roots=[root / 'runtime'], env=env)
+                          writes=[root / 'agent/.hermes/bin', python.parent],
+                          exec_roots=[root / 'runtime'], env=env)
     for payload in ('agent', 'webui', 'runtime'):
         canary.inventory(root / payload)  # reject external links before chmod
         release_build.seal(root / payload)

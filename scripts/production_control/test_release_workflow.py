@@ -221,7 +221,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
             'def current_code_sha(): return sha()\n')
         (self.source / 'hermes_cli/_launchers.py').write_text(
             'def ensure_install_launchers(repo, destination):\n'
-            '    (destination / "fixture").write_text("fixture launcher")\n')
+            '    (destination / "fixture").write_text("fixture launcher")\n'
+            'def mint_launcher(name, repo_root, out_dir, python_exe, site_packages):\n'
+            '    target = out_dir / name\n'
+            '    target.write_text("fixture launcher")\n'
+            '    target.chmod(0o755)\n'
+            '    return target\n')
         self.git(self.source, 'add', '.')
         self.git(self.source, 'commit', '-qm', 'fixture identity')
         sha = workflow.git(self.source, 'rev-parse', 'HEAD')
@@ -242,6 +247,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         result = workflow.build(cfg)
         self.assertEqual(result['status'], 'static_verified_not_deployed')
         self.assertEqual(workflow.canary.inventory(old), before)
+        console = self.root / 'new/runtime/venv/bin/hermes'
+        self.assertTrue(console.is_file(), 'runtime-local console must exist before sealing')
+        self.assertTrue(os.access(console, os.X_OK), 'runtime-local console must be executable')
         workflow.require_sealed(self.root / 'new')
         self.assertEqual(workflow.verify(cfg)['manifest_sha256'], result['manifest_sha256'])
         built = json.loads((Path(cfg["output"]) / "release.json").read_bytes())
