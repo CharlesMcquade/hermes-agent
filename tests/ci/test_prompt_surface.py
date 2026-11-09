@@ -32,7 +32,24 @@ def _tree_differences(left: Path, right: Path) -> list[str]:
     return out
 
 
-def test_committed_prompt_surface_is_current(tmp_path):
+def _trace_home_scrub(monkeypatch) -> None:
+    original_scrub = prompt_surface._scrub
+    def scrub(text, home):
+        probe = str(home / ".hermes")
+        if ".hermes/profiles/" in text:
+            print(f"SCRUB_PROBE_HOME={home!s} RAW={probe!s} MATCH={probe in text}")
+            print(f"SCRUB_PROBE_VALUE={text[text.index('Active Hermes profile'):text.index('Active Hermes profile')+560]!r}")
+        rendered = original_scrub(text, home)
+        if probe in rendered:
+            print(f"SCRUB_PROBE_RETAINED={probe!s}")
+        elif ".hermes/profiles/" in text and "<HERMES_HOME>" in rendered:
+            print(f"SCRUB_PROBE_REPLACED={probe!s}")
+        return rendered
+    monkeypatch.setattr(prompt_surface, "_scrub", scrub)
+
+
+def test_committed_prompt_surface_is_current(tmp_path, monkeypatch):
+    _trace_home_scrub(monkeypatch)
     rendered = tmp_path / "prompt_surface"
     assert prompt_surface.render(rendered) == 0
     differences = _tree_differences(prompt_surface.SNAPSHOT, rendered)
