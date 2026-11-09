@@ -36,6 +36,11 @@ def test_committed_prompt_surface_is_current(tmp_path):
     rendered = tmp_path / "prompt_surface"
     assert prompt_surface.render(rendered) == 0
     differences = _tree_differences(prompt_surface.SNAPSHOT, rendered)
+    if differences:
+        # Harness-only evidence from this exact canonical invocation; preserve
+        # the original assertion and only archive under the disposable root.
+        from capture_validation_artifacts import export_validation_tree
+        export_validation_tree(rendered)
     assert not differences, (
         "The system prompt or tool schemas changed. Regenerate the snapshot and commit it with the "
         "change (merging it needs a hermes-agent-core approval):\n"
