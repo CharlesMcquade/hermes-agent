@@ -19,7 +19,8 @@ class CompactionWindowMixin:
     def _compress_window(self, messages: list[dict[str, Any]]) -> tuple[int, int]:
         """Return ``(compress_start, compress_end)`` for the summarizable middle."""
         compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        raw_compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_end = raw_compress_end
         # A role collision can merge the summary into the first tail row; keep an actionable user
         # event out of that slot by retaining an older assistant/tool bridge. The bridge never moves
         # the cut below the progress floor: a bridge that leaves only handoff rows in the window
@@ -34,6 +35,18 @@ class CompactionWindowMixin:
                 bridge_idx = -1
             if bridge_idx >= tail_cut_progress_floor(self, messages, compress_start, bridge_idx):
                 compress_end = bridge_idx
+        import os
+        if os.environ.get('HERMES_R18_TRANSCRIPT_PROBE') == '1':
+            import json
+            trace = os.path.join(os.environ['HERMES_HOME'], 'r18-transcript-trace.jsonl')
+            with open(trace, 'a', encoding='utf-8') as output:
+                output.write(json.dumps({
+                    'phase': 'compress_window', 'start': compress_start,
+                    'raw_end': raw_compress_end, 'final_end': compress_end,
+                    'latest_actionable': latest_actionable_idx,             'protect_first_n': self.protect_first_n,
+                    'protect_last_n': self.protect_last_n,
+                    'rows': [{'role': m.get('role'), 'prefix': str(m.get('content', ''))[:40]} for m in messages],
+                }, default=str) + '\n')
         return compress_start, compress_end
 
     def _plan_compaction_window(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int, int]:
