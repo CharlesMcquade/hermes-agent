@@ -114,6 +114,7 @@ def _scrub(text: str, home: Path) -> str:
     }.items(), key=lambda kv: -len(kv[0])):
         if '/profiles/' in text:
             print('SCRUB_INPUT_HOME=' + repr(str(home)), file=sys.stderr)
+            print('SCRUB_RAW_ENV_HOME=' + repr(os.environ.get('HOME')), file=sys.stderr)
             print('SCRUB_REPLACE_TARGET=' + repr(raw), file=sys.stderr)
             print('SCRUB_MATCH_BEFORE=' + repr(raw in text), file=sys.stderr)
         text = text.replace(raw, token)
