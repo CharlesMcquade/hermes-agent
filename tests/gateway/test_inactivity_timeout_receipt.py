@@ -20,9 +20,24 @@ async def test_timeout_diagnostic_keeps_failed_receipt_after_string_projection(o
     from gateway.session_ingress import execute_admission
     from gateway.session_results import execution_result, finish_result, admission_result
     from gateway.turn_context import TurnContext
-    owner.db.create_session('s', source='cli')
-    source = SessionSource(platform, 's', user_id='human')
-    owner.sessions['s'] = LiveSession(source, 'route')
+    if platform is Platform.LOCAL:
+        from gateway.session_contract import SessionActor
+        from gateway.session_local import create_local_session
+        # Exercise the real private LOCAL session contract, including its
+        # receipt, actor identity and policy. A bare 's' row is not restorable.
+        owner.runner.adapters = {}
+        owner.runner._evict_cached_agent = lambda route: None
+        actor = SessionActor('human', owner.profile_id, frozenset({'session:create', 'session:read'}), 'fixture')
+        ref = create_local_session(owner, actor, {
+            'request_id': 'timeout', 'source': 'cli', 'cwd': str(owner.db.db_path.parent),
+            'model': 'frozen', 'toolsets': [],
+        })
+        sid = ref.session_id
+    else:
+        owner.db.create_session('s', source='cli')
+        sid = 's'
+    source = SessionSource(platform, sid, user_id='human')
+    owner.sessions[sid] = LiveSession(source, 'route')
     owner.runner._adapter_for_source = lambda source: None
     owner.runner._agent_activity_summary = lambda agent: {'seconds_since_activity': 1800}
     owner.runner._is_intentional_silence = lambda *args: False
@@ -32,8 +47,8 @@ async def test_timeout_diagnostic_keeps_failed_receipt_after_string_projection(o
         raw = GatewayRunner._run_agent_timeout_result(owner.runner,
             SimpleNamespace(agent_timeout=1800), TurnContext(session_key='route'))
         response, _, _ = await GatewayTurnPersistenceMixin._hmwa_shape_agent_response(
-            owner.runner, raw, source, [], SimpleNamespace(session_id='s'), None,
-            None, 1, 's', platform.value, time.time())
+            owner.runner, raw, source, [], SimpleNamespace(session_id=sid), None,
+            None, 1, sid, platform.value, time.time())
         diagnostic.append(response)
         if late_result:
             # The abandoned executor shares the capture dict and can return while the handler
@@ -43,9 +58,9 @@ async def test_timeout_diagnostic_keeps_failed_receipt_after_string_projection(o
 
     owner.runner._handle_message = handle
     admitted = admit_session_input(owner.db, epoch=owner.epoch, principal_id='human',
-        session_id='s', request_id='timeout', payload={'text': 'work'})
-    row = claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
-    response = await execute_admission(owner, SessionRef(owner.profile_id, 's'), row)
+        session_id=sid, request_id='timeout', payload={'text': 'work'})
+    row = claim_session_input(owner.db, epoch=owner.epoch, session_id=sid)
+    response = await execute_admission(owner, SessionRef(owner.profile_id, sid), row)
     finish_result(owner.db, epoch=owner.epoch, row=row, response=response, outcome='completed',
                   result=owner.pending_results[admitted['admission_id']])
     saved = admission_result(owner.db, admitted['admission_id'])['result']

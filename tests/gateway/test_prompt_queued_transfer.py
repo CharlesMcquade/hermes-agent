@@ -178,6 +178,7 @@ def _runner_authority(tmp_path, monkeypatch):
     """``_authority`` whose runner is a real ``GatewayRunner``, so its follow-up handling reads the same
     ``_draining`` a restart sets."""
     from types import SimpleNamespace
+    from gateway.config import Platform
     from gateway.run import GatewayRunner
     from gateway.session_authority import LiveSession, SessionAuthority
     from hermes_state import SessionDB
@@ -189,7 +190,9 @@ def _runner_authority(tmp_path, monkeypatch):
                         _adapter_for_source=lambda source: None)
     authority = SessionAuthority(runner, profile_id='owned', instance_id='current', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='current'))
-    authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human'), 'route')
+    # This fixture exercises a non-LOCAL restart transfer, not local receipt
+    # restoration. Give its bare source the real non-LOCAL enum it models.
+    authority.sessions['s'] = LiveSession(SimpleNamespace(platform=Platform.TELEGRAM, user_id='human'), 'route')
     return db, authority, runner
 
 
