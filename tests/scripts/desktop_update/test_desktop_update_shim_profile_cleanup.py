@@ -1,7 +1,9 @@
 """The update hand-off cleans only an atomically claimed browser profile."""
 import os
 from pathlib import Path
+import shlex
 import subprocess
+import sys
 import tempfile
 
 import pytest
@@ -19,6 +21,11 @@ def socket_safe_tmpdir():
 def test_shim_removes_only_its_owned_profile(tmp_path, socket_safe_tmpdir, outcome):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    # The production launcher resolves its HTTP server through `command -v python3`. CoreWeave's
+    # test interpreter need not have a system python3 under the constrained /usr/bin:/bin PATH.
+    interpreter = bin_dir / "python3"
+    interpreter.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n', encoding="utf-8")
+    interpreter.chmod(0o755)
     browser = bin_dir / "google-chrome"
     browser.write_text(
         '#!/usr/bin/env bash\ntrap "exit 0" TERM\n'
