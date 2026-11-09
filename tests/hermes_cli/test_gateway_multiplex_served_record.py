@@ -34,6 +34,8 @@ def served_root(tmp_path, monkeypatch):
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     # Reach the host service verbs under test; container-install refusal has its own dedicated coverage.
     import hermes_cli.gateway as gateway_cli
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
     monkeypatch.setattr(gateway_cli, "refuses_container_user_scope_install", lambda system: False)
     # Never read the developer's / CI's REAL host rendezvous record (superseded by the
     # tests/conftest.py hook in #118097 once that lands).

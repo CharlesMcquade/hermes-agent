@@ -8,6 +8,7 @@ Without it, read_file on a workspace FIFO blocks until the exec timeout.
 import json
 import os
 import socket
+import tempfile
 
 import pytest
 
@@ -33,14 +34,16 @@ class TestSpecialFileKind:
         assert "FIFO" in (_special_file_kind(fifo) or "")
 
     @pytest.mark.platforms("linux")
-    def test_socket(self, tmp_path):
-        sock_path = tmp_path / "s.sock"
-        s = socket.socket(socket.AF_UNIX)
-        try:
-            s.bind(str(sock_path))
-            assert "socket" in (_special_file_kind(sock_path) or "")
-        finally:
-            s.close()
+    def test_socket(self):
+        # Deep CI temporary paths can exceed AF_UNIX's short pathname limit.
+        with tempfile.TemporaryDirectory(prefix="r18-sock-", dir="/dev/shm") as directory:
+            sock_path = os.path.join(directory, "s.sock")
+            s = socket.socket(socket.AF_UNIX)
+            try:
+                s.bind(sock_path)
+                assert "socket" in (_special_file_kind(sock_path) or "")
+            finally:
+                s.close()
 
     @pytest.mark.platforms("linux")
     def test_symlink_to_fifo_followed(self, tmp_path):

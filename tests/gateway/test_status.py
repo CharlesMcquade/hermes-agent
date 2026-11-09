@@ -1565,6 +1565,15 @@ class TestPermissionErrorOnLockFile:
             return real_open(path, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "open", denied_lock_open)
+        real_os_open = os.open
+
+        def denied_lock_os_open(path, *args, **kwargs):
+            if Path(path) == lock and lock.stat().st_mode & 0o777 == 0:
+                raise PermissionError(13, "Permission denied", str(lock))
+            return real_os_open(path, *args, **kwargs)
+
+        # ProfileOwnership uses the descriptor boundary, not builtins.open.
+        monkeypatch.setattr(os, "open", denied_lock_os_open)
         try:
             assert status.is_gateway_runtime_lock_active(lock) is True
             assert status.acquire_gateway_runtime_lock() is False

@@ -58,7 +58,7 @@ if CASE == "systemd_resume":
 if CASE == "launchd_resume":
     from hermes_cli import gateway  # loaded by the pause that stopped the job
     plist = Path(ROOT) / "job.plist"
-    plist.write_text("<plist/>")
+    plist.write_text(gateway.generate_launchd_plist())
     gateway.get_launchd_plist_path = lambda: plist
 token = None
 if CASE == "lost_completion":

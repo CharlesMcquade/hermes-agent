@@ -57,7 +57,9 @@ def supervisor(tmp_path, monkeypatch):
         peer.write_bytes((bin_dir / "systemctl").read_bytes())
         peer.chmod(0o700)
         monkeypatch.setattr(gateway, "_systemctl_cmd", lambda system=False: [str(peer)])
-        # The fake peer represents a host supervisor, not the CI container's user-unit guard.
+        # These real service primitives stand in for host systemd, not the CI container's.
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
         monkeypatch.setattr(gateway, "refuses_container_user_scope_install", lambda system: False)
         yield profile, calls
 

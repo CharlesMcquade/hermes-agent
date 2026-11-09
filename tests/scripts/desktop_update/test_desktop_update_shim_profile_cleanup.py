@@ -51,7 +51,7 @@ def test_shim_removes_only_its_owned_profile(tmp_path, socket_safe_tmpdir, outco
          "--install-root", str(install), "--self-test-ui"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    collision = tmp_path / f"hermes-update-ui-{process.pid}"
+    collision = Path(socket_safe_tmpdir) / f"hermes-update-ui-{process.pid}"
     collision.mkdir()
     (collision / "keep").write_text("keep", encoding="utf-8")
     (tmp_path / "start").touch()
