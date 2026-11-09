@@ -199,6 +199,15 @@ def test_followers_survive_compression_and_restart_in_order_exactly_once(tmp_pat
                                                     for m in json.loads(r['wire']))}
                         for r in peer.requests if str(r['text']) in FOLLOWERS]
         print('R18_REQUEST_MODELS ' + json.dumps(request_rows))
+        first_wire = next(r for r in peer.requests if r['model'] == 'original' and r['text'] == 'FOLLOWER_1')
+        detail_rows = [
+            {'role': m.get('role'), 'content_prefix': str(m.get('content', ''))[:500],
+             'summary_marker': 'SUMMARY_RETAINED_FACTS' in json.dumps(m), 'pressure_1_start': str(m.get('content', '')).startswith('PRESSURE_1 '),
+             'compression_metadata': {k: v for k, v in m.items() if 'compress' in k and v is not None}}
+            for m in json.loads(first_wire['wire'])
+            if 'SUMMARY_RETAINED_FACTS' in json.dumps(m) or str(m.get('content', '')).startswith('PRESSURE_1 ')
+        ]
+        print('R18_RETAINED_ROWS ' + json.dumps(detail_rows))
         order = [r['text'] for r in peer.requests if r['model'] == 'original' and r['text'] in FOLLOWERS]
         assert order == list(FOLLOWERS), order
         assert executed(compacting['text'][:12]) == before['compacting_requests'], 'compacted turn replayed'
