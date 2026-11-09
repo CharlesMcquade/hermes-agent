@@ -7,7 +7,7 @@
   "rpc": {
    "authority": 108,
    "keep-host-wide": 1,
-   "undecided": 182
+   "undecided": 184
   },
   "websocket": {
    "undecided": 10
@@ -394,6 +394,8 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "bot_relay.roster.sync", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "bot_relay.settle", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "browser.manage", "kind": "rpc", "ref": "D3"},
+  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "cdp.listRelays", "kind": "rpc", "ref": "D3"},
+  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "cdp.register", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "clarify.lock", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "clarify.respond", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "cli.exec", "kind": "rpc", "ref": "D3"},
