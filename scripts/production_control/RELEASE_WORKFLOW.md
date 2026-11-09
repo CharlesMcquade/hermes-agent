@@ -6,9 +6,10 @@ The installed controller/launcher remains the authority for selection and activa
 
 ## Entry point
 
-The one-command **preparation** gate runs controller/workflow tests, builds or
-re-verifies the candidate, boots the contained canary twice, retains evidence,
-and audits the current restart boundary:
+The one-command **preparation** gate runs exact-delta application tests plus
+controller/workflow tests, builds or re-verifies the candidate, boots the contained
+canary twice, retains evidence, and audits the current restart boundary. It runs
+locally and never schedules CoreWeave or other remote compute:
 
 ```
 PYTHONDONTWRITEBYTECODE=1 <nonproduction-python> -B \
@@ -29,6 +30,44 @@ Use an explicit local JSON configuration containing `baseline`, `output`, `scrat
 absolute; both commits must be exact, existing 40-character Git object IDs. `tool_path`
 is optional and must not contain inherited old release/development interpreters.
 Keep machine-specific configuration and evidence out of Git.
+
+## Bounded application validation (default)
+
+`prepare` compares each candidate commit with the selected baseline's source
+commit. An unchanged repository runs no application tests. Changed test files are
+included automatically; changed application files additionally require explicit
+neighboring tests in the machine-local config:
+
+```json
+"validation": {
+  "timeout_seconds": 600,
+  "agent": {"tests": ["tests/gateway/test_example.py"]},
+  "webui": {"tests": ["tests/test_example.py"], "paired": true}
+}
+```
+
+Use each repository's canonical runner on a clean checkout at the exact candidate
+SHA. `paired: true` pins the WebUI to the candidate Agent rather than a frozen
+release; use it only for cross-repository contracts. The per-repository timeout is
+capped at 15 minutes; target ten minutes total for the application slice. Test
+output and a machine-readable receipt are retained under the preparation evidence
+directory. Documentation-only and unchanged-source changes need no application
+test list. Missing focused tests, dirty/wrong-HEAD checkouts, nonexistent tests,
+timeouts, and test failures all stop preparation.
+
+Run just this gate while repairing a candidate:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 <nonproduction-python> -B \
+  scripts/production_control/release_workflow.py --config <local-config> validate
+```
+
+Failure escalation is deliberately narrow: rerun only failed files against the
+selected-production baseline and their direct neighbors, fix candidate-only
+failures, and rerun the same bounded set. Do not turn a failed file into a
+100k-test census. Full suites remain available only as explicitly requested
+diagnostics; they are not routine release or upstream-rebaseline gates. The
+upstream test inventory stays intact—selection changes, tests do not.
 
 Optional runtime keys:
 
@@ -116,6 +155,25 @@ A `static_verified_not_deployed` result is deliberately **not restart readiness*
    selected manifest, fresh process identities, code SHA, assets, and health after
    reconnect. Do not infer success from a returned UI response or an old receipt.
 8. Perform explicitly authorized real messaging/inference checks separately.
+
+## Current + N-1 retention
+
+Run retention only after the new release is RUNNING_VERIFIED. The tool proves
+N-1 from the selected manifest's `baseline_sha256` (including rollback trees
+outside `~/.hermes/releases`), protects every live launchd/control/cron/process
+reference it discovers, and dry-runs by default:
+
+```bash
+<nonproduction-python> -B scripts/production_control/release_retention.py
+<nonproduction-python> -B scripts/production_control/release_retention.py --apply
+```
+
+`--apply` verifies content hashes and atomically moves eligible trees to a dated
+folder under `~/.Trash`, preserving their original names, modes, and flags for
+restoration. It writes receipts in the archive and under maintenance. It never
+empties Trash, reclaims zero bytes until separately approved deletion, and never
+restarts/selects anything. Missing or ambiguous N-1 lineage and new live pointers
+abort the whole batch.
 
 ## Hard failures
 
