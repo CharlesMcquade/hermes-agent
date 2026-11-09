@@ -36,8 +36,11 @@ async def test_timeout_diagnostic_keeps_failed_receipt_after_string_projection(o
     else:
         owner.db.create_session('s', source='cli')
         sid = 's'
-    source = SessionSource(platform, sid, user_id='human')
-    owner.sessions[sid] = LiveSession(source, 'route')
+        source = SessionSource(platform, sid, user_id='human')
+        owner.sessions[sid] = LiveSession(source, 'route')
+    # Keep the restored LiveSession and its receipt-bound route for LOCAL.
+    source = owner.sessions[sid].source
+    route = owner.sessions[sid].route
     owner.runner._adapter_for_source = lambda source: None
     owner.runner._agent_activity_summary = lambda agent: {'seconds_since_activity': 1800}
     owner.runner._is_intentional_silence = lambda *args: False
@@ -45,7 +48,7 @@ async def test_timeout_diagnostic_keeps_failed_receipt_after_string_projection(o
 
     async def handle(event):
         raw = GatewayRunner._run_agent_timeout_result(owner.runner,
-            SimpleNamespace(agent_timeout=1800), TurnContext(session_key='route'))
+            SimpleNamespace(agent_timeout=1800), TurnContext(session_key=route))
         response, _, _ = await GatewayTurnPersistenceMixin._hmwa_shape_agent_response(
             owner.runner, raw, source, [], SimpleNamespace(session_id=sid), None,
             None, 1, sid, platform.value, time.time())

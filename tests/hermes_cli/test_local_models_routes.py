@@ -596,6 +596,7 @@ def _poll_job(client, job_id, deadline_s=15, until=("paused", "done", "error")):
 def _pause_when_flowing(client, job_id):
     """Pause once bytes are actually moving, so the pause lands mid-flight
     (the downloader stops between chunks) rather than before the probe."""
+    last_status, last_pause = None, None
     deadline = time.time() + 15
     while time.time() < deadline:
         status = client.get(f"/api/local-models/jobs/{job_id}").json()
@@ -604,7 +605,7 @@ def _pause_when_flowing(client, job_id):
             break
         time.sleep(0.03)
     deadline = time.time() + 15
-    last_status, last_pause = None, None
+    last_pause = None
     while time.time() < deadline:
         pr = client.post("/api/local-models/download/pause",
                          json={"job_id": job_id})
