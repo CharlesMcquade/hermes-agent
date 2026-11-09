@@ -304,6 +304,11 @@ async def execute_admission(authority, ref, row):
         if 'local_automation_v1' in row['payload']:
             from gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
+            # Local automation receipts also rely on the admission's physical
+            # continuation. Without the strict bit, run_turn_prepare falls back
+            # to get_or_create_session() and can replay an empty replacement
+            # after a compressed root restart, losing the retained summary.
+            event.metadata['gateway_session_strict'] = True
         elif live.source.platform.value == 'local':
             # Execution consumes the restored routing snapshot, not a potentially stale route entry
             # that get_or_create_session() may replace before transcript loading.  This is critical
