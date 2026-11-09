@@ -28,6 +28,11 @@ def test_shim_removes_only_its_owned_profile(tmp_path, socket_safe_tmpdir, outco
         'while :; do sleep 0.1; done\n', encoding="utf-8",
     )
     browser.chmod(0o755)
+    # Keep the browser-selection authority in the fixture: a root CI process has no desktop
+    # session, so the host xdg-settings probe cannot reliably discover mimeapps.list by itself.
+    selector = bin_dir / "xdg-settings"
+    selector.write_text('#!/bin/sh\n[ "$1 $2" = "get default-web-browser" ] && printf "%s\\n" google-chrome.desktop\n', encoding="utf-8")
+    selector.chmod(0o755)
     if outcome == "allocation-failed":
         allocator = bin_dir / "mktemp"
         allocator.write_text('#!/bin/sh\nprintf "%s\\n" "$HOME"\nexit 1\n', encoding="utf-8")
@@ -61,6 +66,7 @@ def test_shim_removes_only_its_owned_profile(tmp_path, socket_safe_tmpdir, outco
     if outcome == "allocation-failed":
         assert not launched.exists()
     else:
+        assert launched.exists(), stdout + stderr
         owned = Path(launched.read_text(encoding="utf-8"))
         assert owned != collision
         assert not owned.exists()

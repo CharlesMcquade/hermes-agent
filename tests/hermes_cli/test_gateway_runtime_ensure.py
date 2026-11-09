@@ -268,6 +268,7 @@ def test_unmanaged_runtime_does_not_inherit_client_launch_flags(tmp_path, monkey
 @pytest.mark.platforms("linux")
 def test_reserved_profile_without_pid_or_control_is_never_absent(tmp_path, monkeypatch):
     from gateway.runtime_ownership import ProfileOwnership
+    from hermes_cli import gateway_runtime_discovery as discovery
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     home = tmp_path / "reserved"
     home.mkdir(mode=0o700)
@@ -278,15 +279,15 @@ def test_reserved_profile_without_pid_or_control_is_never_absent(tmp_path, monke
         assert discover_gateway_endpoint(home).state == "starting"
         lock = home / "gateway.lock"
         lock.chmod(0)
-        # uid 0 ignores mode bits; reproduce EACCES at the descriptor boundary instead.
-        real_open = os.open
+        # uid 0 ignores mode bits; reproduce EACCES on discovery's real descriptor seam.
+        real_open = discovery.os.open
 
         def denied_lock_open(path, *args, **kwargs):
             if Path(path) == lock and lock.stat().st_mode & 0o777 == 0:
                 raise PermissionError(13, "Permission denied", str(lock))
             return real_open(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "open", denied_lock_open)
+        monkeypatch.setattr(discovery.os, "open", denied_lock_open)
         assert discover_gateway_endpoint(home).state == "inaccessible"
     finally:
         (home / "gateway.lock").chmod(0o600)
