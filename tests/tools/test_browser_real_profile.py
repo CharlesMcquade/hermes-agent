@@ -144,6 +144,7 @@ class TestSnapshotRealProfile:
         import hermes_cli.browser_connect as bc
         src = self._make_profile(tmp_path / "real")
         home = tmp_path / "hermes-home"
+        monkeypatch.setattr("hermes_constants._detect_container", lambda: False)
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         old_umask = os.umask(0o022)  # the common default that produced 0644
         try:
@@ -170,6 +171,7 @@ class TestSnapshotRealProfile:
         import hermes_cli.browser_connect as bc
         src = self._make_profile(tmp_path / "real")
         home = tmp_path / "hermes-home"
+        monkeypatch.setattr("hermes_constants._detect_container", lambda: False)
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None and dst

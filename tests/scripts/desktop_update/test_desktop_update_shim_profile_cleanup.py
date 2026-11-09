@@ -2,13 +2,21 @@
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 
 import pytest
 
 
+@pytest.fixture
+def socket_safe_tmpdir():
+    # Chrome appends its singleton-socket suffix; a deeply nested CI TMPDIR exceeds AF_UNIX.
+    with tempfile.TemporaryDirectory(prefix="r18-ui-", dir="/dev/shm") as directory:
+        yield directory
+
+
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("outcome", ["success", "error", "allocation-failed"])
-def test_shim_removes_only_its_owned_profile(tmp_path, outcome):
+def test_shim_removes_only_its_owned_profile(tmp_path, socket_safe_tmpdir, outcome):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     browser = bin_dir / "google-chrome"
@@ -34,7 +42,7 @@ def test_shim_removes_only_its_owned_profile(tmp_path, outcome):
     install = tmp_path / "hermes-agent"
     install.mkdir()
     env = {**os.environ, "HOME": str(tmp_path), "HERMES_HOME": str(tmp_path),
-           "XDG_CONFIG_HOME": str(config), "TMPDIR": str(tmp_path),
+           "XDG_CONFIG_HOME": str(config), "TMPDIR": socket_safe_tmpdir,
            "PATH": f"{bin_dir}:/usr/bin:/bin", "HERMES_SELFTEST_HOLD_SECONDS": "1",
            "HERMES_UPDATE_SHIM_GRACE_SECONDS": "1", "HERMES_SELFTEST_FAIL": "1" if outcome == "error" else ""}
     process = subprocess.Popen(

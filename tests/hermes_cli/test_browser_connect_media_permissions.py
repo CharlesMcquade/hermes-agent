@@ -29,6 +29,8 @@ def _no_managed(monkeypatch, home):
     monkeypatch.delenv("HERMES_HOME_MODE", raising=False)
     monkeypatch.delenv("HERMES_UID", raising=False)
     monkeypatch.delenv("HERMES_GID", raising=False)
+    # Force the unmanaged host branch named by this fixture, not the CI runner's container policy.
+    monkeypatch.setattr("hermes_constants._detect_container", lambda: False)
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: home)
 
 

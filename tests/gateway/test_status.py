@@ -1554,6 +1554,17 @@ class TestPermissionErrorOnLockFile:
         (tmp_path / "gateway.pid").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
         inode = lock.stat().st_ino
         lock.chmod(0)
+        # chmod(0) cannot make a file unreadable to uid 0. Inject the same EACCES at the
+        # file boundary so the safety behavior is still exercised under a privileged runner.
+        import builtins
+        real_open = builtins.open
+
+        def denied_lock_open(path, *args, **kwargs):
+            if Path(path) == lock and lock.stat().st_mode & 0o777 == 0:
+                raise PermissionError(13, "Permission denied", str(lock))
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", denied_lock_open)
         try:
             assert status.is_gateway_runtime_lock_active(lock) is True
             assert status.acquire_gateway_runtime_lock() is False

@@ -212,6 +212,9 @@ class TestScratchDirPermissionPolicy:
         for var in ("HERMES_HOME_MODE", "HERMES_MANAGED", "HERMES_CONTAINER",
                     "HERMES_SKIP_CHMOD", "HERMES_UID", "HERMES_GID"):
             monkeypatch.delenv(var, raising=False)
+        # These cases exercise the ordinary host policy. The explicit container case below
+        # overrides this seam itself; do not inherit the CI runner's real container detection.
+        monkeypatch.setattr("hermes_constants._detect_container", lambda: False)
 
     def test_default_is_owner_only(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)

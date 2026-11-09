@@ -7,6 +7,12 @@ import pytest
 from hermes_cli import config
 
 
+@pytest.fixture(autouse=True)
+def _ordinary_host_permission_policy(monkeypatch):
+    """Exercise the unmanaged non-container initialization path on container CI runners."""
+    monkeypatch.setattr("hermes_constants._detect_container", lambda: False)
+
+
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("subdir", (".", *config._HERMES_HOME_SUBDIRS))
 def test_unavailable_directory_links_are_diagnosed_without_creating_targets(tmp_path, monkeypatch, subdir):

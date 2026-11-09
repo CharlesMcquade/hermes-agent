@@ -310,6 +310,8 @@ class TestDoctorToolAvailabilityOverrides:
 
 
 def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
+    # An explicitly selected non-Docker backend must not be rewritten to local by the CI container.
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
     monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
     monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", "python3.13")
     monkeypatch.setenv("TERMINAL_CONTAINER_DISK", "2048")
@@ -1110,6 +1112,9 @@ class TestGitHubTokenCheck:
                 return types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"unknown JSON field")
             return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"Logged in to github.com")
 
+        # Isolate availability: this case is about the changed auth-status output,
+        # not whether the slim CI image happens to include the gh binary.
+        monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/gh" if name == "gh" else None)
         monkeypatch.setattr(subprocess, "run", gh_2_98)
         assert doctor_state._gh_authenticated() is True
 

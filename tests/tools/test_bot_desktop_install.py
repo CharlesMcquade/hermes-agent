@@ -10,12 +10,19 @@ import pytest
 from tools.bot_desktop import install, runtime
 
 _REAL_INSTALL_COMMAND = runtime.install_command  # captured before the fixture pins a sudo line
+_REAL_WHICH = install.shutil.which
 
 
 @pytest.fixture(autouse=True)
 def _isolated_host(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(install, "_sudo_nopasswd", lambda: False)
+    # Minimal CI images need not ship sudo: these cases model a host that has it.
+    # The dedicated no-sudo tests replace this lookup with their own absence fixture.
+    monkeypatch.setattr(
+        install.shutil, "which",
+        lambda name, *args, **kwargs: "/usr/bin/sudo" if name == "sudo" else _REAL_WHICH(name, *args, **kwargs),
+    )
     monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y tigervnc-standalone-server")
     yield

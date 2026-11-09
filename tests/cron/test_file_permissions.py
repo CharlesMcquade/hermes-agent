@@ -18,6 +18,12 @@ import pytest
 pytestmark = pytest.mark.platforms("posix")
 
 
+@pytest.fixture(autouse=True)
+def _ordinary_host_permission_policy(monkeypatch):
+    """Pin the unmanaged-host branch; the explicit container test opts back in through its env."""
+    monkeypatch.setattr("hermes_constants._detect_container", lambda: False)
+
+
 class TestCronFilePermissions(unittest.TestCase):
     """Verify cron files get secure permissions."""
 
