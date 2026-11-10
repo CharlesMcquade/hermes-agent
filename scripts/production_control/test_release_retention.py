@@ -35,6 +35,27 @@ class ReleaseRetentionTests(unittest.TestCase):
             'processes': 'host ' + str(self.releases / 'current/runtime/venv/bin/python'),
         }
 
+    def test_collects_native_bootstrap_and_refresh_provenance(self):
+        home = self.root / 'home'
+        maintenance = home / '.hermes/maintenance'
+        maintenance.mkdir(parents=True)
+        (home / 'Library/LaunchAgents').mkdir(parents=True)
+        settings = (home / 'Applications/Verity.app/Contents/Resources'
+                    / 'service-settings.json')
+        settings.parent.mkdir(parents=True)
+        bootstrap = self.releases / 'boot-anchor/runtime/venv/bin/python'
+        settings.write_text(json.dumps({'bootstrap_python': str(bootstrap)}))
+        provenance = self.root / 'verity-production-stage-v1'
+        (maintenance / 'native-control-refresh-receipt.json').write_text(
+            json.dumps({'stage': {'original_stage': str(provenance)}}))
+        with mock.patch.object(retention.subprocess, 'check_output', return_value=''):
+            texts = retention.collect_live_texts(home)
+        self.assertIn(str(bootstrap), texts.get('native-app/service-settings.json', ''))
+        self.assertIn(str(provenance),
+                      texts.get('maintenance/native-control-refresh-receipt.json', ''))
+        plan = retention.retention_plan(self.releases, self.current, texts)
+        self.assertIn('boot-anchor', {item['release_id'] for item in plan['keep']})
+
     def test_plan_keeps_current_previous_and_live_anchor(self):
         plan = retention.retention_plan(self.releases, self.current, self.live)
         self.assertEqual({item['release_id'] for item in plan['keep']}, {'current', 'previous', 'boot-anchor'})

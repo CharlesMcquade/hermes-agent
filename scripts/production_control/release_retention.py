@@ -20,7 +20,8 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 LIVE_MAINTENANCE_FILES = (
-    'control-install.json', 'native-install-receipt.json', 'webui-watchdog.sh',
+    'control-install.json', 'native-install-receipt.json',
+    'native-control-refresh-receipt.json', 'webui-watchdog.sh',
     'pending-user-restart.json', 'activation-transaction.json', 'resilient-cutover.plist',
 )
 
@@ -92,6 +93,11 @@ def collect_live_texts(home: Path | None = None) -> dict[str, str]:
     result = {}
     for name in LIVE_MAINTENANCE_FILES:
         result['maintenance/' + name] = read_text(maintenance / name)
+    # bootstrap_python is sealed into Verity.app, not repeated in the selected
+    # release manifest. It is a live dependency even when its release is old.
+    settings = (home / 'Applications/Verity.app/Contents/Resources'
+                / 'service-settings.json')
+    result['native-app/service-settings.json'] = read_text(settings)
     for path in (home / 'Library/LaunchAgents').glob('*.plist'):
         result['launchagent/' + path.name] = read_text(path)
     for path in maintenance.glob('*.py'):

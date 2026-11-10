@@ -1,6 +1,7 @@
 """Disposable native-identity fixtures; no real app, launchctl or service execution."""
 import copy
 import json
+import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -100,6 +101,28 @@ class PendingTests(unittest.TestCase):
         self.launch('webui')
         self.assertEqual(self.observation(rollback=True)['selected'], 'old')
         self.assertEqual(self.host.calls, [])
+
+    def test_pending_lock_tolerates_volume_reid_but_not_replacement(self):
+        self.stage()
+        lock = self.base / 'control.lock'
+        original_stat = type(lock).stat
+        def changed_stat(field, delta):
+            def observe(path, *args, **kwargs):
+                value = original_stat(path, *args, **kwargs)
+                if Path(path) == lock:
+                    fields = list(value)
+                    fields[field] += delta
+                    return os.stat_result(fields)
+                return value
+            return observe
+        original_device = lock.stat().st_dev
+        with patch.object(type(lock), 'stat', new=changed_stat(2, 17)):
+            self.assertEqual(lock.stat().st_dev, original_device + 17)
+            _, _, _, unchanged = load(self.c, self.pin)
+            unchanged()
+        with patch.object(type(lock), 'stat', new=changed_stat(1, 1)):
+            with self.assertRaisesRegex(ControlError, 'Pending lock changed'):
+                load(self.c, self.pin)
 
     def test_bad_pin_drift_reuse_and_generic_restart_fail_without_signals(self):
         self.stage()

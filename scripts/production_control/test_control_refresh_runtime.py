@@ -161,9 +161,10 @@ class RefreshRuntimeTests(unittest.TestCase):
         # An actual terminal legacy restart precedes the fixture fence.
         self.assertEqual(self.f.c.restart(yes=True)['status'], 'verified')
         self.old_txn = self.f.c.transaction_path.read_bytes()
-        stage = dict(schema_version=1, kind='native-control-refresh-stage', base=str(self.base),
+        stage = dict(schema_version=2, kind='native-control-refresh-stage', base=str(self.base),
                      home=str(self.home), root_sha256=self.root_pin, original_stage=str(self.original_stage),
                      original_stage_sha256=refresh.digest(refresh.encoded(report)), version=str(self.version),
+                     volume_uuid=refresh.volume_uuid(self.base / 'control.lock'),
                      control_sha256=hashes[1], app_tree={str(p.relative_to(app)): dict(
                          mode=stat.S_IMODE(p.stat().st_mode), uid=p.stat().st_uid,
                          sha256=None if p.is_dir() else refresh.digest(p.read_bytes()))
@@ -172,7 +173,7 @@ class RefreshRuntimeTests(unittest.TestCase):
                      launcher=record(self.base / 'production_launcher.py'),
                      launcher_identity=[(self.base / 'production_launcher.py').stat().st_dev,
                                         (self.base / 'production_launcher.py').stat().st_ino])
-        self.receipt = dict(schema_version=1, kind='native-control-refresh', stage=stage,
+        self.receipt = dict(schema_version=2, kind='native-control-refresh', stage=stage,
                             stage_sha256=refresh.digest(refresh.encoded(stage)),
                             original_transaction=record(self.f.c.transaction_path),
                             lock_identity=[(self.base / 'control.lock').stat().st_dev,
@@ -195,6 +196,17 @@ class RefreshRuntimeTests(unittest.TestCase):
         return self.module.Controller(self.base, self.host, self.old.preflight_fn if hasattr(self, 'old') else self.f.c.preflight_fn,
                                       self.f.clock, self.f.clock, self.f.clock.sleep,
                                       owner=lambda: 1, timeout=5, stable_seconds=1, control_refresh_sha256=pin)
+
+    def repin(self):
+        self.receipt['stage_sha256'] = refresh.digest(refresh.encoded(self.receipt['stage']))
+        self.pin = refresh.digest(refresh.encoded(self.receipt))
+        put(self.base / refresh.RECEIPT, refresh.encoded(self.receipt), 0o444)
+        for name, text in refresh.new_wrappers(self.base, self.version, self.pin).items():
+            put(self.base / name, text.encode(), self.root['wrappers'][name]['mode'])
+        fence = json.loads(self.c.transaction_path.read_text())
+        fence['control_refresh_sha256'] = self.pin
+        put(self.c.transaction_path, refresh.encoded(fence))
+        self.c.control_refresh_sha256 = self.pin
 
     def activate(self):
         put(self.f.candidate, refresh.encoded(self.f.new))
@@ -340,6 +352,49 @@ class RefreshRuntimeTests(unittest.TestCase):
         self.assertEqual(self.host.calls, calls)
         self.assertEqual((self.c.manifest_path.read_bytes(), self.f.saved()), native)
         self.assertEqual(json.loads(self.c.transaction_path.read_bytes())['control_refresh_sha256'], self.pin)
+
+    def test_legacy_schema_does_not_silently_accept_volume_reid(self):
+        self.receipt['schema_version'] = 1
+        self.receipt['stage']['schema_version'] = 1
+        self.receipt['stage'].pop('volume_uuid')
+        self.repin()
+        original_identity = refresh._identity
+        def reidentified(path):
+            value = list(original_identity(path))
+            value[0] += 17
+            return tuple(value)
+        with patch.object(refresh, '_identity', side_effect=reidentified):
+            with self.assertRaisesRegex(ValueError, 'refresh receipt schema'):
+                refresh.load(self.base, self.pin, self.version / 'restart_production.py')
+
+    def test_volume_uuid_mismatch_fails_closed(self):
+        self.receipt['stage']['volume_uuid'] = '00000000-0000-0000-0000-000000000000'
+        self.repin()
+        with self.assertRaisesRegex(ValueError, 'lock identity drift'):
+            refresh.load(self.base, self.pin, self.version / 'restart_production.py')
+
+    def test_volume_reid_does_not_invalidate_identical_trusted_payloads(self):
+        # Change only the ephemeral mount number; content, UUID and inodes hold.
+        before = {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mode)
+                  for path in self.protected}
+        original_identity = refresh._identity
+        def reidentified(path):
+            value = list(original_identity(path))
+            value[0] += 17
+            return tuple(value)
+        with patch.object(refresh, '_identity', side_effect=reidentified):
+            _, _, unchanged = refresh.load(
+                self.base, self.pin, self.version / 'restart_production.py')
+            unchanged()
+            self.assertEqual(watchdog.tick(self.c, grace=0).get('status'), 'healthy')
+            # Re-ID tolerance must not weaken the operation-local change fence.
+            put(self.original_stage / 'candidate-release.json',
+                refresh.encoded(self.f.new) + b'\n')
+            with self.assertRaises(ValueError):
+                unchanged()
+        for path, expected in before.items():
+            self.assertEqual((path.read_bytes(), path.stat().st_ino, path.stat().st_mode),
+                             expected)
 
     def test_observation_closure_covers_files_and_directory_identity(self):
         seen = []

@@ -198,7 +198,11 @@ def load(c, pin, *, allow_unfenced=False):
     require(type(r['deadline']) in (int, float) and math.isfinite(r['deadline'])
             and 0 < r['deadline'] - r['created_at'] <= 86400, 'Invalid pending deadline')
     info = (c.base / 'control.lock').stat()
-    require(r['lock_identity'] == [info.st_dev, info.st_ino], 'Pending lock changed')
+    # st_dev may rotate with the volume across reboot; replacement is still
+    # refused through the sealed inode and operation-local metadata fences.
+    require(isinstance(r['lock_identity'], list) and len(r['lock_identity']) == 2
+            and all(type(v) is int for v in r['lock_identity'])
+            and info.st_ino == r['lock_identity'][1], 'Pending lock changed')
     original_txn = json.loads(decode(r['original_transaction']))['transaction']
     expected_txn = dict(original_txn, pending_restart_sha256=pin)
     fenced = c.read_transaction() == expected_txn
@@ -212,7 +216,9 @@ def load(c, pin, *, allow_unfenced=False):
     def unchanged():
         require(c.retained_file(c.transaction_path) == transaction, 'Pending transaction changed')
         info = (c.base / 'control.lock').stat()
-        require(r['lock_identity'] == [info.st_dev, info.st_ino], 'Pending lock changed')
+        require(isinstance(r['lock_identity'], list) and len(r['lock_identity']) == 2
+                and all(type(v) is int for v in r['lock_identity'])
+                and info.st_ino == r['lock_identity'][1], 'Pending lock changed')
         require(c.retained_file(c.base / RECEIPT) == retained, 'Pending receipt changed')
         for s in SERVICES:
             require(record(c, c.plist_path(old, s)) == r['plists'][s], 'Pending plist drift')

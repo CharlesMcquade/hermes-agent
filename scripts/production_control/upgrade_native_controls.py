@@ -339,8 +339,16 @@ def build_plan(base, repo, commit, version_name, output, current_pin):
         atomic(source / 'control-receipt.json', packed(encoded(hashes)))
         source.chmod(0o555)
         verify_bundle(source, hashes)
-        stage = dict(receipt['stage'], version=str(new_version), control_sha256=hashes)
-        fresh = dict(receipt, stage=stage, stage_sha256=sha(encoded(stage)))
+        identities = helper(source, 'from control_refresh import volume_uuid; '
+            'print(json.dumps([volume_uuid(Path(p)) for p in sys.argv[2:]]))',
+            [base / 'control.lock', base / 'production_launcher.py',
+             Path.home() / 'Applications/Verity.app'])
+        require(len(set(identities)) == 1,
+                'Protected files do not share one stable APFS volume')
+        stage = dict(receipt['stage'], schema_version=2, version=str(new_version),
+                     control_sha256=hashes, volume_uuid=identities[0])
+        fresh = dict(receipt, schema_version=2, stage=stage,
+                     stage_sha256=sha(encoded(stage)))
         new_pin = sha(encoded(fresh))
         generated = wrappers(base, new_pin, new_version, source)
         require(set(generated) == set(WRAPPERS), 'Unexpected management wrapper set')

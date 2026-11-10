@@ -5,6 +5,7 @@ The root receipt remains baseline authority. Selection/plists and the activation
 transaction are intentionally NOT observed here: their owner is Controller.
 """
 import base64
+import ctypes as C
 import hashlib
 import json
 import os
@@ -12,6 +13,7 @@ from pathlib import Path
 import plistlib
 import re
 import stat
+import uuid
 
 CONTROL_FILES = ('production_launcher.py', 'restart_production.py', 'watchdog.py',
                  'approved_restart_job.py', 'native_identity.py', 'control_refresh.py')
@@ -36,6 +38,33 @@ def encoded(value):
 
 def digest(raw):
     return hashlib.sha256(raw).hexdigest()
+
+
+class _AttrList(C.Structure):
+    _fields_ = [('bitmapcount', C.c_ushort), ('reserved', C.c_uint16),
+                ('commonattr', C.c_uint32), ('volattr', C.c_uint32),
+                ('dirattr', C.c_uint32), ('fileattr', C.c_uint32),
+                ('forkattr', C.c_uint32)]
+
+
+def volume_uuid(path):
+    """Darwin's stable volume UUID, not its boot-scoped st_dev number."""
+    path = Path(path)
+    require(path.is_absolute() and path == path.resolve(),
+            'Noncanonical volume identity path')
+    libc = C.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    libc.getattrlist.argtypes = [C.c_char_p, C.c_void_p, C.c_void_p,
+                                 C.c_size_t, C.c_uint32]
+    libc.getattrlist.restype = C.c_int
+    attrs = _AttrList(5, 0, 0, 0x00040000, 0, 0, 0)  # ATTR_VOL_UUID
+    result = C.create_string_buffer(64)
+    if libc.getattrlist(os.fsencode(path), C.byref(attrs), result,
+                        len(result), 1) != 0:  # FSOPT_NOFOLLOW
+        error = C.get_errno()
+        raise OSError(error, os.strerror(error), str(path))
+    size = C.c_uint32.from_buffer(result, 0).value
+    require(size == 20, 'Stable volume UUID unavailable: ' + str(path))
+    return str(uuid.UUID(bytes=result.raw[4:20])).upper()
 
 
 def pin(value):
@@ -200,14 +229,14 @@ def load(base, pin, executor, *, read=None):
     receipt = json.loads(raw)
     require(isinstance(receipt, dict) and set(receipt) == {
         'schema_version', 'kind', 'stage', 'stage_sha256', 'original_transaction', 'lock_identity'}
-        and type(receipt['schema_version']) is int and receipt['schema_version'] == 1
+        and type(receipt['schema_version']) is int and receipt['schema_version'] == 2
         and receipt['kind'] == 'native-control-refresh', 'Invalid refresh receipt schema')
     stage = receipt['stage']
     require(isinstance(stage, dict) and set(stage) == {
         'schema_version', 'kind', 'base', 'home', 'root_sha256', 'original_stage',
         'original_stage_sha256', 'version', 'control_sha256', 'app_tree', 'app_identity',
-        'launcher', 'launcher_identity'} and type(stage['schema_version']) is int
-        and stage['schema_version'] == 1 and stage['kind'] == 'native-control-refresh-stage'
+        'launcher', 'launcher_identity', 'volume_uuid'} and type(stage['schema_version']) is int
+        and stage['schema_version'] == 2 and stage['kind'] == 'native-control-refresh-stage'
         and digest(encoded(stage)) == receipt['stage_sha256']
         and stage['base'] == str(base) and stage['home'] == str(Path.home()),
         'Invalid refresh stage provenance')
@@ -218,9 +247,16 @@ def load(base, pin, executor, *, read=None):
             and executor.is_absolute() and executor == executor.resolve(),
             'Wrong refreshed executing controller')
     observe(base / 'control.lock')
+    # Persistent identity is stable APFS volume UUID + inode. st_dev remains in
+    # observe()/unchanged() only for same-operation TOCTOU detection.
+    require(isinstance(stage['volume_uuid'], str)
+            and re.fullmatch(r'[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}',
+                             stage['volume_uuid']),
+            'Invalid refresh volume identity')
     require(isinstance(receipt['lock_identity'], list) and len(receipt['lock_identity']) == 2
             and all(type(v) is int for v in receipt['lock_identity'])
-            and list(_identity(base / 'control.lock')[:2]) == receipt['lock_identity'],
+            and _identity(base / 'control.lock')[1] == receipt['lock_identity'][1]
+            and volume_uuid(base / 'control.lock') == stage['volume_uuid'],
             'Refresh control lock identity drift')
     original_txn = json.loads(_record(receipt['original_transaction']))
     require(set(original_txn) == {'schema_version', 'transaction', 'sha256'}
@@ -286,7 +322,8 @@ def load(base, pin, executor, *, read=None):
     launcher = base / 'production_launcher.py'
     require(observe(launcher) == _record(stage['launcher'])
             and stage['launcher']['mode'] == root['wrappers'][launcher.name]['mode']
-            and list(_identity(launcher)[:2]) == stage['launcher_identity']
+            and _identity(launcher)[1] == stage['launcher_identity'][1]
+            and volume_uuid(launcher) == stage['volume_uuid']
             and candidate['native_host']['launcher_sha256'] == digest(observe(launcher)),
             'Refresh stable launcher drift')
     manifest_path = base / 'production-release.json'
@@ -324,7 +361,8 @@ def load(base, pin, executor, *, read=None):
             inventory[relative] = dict(sha256=checksum, executable=bool(info.st_mode & 0o111))
         actual[relative] = dict(mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, sha256=checksum)
     require(actual == stage['app_tree'] and inventory == candidate['native_host']['inventory']
-            and list(_identity(app)[:2]) == stage['app_identity'], 'Refresh app drift')
+            and _identity(app)[1] == stage['app_identity'][1]
+            and volume_uuid(app) == stage['volume_uuid'], 'Refresh app drift')
 
     def unchanged():
         for path in tuple(directories):
