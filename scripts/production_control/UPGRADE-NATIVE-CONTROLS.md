@@ -52,6 +52,35 @@ Do not infer authorization by hashing arbitrary drift and passing the hash.
 Admission must start at the currently trusted receipt/wrappers. Keep plans private
 because backups contain local paths and installation data.
 
+## Durable volume identity and provenance
+
+Every normal `plan` publishes schema-2 receipt/stage records with a stable APFS
+volume UUID obtained offline through Darwin `getattrlist(ATTR_VOL_UUID)`. Runtime
+admission compares that sealed UUID plus the original inode, approved bytes/modes,
+ownership and signature. Boot-scoped `st_dev` may legitimately change while those
+facts hold; exact `st_dev` checks remain in the operation-local race fences.
+Missing/mismatched UUID evidence fails closed. Schema-1 records never silently
+gain broader device-rotation permission.
+
+`stage-provenance` admits the installed controls first, then copies only the exact
+original `stage-report.json` and `candidate-release.json` into a fresh directory
+immediately below maintenance. Its output is inactive. `plan` can then point the
+new stage at that copy with `--durable-provenance <existing-verified-directory>`.
+This relocates stage provenance out of an experiment directory without rewriting
+its report or allowing an ordinary source checkout to become runtime authority.
+
+`verity_bootstrap.py stage --baseline <release.json> --output <fresh-directory>`
+stages a self-contained, independently inventoried bootstrap interpreter outside
+release retention. It never changes signed settings, path compatibility links or
+watchdog/service-manager configuration. `verify` checks exact payload inventory,
+interpreter prefix/site paths and a real interpreter start; donor-disappearance
+belongs in acceptance tests, not in production mutation.
+
+The identity re-seal compatibility path remains separate and cannot perform the
+provenance migration. Existing active pending receipts require their own recovery;
+new schema-2 pending records use the same stable volume+inode distinction for
+persistent evidence and retain exact same-operation race checks.
+
 ## Plan size contract
 
 Individual source, target and guard files remain bounded at 64 MiB. The serialized
