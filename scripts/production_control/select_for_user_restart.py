@@ -24,7 +24,7 @@ import types
 # Reviewed transition: hermes-20261105-redeploy-r16 -> hermes-20261105-security-r17.
 # Pins are deliberately explicit: a subsequent rebuild or control refresh requires
 # fresh admission.
-REFRESH_PIN = '37936f249fb61da2310d5b638beffad91d6de2fdda85a031a0df3bdb492bfc45'
+REFRESH_PIN = 'eb11819a11d4a9ae8f3b92fcc6ee49824c58c8f3e74d5c7eebc1c8824d48b62e'
 OLD_PIN = '0bc1479bf4b5b5e0ef0e478ae2f592425b4e06a2c371ccb8073a8aadd9a3b214'
 NEW_PIN = '2496df2d3cb7b1d6989cfc2c9bca7a7ed3d1cbbd52298bafde197e3ae0ac6e66'
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
