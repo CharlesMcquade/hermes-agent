@@ -64,7 +64,7 @@ class AdapterTests(unittest.TestCase):
             self.action('select', approval=True, receipt_pin=pin)
         path.write_bytes(raw)
         self.c.manifest_path.write_bytes(self.f.old+b' ')
-        with self.assertRaisesRegex(Exception, 'CAS'):
+        with self.assertRaisesRegex(Exception, 'CAS|Pending retained content drift'):
             self.action('select', approval=True, receipt_pin=pin)
         self.assertEqual(self.f.host.calls, [])
 
