@@ -65,6 +65,20 @@ class ReleaseRetentionTests(unittest.TestCase):
         plan = retention.retention_plan(self.releases, self.current, texts)
         self.assertIn('boot-anchor', {item['release_id'] for item in plan['keep']})
 
+    def test_live_compatibility_projection_does_not_need_release_manifest(self):
+        projection = self.releases / 'signed-bootstrap-projection'
+        projection.mkdir()
+        live = dict(self.live, **{'native-app/service-settings.json': str(projection / 'runtime/venv/bin/python')})
+        plan = retention.retention_plan(self.releases, self.current, live)
+        kept = {item['release_id']: item for item in plan['keep']}
+        self.assertIn('compatibility-projection', kept['signed-bootstrap-projection']['reasons'])
+        self.assertEqual([item['release_id'] for item in plan['archive']], ['old'])
+
+    def test_unreferenced_manifestless_directory_fails_closed(self):
+        (self.releases / 'mystery').mkdir()
+        with self.assertRaisesRegex(RuntimeError, 'no live dependency'):
+            retention.retention_plan(self.releases, self.current, self.live)
+
     def test_plan_keeps_current_previous_and_live_anchor(self):
         plan = retention.retention_plan(self.releases, self.current, self.live)
         self.assertEqual({item['release_id'] for item in plan['keep']}, {'current', 'previous', 'boot-anchor'})

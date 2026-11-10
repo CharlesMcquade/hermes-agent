@@ -136,12 +136,20 @@ def retention_plan(
     selected_sha = hashlib.sha256(selected_bytes).hexdigest()
     baseline_sha = selected.get('baseline_sha256')
     candidates = []
+    compatibility = []
     for root in sorted(releases.iterdir()):
         if not root.is_dir() or root.is_symlink():
             continue
         manifest = root / 'release.json'
         if not manifest.is_file() or manifest.is_symlink():
-            raise RuntimeError('Release lacks a regular manifest: ' + str(root))
+            reasons = live_reference_reasons(root, live_texts)
+            if not reasons:
+                raise RuntimeError('Release lacks a regular manifest and has no live dependency: ' + str(root))
+            compatibility.append({
+                'release_id': root.name, 'path': str(root),
+                'reasons': sorted(set(['compatibility-projection', *reasons])),
+            })
+            continue
         item = json.loads(manifest.read_text())
         if item.get('release_id') != root.name:
             raise RuntimeError('Release id/path mismatch: ' + str(root))
@@ -179,7 +187,7 @@ def retention_plan(
         'selected_manifest_sha256': selected_sha,
         'releases_root': str(releases),
         'policy': 'current+N-1+live-operational-anchors; recycle-never-delete',
-        'keep': [], 'archive': [], 'retained_outside_releases_root': external,
+        'keep': compatibility, 'archive': [], 'retained_outside_releases_root': external,
     }
     for root, manifest in candidates:
         name = root.name
