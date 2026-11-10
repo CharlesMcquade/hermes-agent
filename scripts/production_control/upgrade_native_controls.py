@@ -305,7 +305,59 @@ def build_reseal_plan(base, repo, commit, version_name, output, current_pin):
                                 from_launcher_identity=old_launcher_identity))
 
 
-def build_plan(base, repo, commit, version_name, output, current_pin):
+def original_provenance(receipt, root):
+    """Read and authenticate the two immutable original-stage records."""
+    stage = receipt['stage']
+    report = root['report']
+    source = Path(stage['original_stage'])
+    records = {}
+    for name, expected in (
+        ('stage-report.json', stage['original_stage_sha256']),
+        ('candidate-release.json', report['candidate_sha256']),
+    ):
+        raw = data(record(source / name))
+        require(sha(raw) == expected, 'Original provenance digest mismatch: ' + name)
+        records[name] = raw
+    require(json.loads(records['stage-report.json']) == report,
+            'Original stage report differs from root authority')
+    return records
+
+
+def verify_durable_provenance(receipt, root, output):
+    output = safe_dir(Path(output))
+    base = Path(receipt['stage']['base'])
+    require(output.parent == base, 'Durable provenance must live directly under maintenance')
+    require({path.name for path in output.iterdir()} == {
+        'stage-report.json', 'candidate-release.json'},
+        'Unexpected durable provenance members')
+    expected = original_provenance(receipt, root)
+    for name, raw in expected.items():
+        require(record(output / name) == record(Path(receipt['stage']['original_stage']) / name)
+                == packed(raw), 'Durable provenance differs from original bytes')
+    return output
+
+
+def stage_durable_provenance(base, output, current_pin):
+    """Stage durable provenance after full installed-control admission."""
+    base = safe_dir(Path(base))
+    current = json.loads(data(record(base / RECEIPT)))
+    require(sha(data(record(base / RECEIPT))) == current_pin, 'Current receipt pin mismatch')
+    admit(base, current_pin, Path(current['stage']['version']))
+    root = json.loads(data(record(base / 'native-install-receipt.json')))['receipt']
+    with locked(base):
+        records = original_provenance(current, root)
+        output = Path(output)
+        require(output.parent == base, 'Durable provenance must live directly under maintenance')
+        require(not output.exists() and not output.is_symlink(), 'Provenance output already exists')
+        output.mkdir(mode=0o700)
+        for name, raw in records.items():
+            atomic(output / name, packed(raw))
+        output.chmod(0o555)
+        verify_durable_provenance(current, root, output)
+    return dict(status='provenance_staged_not_active', original_stage=str(output))
+
+
+def build_plan(base, repo, commit, version_name, output, current_pin, *, durable_provenance=None):
     base, repo = safe_dir(base), safe_dir(repo)
     require(re.fullmatch('[0-9a-f]{40}', commit) is not None, 'Exact source commit required')
     obj = source_git(repo, 'cat-file', '-t', commit)
@@ -345,8 +397,13 @@ def build_plan(base, repo, commit, version_name, output, current_pin):
              Path.home() / 'Applications/Verity.app'])
         require(len(set(identities)) == 1,
                 'Protected files do not share one stable APFS volume')
+        if durable_provenance is not None:
+            root = json.loads(data(record(base / 'native-install-receipt.json')))['receipt']
+            durable_provenance = str(verify_durable_provenance(receipt, root, durable_provenance))
         stage = dict(receipt['stage'], schema_version=2, version=str(new_version),
                      control_sha256=hashes, volume_uuid=identities[0])
+        if durable_provenance is not None:
+            stage['original_stage'] = durable_provenance
         fresh = dict(receipt, schema_version=2, stage=stage,
                      stage_sha256=sha(encoded(stage)))
         new_pin = sha(encoded(fresh))
@@ -519,19 +576,30 @@ def main():
     b.add_argument('--reseal-lock-identity', action='store_true',
                    help='Recovery mode: publish the same trusted module bytes with the '
                         'live control.lock identity (st_dev rotation only; inode must match).')
+    b.add_argument('--durable-provenance', type=Path,
+                   help='Existing exact-byte maintenance copy of original-stage records')
+    c = s.add_parser('stage-provenance')
+    c.add_argument('--base', type=Path, required=True)
+    c.add_argument('--output', type=Path, required=True)
+    c.add_argument('--current-pin', required=True)
     for command in ('apply', 'recover'):
         a = s.add_parser(command)
         a.add_argument('--plan', type=Path, required=True)
         a.add_argument('--plan-sha256', required=True)
         a.add_argument('--approve', action='store_true')
     args = p.parse_args()
-    if args.command == 'plan':
+    if args.command == 'stage-provenance':
+        result = stage_durable_provenance(args.base, args.output, args.current_pin)
+    elif args.command == 'plan':
         if args.reseal_lock_identity:
+            require(args.durable_provenance is None,
+                    'Identity re-seal cannot also migrate provenance')
             result = build_reseal_plan(args.base, args.repo, args.commit, args.version_name,
                                        args.output, args.current_pin)
         else:
             result = build_plan(args.base, args.repo, args.commit, args.version_name,
-                                args.output, args.current_pin)
+                                args.output, args.current_pin,
+                                durable_provenance=args.durable_provenance)
     else:
         result = apply_plan(args.plan, args.plan_sha256, recover=args.command=='recover', approval=args.approve)
     print(json.dumps(result))

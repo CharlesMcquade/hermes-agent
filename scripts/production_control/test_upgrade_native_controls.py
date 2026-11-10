@@ -15,6 +15,8 @@ import upgrade_native_controls as u
 AUTHORITY = '''import hashlib,json,os
 from pathlib import Path
 FILES=('restart_production.py','watchdog.py','approved_restart_job.py')
+def volume_uuid(path):
+    return '00112233-4455-6677-8899-AABBCCDDEEFF'
 def new_wrappers(base,version,pin):
     return {n: '# fixture wrapper '+str(version)+' '+pin+' '+n+'\\n' for n in FILES}
 def load(base,pin,executor):
@@ -95,6 +97,21 @@ class UpgradeTests(unittest.TestCase):
     def unchanged_before(self):
         self.assertEqual(self.before,{n:u.record(self.base/n) for n in u.TARGETS})
         u.check_guards(self.unchanged)
+
+    def test_volume_uuid_failure_keeps_legacy_fixture_unpublished(self):
+        # The old receipt bytes remain authoritative; missing stable-ID evidence
+        # must not authorize a new schema or any production-target write.
+        original = {n: u.record(self.base/n) for n in u.TARGETS}
+        real = u.helper
+        def unavailable(version, expression, arguments):
+            if 'volume_uuid' in expression:
+                raise OSError('unsupported')
+            return real(version, expression, arguments)
+        with patch.object(u, 'helper', side_effect=unavailable):
+            with self.assertRaisesRegex(OSError, 'unsupported'):
+                u.build_plan(self.base, self.repo, self.commit, 'new', self.root/'plan', self.pin)
+        self.assertEqual({n: u.record(self.base/n) for n in u.TARGETS}, original)
+        self.assertFalse((self.base/'control-refresh-versions/new').exists())
 
     def test_large_aggregate_plan_read_apply_recover(self):
         # Realistic nested receipt/journal backups: individually below 64 MiB,
@@ -188,6 +205,10 @@ class UpgradeTests(unittest.TestCase):
         u.check_guards(self.unchanged)
         self.assertEqual(u.record(self.base/'watchdog.py')['mode'],0o600)
         self.assertEqual(u.record(self.base/'restart_production.py')['mode'],0o644)
+        migrated = json.loads(u.data(u.record(self.base/u.RECEIPT)))
+        self.assertEqual(migrated['schema_version'], 2)
+        self.assertEqual(migrated['stage']['schema_version'], 2)
+        self.assertEqual(migrated['stage']['volume_uuid'], '00112233-4455-6677-8899-AABBCCDDEEFF')
 
     def test_explicit_approval_required(self):
         self.plan()

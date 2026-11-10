@@ -14,6 +14,7 @@ import sys
 
 from restart_production import (BASE, SERVICES, Controller, ControlError, UniquePin,
                                 atomic_write, require, save_json)
+from control_refresh import volume_uuid
 
 
 def tick(controller, grace=90, cooldown=300, max_backoff=3600):
@@ -114,13 +115,46 @@ def digest(raw):
 def record(c, path):
     raw, identity = c.retained_file(path)
     return dict(data=base64.b64encode(raw).decode(), sha256=digest(raw),
-                identity=json.loads(json.dumps(identity)))
+                identity=json.loads(json.dumps(identity)),
+                volume_uuid=volume_uuid(path))
 
 
 def decode(value):
     raw = base64.b64decode(value['data'], validate=True)
     require(digest(raw) == value['sha256'], 'Pending backup digest mismatch')
     return raw
+
+
+def persistent_record(c, path, saved):
+    """Compare durable file identity without boot-scoped st_dev values."""
+    require(isinstance(saved, dict)
+            and set(saved) == {'data', 'sha256', 'identity', 'volume_uuid'},
+            'Pending retained record malformed')
+    current = record(c, path)
+    raw = base64.b64decode(saved['data'], validate=True)
+    require(current['sha256'] == saved['sha256'] == digest(raw)
+            and current['data'] == saved['data'], 'Pending retained content drift')
+    require(current['volume_uuid'] == saved['volume_uuid'],
+            'Pending retained volume identity drift')
+    def project(identity):
+        target, ancestors = identity
+        require(len(target) == 7
+                and all(type(item) in (list, tuple) and len(item) == 4 for item in ancestors),
+                'Pending retained identity malformed')
+        return dict(file=list(target[1:]),
+                    ancestors=[list(item[1:]) for item in ancestors])
+    require(project(current['identity']) == project(saved['identity']),
+            'Pending retained metadata drift')
+    return current
+
+
+def persistent_lock_matches(c, receipt):
+    info = (c.base / 'control.lock').stat()
+    return (isinstance(receipt['lock_identity'], list)
+            and len(receipt['lock_identity']) == 2
+            and all(type(v) is int for v in receipt['lock_identity'])
+            and info.st_ino == receipt['lock_identity'][1]
+            and volume_uuid(c.base / 'control.lock') == receipt['volume_uuid'])
 
 
 def compatible(c, old, new):
@@ -161,9 +195,10 @@ def prepare(c, candidate, *, expected_old_sha256, expected_new_sha256, timeout=3
         plists = {s: record(c, c.plist_path(old, s)) for s in SERVICES}
         proof = c.snapshot(old, c.definitions(old))
         require('process_identity' in proof, 'Missing native fallback identity')
-        receipt = dict(schema_version=1, kind='pending-user-restart', operation_id=str(uuid.uuid4()),
+        receipt = dict(schema_version=2, kind='pending-user-restart', operation_id=str(uuid.uuid4()),
                        base=str(c.base), control_refresh_sha256=c.control_refresh_sha256,
                        created_at=c.clock(), deadline=c.clock() + timeout,
+                       volume_uuid=volume_uuid(c.base / 'control.lock'),
                        old=old_record, new=new_record, plists=plists, original=proof,
                        original_transaction=record(c, c.transaction_path),
                        lock_identity=[])
@@ -191,37 +226,31 @@ def load(c, pin, *, allow_unfenced=False):
     retained = c.retained_file(c.base / RECEIPT)
     require(digest(retained[0]) == pin, 'Pending receipt pin mismatch')
     r = json.loads(retained[0])
-    require(type(r.get('schema_version')) is int and r['schema_version'] == 1
+    require(type(r.get('schema_version')) is int and r['schema_version'] == 2
             and r.get('kind') == 'pending-user-restart' and r['base'] == str(c.base)
             and r['control_refresh_sha256'] == c.control_refresh_sha256,
             'Foreign pending authority')
     require(type(r['deadline']) in (int, float) and math.isfinite(r['deadline'])
             and 0 < r['deadline'] - r['created_at'] <= 86400, 'Invalid pending deadline')
     info = (c.base / 'control.lock').stat()
-    # st_dev may rotate with the volume across reboot; replacement is still
-    # refused through the sealed inode and operation-local metadata fences.
-    require(isinstance(r['lock_identity'], list) and len(r['lock_identity']) == 2
-            and all(type(v) is int for v in r['lock_identity'])
-            and info.st_ino == r['lock_identity'][1], 'Pending lock changed')
+    require(persistent_lock_matches(c, r), 'Pending lock changed')
     original_txn = json.loads(decode(r['original_transaction']))['transaction']
     expected_txn = dict(original_txn, pending_restart_sha256=pin)
     fenced = c.read_transaction() == expected_txn
-    require(fenced or (allow_unfenced and record(c, c.transaction_path) == r['original_transaction']),
+    require(fenced or (allow_unfenced and persistent_record(c, c.transaction_path, r['original_transaction'])),
             'Pending transaction fence drift')
     old, new = [c.validate_manifest(json.loads(decode(r[k]))) for k in ('old', 'new')]
     compatible(c, old, new)
     for s in SERVICES:
-        require(record(c, c.plist_path(old, s)) == r['plists'][s], 'Pending plist drift')
+        require(persistent_record(c, c.plist_path(old, s), r['plists'][s]), 'Pending plist drift')
     transaction = c.retained_file(c.transaction_path)
     def unchanged():
         require(c.retained_file(c.transaction_path) == transaction, 'Pending transaction changed')
         info = (c.base / 'control.lock').stat()
-        require(isinstance(r['lock_identity'], list) and len(r['lock_identity']) == 2
-                and all(type(v) is int for v in r['lock_identity'])
-                and info.st_ino == r['lock_identity'][1], 'Pending lock changed')
+        require(persistent_lock_matches(c, r), 'Pending lock changed')
         require(c.retained_file(c.base / RECEIPT) == retained, 'Pending receipt changed')
         for s in SERVICES:
-            require(record(c, c.plist_path(old, s)) == r['plists'][s], 'Pending plist drift')
+            persistent_record(c, c.plist_path(old, s), r['plists'][s])
     return r, old, new, unchanged
 
 

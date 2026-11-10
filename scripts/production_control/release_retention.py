@@ -22,7 +22,8 @@ SCHEMA_VERSION = 1
 LIVE_MAINTENANCE_FILES = (
     'control-install.json', 'native-install-receipt.json',
     'native-control-refresh-receipt.json', 'webui-watchdog.sh',
-    'pending-user-restart.json', 'activation-transaction.json', 'resilient-cutover.plist',
+    'production-release.json', 'pending-user-restart.json', 'activation-transaction.json',
+    'resilient-cutover.plist',
 )
 
 
@@ -98,6 +99,7 @@ def collect_live_texts(home: Path | None = None) -> dict[str, str]:
     settings = (home / 'Applications/Verity.app/Contents/Resources'
                 / 'service-settings.json')
     result['native-app/service-settings.json'] = read_text(settings)
+    result['webui/service-manager.json'] = read_text(home / '.hermes/webui/service-manager.json')
     for path in (home / 'Library/LaunchAgents').glob('*.plist'):
         result['launchagent/' + path.name] = read_text(path)
     for path in maintenance.glob('*.py'):

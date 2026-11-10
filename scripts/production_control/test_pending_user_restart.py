@@ -124,6 +124,33 @@ class PendingTests(unittest.TestCase):
             with self.assertRaisesRegex(ControlError, 'Pending lock changed'):
                 load(self.c, self.pin)
 
+    def test_all_pending_retained_identities_tolerate_volume_reid(self):
+        self.stage()
+        original = self.c.retained_file
+        def reidentified(path):
+            raw, (target, ancestors) = original(path)
+            def rotate(record):
+                return [record[0] + 17, *record[1:]]
+            return raw, (rotate(target), [rotate(item) for item in ancestors])
+        with patch.object(self.c, 'retained_file', side_effect=reidentified):
+            _, _, _, unchanged = load(self.c, self.pin)
+            unchanged()
+
+    def test_legacy_pending_receipt_requires_explicit_recovery(self):
+        self.stage()
+        path = self.base / RECEIPT
+        value = json.loads(path.read_bytes())
+        value.pop('volume_uuid')
+        for name in ('old', 'new', 'original_transaction'):
+            value[name].pop('volume_uuid')
+        for item in value['plists'].values():
+            item.pop('volume_uuid')
+        value['schema_version'] = 1
+        save_json(path, value)
+        self.pin = digest(path.read_bytes())
+        with self.assertRaisesRegex(ControlError, 'Foreign pending authority'):
+            load(self.c, self.pin)
+
     def test_bad_pin_drift_reuse_and_generic_restart_fail_without_signals(self):
         self.stage()
         with self.assertRaisesRegex(ControlError, 'pin mismatch'):

@@ -48,11 +48,20 @@ class ReleaseRetentionTests(unittest.TestCase):
         provenance = self.root / 'verity-production-stage-v1'
         (maintenance / 'native-control-refresh-receipt.json').write_text(
             json.dumps({'stage': {'original_stage': str(provenance)}}))
+        continuation = self.root / 'run-scoped/continuation'
+        (maintenance / 'production-release.json').write_text(json.dumps({
+            'services': {'webui': {'env': {'HERMES_WEBUI_CONTINUATION_DIR': str(continuation)}}}}))
+        webui = home / '.hermes/webui'
+        webui.mkdir()
+        (webui / 'service-manager.json').write_text(json.dumps({
+            'webui_restart_preflight': [str(bootstrap)]}))
         with mock.patch.object(retention.subprocess, 'check_output', return_value=''):
             texts = retention.collect_live_texts(home)
         self.assertIn(str(bootstrap), texts.get('native-app/service-settings.json', ''))
         self.assertIn(str(provenance),
                       texts.get('maintenance/native-control-refresh-receipt.json', ''))
+        self.assertIn(str(bootstrap), texts.get('webui/service-manager.json', ''))
+        self.assertIn(str(continuation), texts.get('maintenance/production-release.json', ''))
         plan = retention.retention_plan(self.releases, self.current, texts)
         self.assertIn('boot-anchor', {item['release_id'] for item in plan['keep']})
 
