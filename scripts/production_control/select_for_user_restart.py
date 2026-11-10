@@ -23,7 +23,7 @@ import types
 
 # Reviewed transition: certifi-security -> duo-ready-r2. Pins are deliberately
 # explicit: a subsequent rebuild or control refresh requires fresh admission.
-REFRESH_PIN = '37936f249fb61da2310d5b638beffad91d6de2fdda85a031a0df3bdb492bfc45'
+REFRESH_PIN = 'eb11819a11d4a9ae8f3b92fcc6ee49824c58c8f3e74d5c7eebc1c8824d48b62e'
 OLD_PIN = 'e9e20da8549dbbc7e68948d6a1a2bf51a5d97c247fe36477db5bff38e7ffdc36'
 NEW_PIN = 'c63697cb67768ef9514501893d4c1ff33fe6fbc3c4fe184cb54e938230c54389'
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
