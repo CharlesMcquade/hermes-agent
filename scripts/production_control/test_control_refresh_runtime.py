@@ -367,6 +367,34 @@ class RefreshRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'refresh receipt schema'):
                 refresh.load(self.base, self.pin, self.version / 'restart_production.py')
 
+    def test_controller_lock_admits_stable_volume_identity_across_reid(self):
+        # Exercise the actual Controller.locked path, not just refresh.load().
+        original_stat = type(self.base).stat
+        original_fstat = self.module.os.fstat
+        original_identity = refresh._identity
+        def rotated_stat(path, *args, **kwargs):
+            from types import SimpleNamespace
+            result = original_stat(path, *args, **kwargs)
+            values = {name: getattr(result, name) for name in dir(result) if name.startswith('st_')}
+            values['st_dev'] += 17
+            return SimpleNamespace(**values)
+        def rotated_fstat(fd):
+            result = original_fstat(fd)
+            fields = list(result)
+            fields[2] += 17
+            return os.stat_result(fields)
+        def reidentified(path):
+            value = list(original_identity(path))
+            value[0] += 17
+            return tuple(value)
+        with patch.object(type(self.base), 'stat', new=rotated_stat), \
+                patch.object(self.module.os, 'fstat', new=rotated_fstat), \
+                patch.object(refresh, '_identity', side_effect=reidentified):
+            with self.c.locked():
+                unchanged = self.c.refresh_admission()
+                unchanged()
+            self.assertEqual(watchdog.tick(self.c, grace=0).get('status'), 'healthy')
+
     def test_volume_uuid_mismatch_fails_closed(self):
         self.receipt['stage']['volume_uuid'] = '00000000-0000-0000-0000-000000000000'
         self.repin()

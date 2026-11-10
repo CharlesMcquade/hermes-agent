@@ -151,6 +151,29 @@ class PendingTests(unittest.TestCase):
         with self.assertRaisesRegex(ControlError, 'Foreign pending authority'):
             load(self.c, self.pin)
 
+    def test_pending_select_survives_volume_reid_fenced_and_unfenced(self):
+        for crashed in (False, True):
+            with self.subTest(crashed=crashed):
+                self.setUp()
+                if crashed:
+                    with patch.object(self.c, 'save_transaction', side_effect=OSError('fixture crash')):
+                        with self.assertRaises(OSError):
+                            self.stage()
+                    self.pin = digest((self.base / RECEIPT).read_bytes())
+                else:
+                    self.stage()
+                original_stat = type(self.base).stat
+                def rotated_stat(path, *args, **kwargs):
+                    from types import SimpleNamespace
+                    result = original_stat(path, *args, **kwargs)
+                    values = {name: getattr(result, name)
+                              for name in dir(result) if name.startswith('st_')}
+                    values['st_dev'] += 17
+                    return SimpleNamespace(**values)
+                with patch.object(type(self.base), 'stat', new=rotated_stat):
+                    self.assertEqual(select(self.c, self.pin)['status'],
+                                     'selected_awaiting_user_restart')
+
     def test_bad_pin_drift_reuse_and_generic_restart_fail_without_signals(self):
         self.stage()
         with self.assertRaisesRegex(ControlError, 'pin mismatch'):

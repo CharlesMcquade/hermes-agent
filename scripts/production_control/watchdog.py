@@ -273,10 +273,11 @@ def select(c, pin):
         require(c.snapshot(old, c.definitions(old)) == r['original'], 'Original fallback identity changed')
         refresh()
         unchanged()
-        require(record(c, c.manifest_path) == r['old'], 'Pending selector CAS failed')
+        require(persistent_record(c, c.manifest_path, r['old']), 'Pending selector CAS failed')
         if txn.get('pending_restart_sha256') != pin:
             # Explicit retry after a prepare crash may finish its exact old fence.
-            require(record(c, c.transaction_path) == r['original_transaction'], 'Transaction changed')
+            require(persistent_record(c, c.transaction_path, r['original_transaction']),
+                    'Transaction changed')
             txn['pending_restart_sha256'] = pin
             c.save_transaction(txn, txn['phase'])
             require(c.read_transaction() == txn, 'Pending fence readback failed')
