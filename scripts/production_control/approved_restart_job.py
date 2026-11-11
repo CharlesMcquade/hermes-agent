@@ -13,11 +13,13 @@ import os
 import sys
 
 from restart_production import ControlError, main as restart_main
+from cutover_guard import require_out_of_process
 
 
-def main(argv=None, owner=os.getppid):
+def main(argv=None, owner=os.getppid, ancestry=None):
     if owner() != 1:
         raise ControlError('Approved restart job must be directly launchd-owned')
+    require_out_of_process(parent=owner, **({} if ancestry is None else {'ancestry': ancestry}))
     arguments = list(sys.argv[1:] if argv is None else argv)
     if '--restart' not in arguments or '--yes' not in arguments:
         raise ControlError('Explicit --restart --yes approval flags are required')

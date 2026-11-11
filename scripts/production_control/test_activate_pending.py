@@ -10,6 +10,22 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import activate_pending as activator
+import cutover_guard
+
+
+class CutoverGuardTests(unittest.TestCase):
+    def test_webui_gateway_and_native_ancestors_are_refused(self):
+        for command in ('python webui/server.py', 'python hermes_cli.main gateway run',
+                        '/Applications/Verity.app/VerityServiceHost agent'):
+            with self.subTest(command=command), self.assertRaisesRegex(RuntimeError, 'launchd job'):
+                cutover_guard.require_out_of_process(
+                    ancestry=lambda: [(20, 1, command)], parent=lambda: 10)
+
+    def test_launchd_and_unrelated_ancestry_are_allowed(self):
+        cutover_guard.require_out_of_process(
+            ancestry=lambda: [(20, 1, 'python webui/server.py')], parent=lambda: 1)
+        cutover_guard.require_out_of_process(
+            ancestry=lambda: [(20, 1, '/bin/zsh')], parent=lambda: 10)
 
 
 class ActivatePendingTests(unittest.TestCase):
@@ -74,6 +90,7 @@ class ActivatePendingTests(unittest.TestCase):
             argv += ['--pin', self.pin]
         output = io.StringIO()
         with patch.object(sys, 'argv', argv), \
+                patch.object(activator, 'require_out_of_process'), \
                 patch.object(activator, 'prehash_bundle', return_value={}), \
                 patch.object(activator, 'installed_modules', return_value=self.modules()), \
                 patch.object(activator, 'find_child_pid', side_effect=lambda c, m, s, p: p + 100 if s in self.candidate else None), \

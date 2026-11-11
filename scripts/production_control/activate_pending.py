@@ -27,6 +27,7 @@ import time
 import types
 from contextlib import contextmanager
 from pathlib import Path
+from cutover_guard import require_out_of_process
 
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
            'control_refresh', 'watchdog', 'approved_restart_job')
@@ -134,7 +135,11 @@ def wait_service_new(controller, manifest, service, old_pid, since, deadline):
     raise RuntimeError(f'{service}: candidate identity not observed before deadline')
 
 
-def main():
+def main(ancestry_probe=None):
+    if ancestry_probe is None:
+        require_out_of_process()
+    else:
+        require_out_of_process(ancestry=ancestry_probe)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', type=Path, default=Path.home() / '.hermes/maintenance')
     parser.add_argument('--controls', type=Path, required=True)

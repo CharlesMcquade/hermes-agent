@@ -19,6 +19,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from cutover_guard import require_out_of_process
 
 BASE = Path(__file__).resolve().parent
 SERVICES = ('agent', 'webui')
@@ -1045,7 +1046,11 @@ class UniquePin(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
-def main(argv=None):
+def main(argv=None, ancestry_probe=None):
+    if ancestry_probe is None:
+        require_out_of_process()
+    else:
+        require_out_of_process(ancestry=ancestry_probe)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', type=Path, default=BASE)
     parser.add_argument('--restart', action='store_true')
