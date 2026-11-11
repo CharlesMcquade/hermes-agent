@@ -25,7 +25,7 @@ import types
 # explicit: a subsequent rebuild or control refresh requires fresh admission.
 REFRESH_PIN = '096575e8b5d51ed83fd0bc9f765e03e5a7f59c41ff079f23eee2b191f60f2c5f'
 OLD_PIN = 'af7ca61e8502b6ee9eea0ea30d17d0f94d80155dc04a3e62c1a2074b6d9a17cb'
-NEW_PIN = 'de896d9bf25e993050ba46c7c038ea2742948bd1b6f6c87c2c2720728cfca644'
+NEW_PIN = '30c76169230ab43a0ad74984b17cab963ec28ce5bff3b1e93f364980fce26f1c'
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
            'control_refresh', 'watchdog', 'approved_restart_job')
 ORDER = ['Restart WebUI', 'Reconnect and verify candidate WebUI native identity',
