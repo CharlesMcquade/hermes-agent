@@ -87,6 +87,21 @@ class ActivatePendingTests(unittest.TestCase):
     def modules(self):
         yield self.rp, self.pending
 
+    def test_find_child_pid_uses_host_process_interface(self):
+        controller = SimpleNamespace(host=Mock())
+        controller.host.run.return_value = SimpleNamespace(
+            stdout='  101 python /.hermes/releases/candidate/webui/server.py\n'
+        )
+        controller.host.descendant.return_value = True
+
+        pid = activator.find_child_pid(
+            controller, {'release_id': 'candidate'}, 'webui', 11
+        )
+
+        self.assertEqual(pid, 101)
+        controller.host.run.assert_called_once_with('ps', '-axo', 'pid=,command=')
+        controller.host.descendant.assert_called_once_with(101, 11)
+
     def test_natural_publication_requires_exact_receipt_and_ordered_restarts(self):
         # A stale verified result and a current transition must not settle this run.
         self.publications = [self.result(self.pin + '0'), self.result(status='transition'), self.result()]

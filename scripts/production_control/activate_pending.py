@@ -102,7 +102,7 @@ def find_child_pid(controller, manifest, service, host_pid):
     release_dir = f"/.hermes/releases/{manifest['release_id']}/"
     marker = 'server.py' if service == 'webui' else 'gateway run'
     try:
-        output = controller.run('ps', '-axo', f'pid=,command=').stdout
+        output = controller.host.run('ps', '-axo', f'pid=,command=').stdout
     except Exception:
         return None
     for line in output.splitlines():
@@ -113,7 +113,7 @@ def find_child_pid(controller, manifest, service, host_pid):
             pid = int(line.split(None, 1)[0])
         except ValueError:
             continue
-        if controller.descendant(pid, host_pid):
+        if controller.host.descendant(pid, host_pid):
             return pid
     return None
 
