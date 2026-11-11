@@ -27,7 +27,7 @@ import time
 import types
 from contextlib import contextmanager
 from pathlib import Path
-from cutover_guard import require_out_of_process
+from cutover_guard import require_out_of_process, require_python311
 
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
            'control_refresh', 'watchdog', 'approved_restart_job')
@@ -134,6 +134,7 @@ def wait_service_new(controller, manifest, service, old_pid, since, deadline):
 
 
 def main(ancestry_probe=None):
+    require_python311()
     if ancestry_probe is None:
         require_out_of_process()
     else:

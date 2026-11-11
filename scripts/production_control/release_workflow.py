@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import production_launcher as launcher
 import release_build
 import candidate_canary as canary
+from cutover_guard import require_python311
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 # CLT toolchain before /usr/bin: bare `git` must resolve to the real CLT
@@ -795,6 +796,7 @@ def prepare(cfg):
 
 
 def main():
+    require_python311()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path)
     parser.add_argument('--from-production', type=Path)

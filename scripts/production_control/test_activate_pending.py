@@ -14,6 +14,28 @@ import cutover_guard
 
 
 class CutoverGuardTests(unittest.TestCase):
+    def test_all_cutover_interpreters_are_pinned(self):
+        import approved_restart_job
+        import release_workflow
+        import restart_production
+        modules = (activator, approved_restart_job, release_workflow, restart_production)
+        for module in modules:
+            argv = ['entry']
+            if module is approved_restart_job:
+                argv = []
+            with self.subTest(module=module.__name__), \
+                    patch.object(module, 'require_python311', side_effect=SystemExit(42)), \
+                    patch.object(sys, 'argv', argv):
+                with self.assertRaises(SystemExit) as raised:
+                    module.main() if module in (activator, release_workflow) else module.main(argv)
+                self.assertEqual(raised.exception.code, 42)
+
+    def test_interpreter_error_names_homebrew_python(self):
+        with patch.object(cutover_guard.sys, 'version_info', (3, 9, 18)), \
+                patch('sys.stderr', new_callable=io.StringIO) as error:
+            with self.assertRaises(SystemExit):
+                cutover_guard.require_python311()
+
     def test_webui_gateway_and_native_ancestors_are_refused(self):
         for command in ('python webui/server.py', 'python hermes_cli.main gateway run',
                         '/Applications/Verity.app/VerityServiceHost agent'):

@@ -13,10 +13,11 @@ import os
 import sys
 
 from restart_production import ControlError, main as restart_main
-from cutover_guard import require_out_of_process
+from cutover_guard import require_out_of_process, require_python311
 
 
 def main(argv=None, owner=os.getppid, ancestry=None):
+    require_python311()
     if owner() != 1:
         raise ControlError('Approved restart job must be directly launchd-owned')
     require_out_of_process(parent=owner, **({} if ancestry is None else {'ancestry': ancestry}))
