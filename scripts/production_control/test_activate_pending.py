@@ -119,6 +119,13 @@ class ActivatePendingTests(unittest.TestCase):
         controller.host.run.assert_called_once_with('ps', '-axo', 'pid=,command=')
         controller.host.descendant.assert_called_once_with(101, 11)
 
+    def test_process_probe_failure_is_not_misreported_as_missing_candidate(self):
+        controller = SimpleNamespace(host=Mock())
+        controller.host.run.side_effect = RuntimeError('process probe failed')
+        with self.assertRaisesRegex(RuntimeError, 'process probe failed'):
+            activator.find_child_pid(controller, {'release_id': 'candidate'}, 'webui', 11)
+        controller.host.descendant.assert_not_called()
+
     def test_natural_publication_requires_exact_receipt_and_ordered_restarts(self):
         # A stale verified result and a current transition must not settle this run.
         self.publications = [self.result(self.pin + '0'), self.result(status='transition'), self.result()]

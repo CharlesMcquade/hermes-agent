@@ -102,10 +102,8 @@ def find_child_pid(controller, manifest, service, host_pid):
     """The launchd job pid is the native host; find its child running candidate bytes."""
     release_dir = f"/.hermes/releases/{manifest['release_id']}/"
     marker = 'server.py' if service == 'webui' else 'gateway run'
-    try:
-        output = controller.host.run('ps', '-axo', f'pid=,command=').stdout
-    except Exception:
-        return None
+    # Probe failure is not absence: surface it immediately instead of timing out.
+    output = controller.host.run('ps', '-axo', f'pid=,command=').stdout
     for line in output.splitlines():
         line = line.strip()
         if release_dir not in line or marker not in line:
