@@ -478,6 +478,24 @@ def pm_pins(root, facts_path):
     return {'status': 'matched' if matched else 'store_behind_lock', 'pinned': pinned, 'store': present}
 
 
+def pm_check(root, facts_path=None):
+    """Read-only lock/store comparison with the exact pre-seed remediation."""
+    root = Path(root)
+    if not (root / 'agent/pm/lock.json').is_file():
+        return {'status': 'no_pm_lock'}
+    pins = pm_pins(root, facts_path or Path.home() / '.hermes/tools/facts.json')
+    status = 'matched' if pins['status'] == 'matched' else 'mismatch'
+    report = dict(pins, status=status)
+    if status == 'mismatch':
+        report['instruction'] = (
+            'Pre-seed with the pm-managed Python 3.14 interpreter: '
+            '<pm-managed-3.14-python> -I -c "import sys; '
+            'sys.path.insert(0, <release>/agent); import pm; '
+            'pm._uv._toolchain(realize=True, explicit=True); '
+            'pm.runtime.runtime_python(bootstrap=True)"')
+    return report
+
+
 def runtime_dependency_drift(root, facts_path=None):
     """Compare declared dependencies with the runtime venv's installed distributions.
 
@@ -755,6 +773,10 @@ def prepare(cfg):
             if result.returncode:
                 raise RuntimeError('Workflow tests failed; inspect evidence log')
         report['gates']['static'] = verify(cfg) if root.exists() else build(cfg)
+        report['gates']['pm'] = pm_check(root)
+        if report['gates']['pm']['status'] == 'mismatch':
+            raise RuntimeError('WARNING: pm tool store differs from release lock; '
+                               + report['gates']['pm']['instruction'])
         report['gates']['runtime_deps'] = runtime_dependency_drift(
             root, Path(baseline['state_dir']) / 'tools/facts.json')
         unaccepted = unaccepted_drift(report['gates']['runtime_deps'], cfg)
@@ -819,6 +841,8 @@ def main():
             import release_validation
             evidence = args.evidence or Path(cfg['evidence_dir']) / ('validation-' + str(time.time_ns()))
             report = release_validation.validate(cfg, evidence)
+        elif args.action == 'pm-check':
+            report = pm_check(Path(cfg['output']))
         else:
             report = {'build': build, 'verify': verify, 'prepare': prepare, 'drift': drift}[args.action](cfg)
         if args.action == 'validate':
@@ -835,6 +859,8 @@ def main():
             return 0 if report['status'] == 'APP_SMOKE_PASSED_PENDING_GATE_CHECKED' else 2
         if args.action == 'drift':
             return 0 if report['status'] == 'clean' else 2
+        if args.action == 'pm-check':
+            return 0 if report['status'] in ('matched', 'no_pm_lock') else 2
         if args.action == 'validate':
             return 0 if report['status'] == 'passed' else 1
     except Exception as exc:

@@ -408,6 +408,23 @@ class ReleaseWorkflowTests(unittest.TestCase):
         clean = self._drift_root(deps, 'pyyaml\n', installed=['pyyaml', 'pillow_heif'], name='clean')
         self.assertEqual(workflow.runtime_dependency_drift(clean, facts)['status'], 'clean')
 
+    def test_pm_check_is_read_only_and_reports_preseed_command(self):
+        root = self.root / 'candidate'
+        (root / 'agent/pm').mkdir(parents=True)
+        lock = root / 'agent/pm/lock.json'
+        lock.write_text(json.dumps({'packages': {
+            'uv': {'version': '0.13.5'}, 'python': {'version': '3.14.9+20261021'}}}))
+        facts = self.root / 'facts.json'
+        before = workflow.canary.inventory(root)
+        report = workflow.pm_check(root, facts)
+        self.assertEqual(report['status'], 'mismatch')
+        self.assertIn('pm._uv._toolchain(realize=True, explicit=True)', report['instruction'])
+        self.assertIn('pm.runtime.runtime_python(bootstrap=True)', report['instruction'])
+        self.assertIn("sys.path.insert(0, <release>/agent)", report['instruction'])
+        self.assertEqual(workflow.canary.inventory(root), before)
+        facts.write_text(lock.read_text())
+        self.assertEqual(workflow.pm_check(root, facts)['status'], 'matched')
+
     def test_new_config_mints_operation_and_maps_obvious_tests(self):
         (self.source / 'tests').mkdir()
         (self.source / 'tests/test_widget.py').write_text('# fixture\n')
