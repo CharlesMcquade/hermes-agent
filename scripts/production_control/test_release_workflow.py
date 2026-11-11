@@ -408,6 +408,38 @@ class ReleaseWorkflowTests(unittest.TestCase):
         clean = self._drift_root(deps, 'pyyaml\n', installed=['pyyaml', 'pillow_heif'], name='clean')
         self.assertEqual(workflow.runtime_dependency_drift(clean, facts)['status'], 'clean')
 
+    def test_new_config_mints_operation_and_maps_obvious_tests(self):
+        (self.source / 'tests').mkdir()
+        (self.source / 'tests/test_widget.py').write_text('# fixture\n')
+        (self.source / 'widget.py').write_text('VALUE = 1\n')
+        (self.source / 'unmapped.py').write_text('VALUE = 1\n')
+        self.git(self.source, 'add', '.')
+        self.git(self.source, 'commit', '-qm', 'candidate delta')
+        candidate = workflow.git(self.source, 'rev-parse', 'HEAD')
+        baseline = self.root / 'production.json'
+        baseline.write_text(json.dumps({'source_commits': {'agent': self.sha, 'webui': self.sha}}))
+        out = self.root / 'build-config.json'
+        cfg = workflow.new_config(baseline, 'candidate-release', out,
+                                  repos={'agent': self.source, 'webui': self.source})
+        self.assertEqual(cfg['agent_commit'], candidate)
+        self.assertEqual(cfg['validation']['agent']['tests'], ['tests/test_widget.py'])
+        self.assertIn('unmapped.py', cfg['validation']['agent']['TODO'])
+        self.assertIn(cfg['continuation_op_id'], cfg['continuation_dir'])
+        self.assertEqual(json.loads(out.read_text()), cfg)
+        other = workflow.new_config(baseline, 'candidate-release', self.root / 'other.json',
+                                    repos={'agent': self.source, 'webui': self.source})
+        self.assertNotEqual(cfg['continuation_op_id'], other['continuation_op_id'])
+
+    def test_prepare_refuses_foreign_or_completed_continuation(self):
+        directory = self.root / 'continuation'
+        directory.mkdir()
+        cfg = {'continuation_dir': str(directory), 'continuation_op_id': 'expected'}
+        for record in ({'operation_id': 'other', 'status': 'prepared'},
+                       {'operation_id': 'expected', 'status': 'completed'}):
+            (directory / 'operation.json').write_text(json.dumps(record))
+            with self.subTest(record=record), self.assertRaisesRegex(RuntimeError, 'continuation_dir'):
+                workflow.check_continuation_ownership(cfg)
+
     def test_prepare_blocks_on_unaccepted_drift_only(self):
         report = {'missing': ['pillow-heif', 'tomli-w']}
         self.assertEqual(workflow.unaccepted_drift(dict(report), {}), ['pillow-heif', 'tomli-w'])

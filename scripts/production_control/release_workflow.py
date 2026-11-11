@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -146,6 +147,59 @@ def config_read(path):
         if not isinstance(cfg[key], str) or not SHA.fullmatch(cfg[key]):
             raise RuntimeError(f'{key} must be an exact lowercase 40-character commit')
     return cfg
+
+
+def new_config(production, release_id, out, repos=None):
+    """Mint a fresh build config, never clone a prior operation's continuation."""
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+', release_id):
+        raise RuntimeError('release-id must contain only letters, digits, dot, underscore or dash')
+    production = Path(production)
+    baseline = json.loads(production.read_text())
+    repos = repos or {'agent': Path.home() / '.hermes/hermes-agent',
+                      'webui': Path.home() / 'hermes-webui'}
+    op_id = str(uuid.uuid4())
+    home = Path.home()
+    cfg = {'baseline': str(production.resolve()),
+           'output': str(home / '.hermes/releases' / release_id),
+           'scratch': str(home / '.hermes/cache/scratch' / ('release-' + op_id)),
+           'evidence_dir': str(home / '.hermes/cache/release-evidence' / op_id),
+           'continuation_dir': str(home / '.hermes/operations' / op_id / 'continuation'),
+           'continuation_op_id': op_id, 'validation': {}}
+    for name in ('agent', 'webui'):
+        repo = Path(repos[name])
+        candidate = git(repo, 'rev-parse', 'HEAD')
+        base = baseline['source_commits'][name]
+        cfg[name + '_repo'], cfg[name + '_commit'] = str(repo.resolve()), candidate
+        changed = git(repo, 'diff', '--name-only', base + '..' + candidate).splitlines()
+        available = set(git(repo, 'ls-tree', '-r', '--name-only', candidate).splitlines())
+        tests, todo = [], []
+        for path in changed:
+            candidates = ([path] if path.startswith('tests/') else []) + [
+                'tests/test_' + Path(path).stem + '.py',
+                str(Path(path).with_name('test_' + Path(path).name))]
+            match = next((test for test in candidates if test in available and test.startswith('tests/')), None)
+            (tests if match else todo).append(match or path)
+        cfg['validation'][name] = {'tests': sorted(set(tests)), 'TODO': sorted(set(todo))}
+    Path(out).write_bytes(encoded(cfg))
+    return cfg
+
+
+def check_continuation_ownership(cfg):
+    if 'continuation_op_id' not in cfg:
+        return  # Legacy configs retain their existing, explicitly reviewed contract.
+    directory = Path(cfg['continuation_dir'])
+    marker = directory / 'operation.json'
+    if not directory.exists():
+        return
+    if not marker.is_file():
+        if any(directory.iterdir()):
+            raise RuntimeError('continuation_dir has no operation ownership marker')
+        return
+    record = json.loads(marker.read_text())
+    if record.get('operation_id') != cfg['continuation_op_id']:
+        raise RuntimeError('continuation_dir belongs to a different operation')
+    if record.get('status') in {'completed', 'failed', 'aborted'}:
+        raise RuntimeError('continuation_dir belongs to a completed operation')
 
 
 def provenance(manifest):
@@ -656,6 +710,7 @@ def pending_check(cfg):
 def prepare(cfg):
     """One-command local gates. Never select, signal, or modify control-plane state."""
     validate_config_paths(cfg)
+    check_continuation_ownership(cfg)
     baseline_path = Path(cfg['baseline'])
     selected_bytes = baseline_path.read_bytes()
     baseline = launcher.load_manifest(baseline_path)
@@ -741,11 +796,22 @@ def prepare(cfg):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--config', type=Path)
+    parser.add_argument('--from-production', type=Path)
+    parser.add_argument('--release-id')
+    parser.add_argument('--out', type=Path)
     parser.add_argument('--evidence', type=Path, help='New output directory for the validate action')
-    parser.add_argument('action', choices=('build', 'verify', 'prepare', 'drift', 'validate'))
+    parser.add_argument('action', choices=('build', 'verify', 'prepare', 'drift', 'validate', 'new-config', 'pm-check'))
     args = parser.parse_args()
     try:
+        if args.action == 'new-config':
+            if not (args.from_production and args.release_id and args.out):
+                parser.error('new-config requires --from-production --release-id --out')
+            report = new_config(args.from_production, args.release_id, args.out)
+            print(json.dumps(report, indent=2))
+            return 0
+        if args.config is None:
+            parser.error('--config is required for this action')
         cfg = config_read(args.config)
         if args.action == 'validate':
             import release_validation
