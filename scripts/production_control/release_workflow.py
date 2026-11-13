@@ -181,8 +181,27 @@ def new_config(production, release_id, out, repos=None):
             match = next((test for test in candidates if test in available and test.startswith('tests/')), None)
             (tests if match else todo).append(match or path)
         cfg['validation'][name] = {'tests': sorted(set(tests)), 'TODO': sorted(set(todo))}
+    tool_path = baseline_tool_path(baseline)
+    if tool_path:
+        cfg['tool_path'] = tool_path
     Path(out).write_bytes(encoded(cfg))
     return cfg
+
+
+def baseline_tool_path(baseline):
+    """Carry the selected release's service tool PATH forward.
+
+    The build rewrites PATH as ``<new runtime bin>:<tool_path>``; without this
+    a minted config silently fell back to SAFE_PATH and dropped ~/.hermes/node
+    and ~/.hermes/bin, breaking npx/node MCP servers. Strip only the baseline's
+    own runtime prefix and keep the rest verbatim.
+    """
+    service = (baseline.get('services') or {}).get('agent') or {}
+    entries = ((service.get('env') or {}).get('PATH') or '').split(':')
+    runtime_bins = {str(Path(r['root']) / 'venv/bin') for r in service.get('runtimes') or []
+                    if isinstance(r, dict) and r.get('root')}
+    kept = [e for e in entries if e and e not in runtime_bins and '/.hermes/releases/' not in e]
+    return ':'.join(kept)
 
 
 def check_continuation_ownership(cfg):

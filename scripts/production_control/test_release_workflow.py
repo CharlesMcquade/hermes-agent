@@ -452,6 +452,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertFalse(Path(cfg['evidence_dir']).is_relative_to(state))
         self.assertIn(cfg['continuation_op_id'], cfg['evidence_dir'])
 
+    def test_new_config_carries_baseline_tool_path(self):
+        baseline = {'services': {'agent': {
+            'env': {'PATH': '/r/old/runtime/venv/bin:/home/u/.hermes/releases/x/runtime/venv/bin:'
+                            '/opt/homebrew/bin:/home/u/.hermes/node/bin:/usr/bin'},
+            'runtimes': [{'root': '/r/old/runtime'}]}}}
+        self.assertEqual(workflow.baseline_tool_path(baseline),
+                         '/opt/homebrew/bin:/home/u/.hermes/node/bin:/usr/bin')
+        self.assertEqual(workflow.baseline_tool_path({}), '')
+
     def test_prepare_refuses_foreign_or_completed_continuation(self):
         directory = self.root / 'continuation'
         directory.mkdir()
