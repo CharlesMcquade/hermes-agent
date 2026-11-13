@@ -81,6 +81,15 @@ class ReturnBaselineTests(unittest.TestCase):
             path.write_bytes(plistlib.dumps(plistlib.loads(path.read_bytes()), fmt=plistlib.FMT_BINARY))
         self.native = self.c.manifest_path.read_bytes(), self.f.saved()
         (self.base / 'control.lock').chmod(0o600)
+        # The cutover ancestry guard shells out to ps; these fixtures forbid
+        # host calls, so the guard is covered by test_activate_pending instead.
+        # Patch both the source module and the already-bound import so retained
+        # controller copies loaded during the test bind the stub as well.
+        import cutover_guard
+        for owner in (cutover_guard, control):
+            guard = patch.object(owner, 'require_out_of_process', lambda *a, **k: None)
+            guard.start()
+            self.addCleanup(guard.stop)
         for target in ('subprocess.run', 'subprocess.Popen'):
             guard = patch(target, side_effect=AssertionError('host call forbidden'))
             guard.start()

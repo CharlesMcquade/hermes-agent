@@ -446,6 +446,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         other = workflow.new_config(baseline, 'candidate-release', self.root / 'other.json',
                                     repos={'agent': self.source, 'webui': self.source})
         self.assertNotEqual(cfg['continuation_op_id'], other['continuation_op_id'])
+        # A minted config must satisfy prepare's own placement rule: evidence
+        # never lives inside application state (~/.hermes).
+        state = Path.home() / '.hermes'
+        self.assertFalse(Path(cfg['evidence_dir']).is_relative_to(state))
+        self.assertIn(cfg['continuation_op_id'], cfg['evidence_dir'])
 
     def test_prepare_refuses_foreign_or_completed_continuation(self):
         directory = self.root / 'continuation'

@@ -162,8 +162,8 @@ def new_config(production, release_id, out, repos=None):
     home = Path.home()
     cfg = {'baseline': str(production.resolve()),
            'output': str(home / '.hermes/releases' / release_id),
-           'scratch': str(home / '.hermes/cache/scratch' / ('release-' + op_id)),
-           'evidence_dir': str(home / '.hermes/cache/release-evidence' / op_id),
+           'scratch': str(home / '.hermes/cache/scratch' / ('rel-' + op_id[:8])),
+           'evidence_dir': str(home / 'hermes-release-evidence' / op_id),
            'continuation_dir': str(home / '.hermes/operations' / op_id / 'continuation'),
            'continuation_op_id': op_id, 'validation': {}}
     for name in ('agent', 'webui'):
@@ -766,6 +766,10 @@ def prepare(cfg):
         with tempfile.TemporaryDirectory(prefix='release-tests-', dir=cfg['scratch']) as temp:
             env = isolated_env(Path(temp), [scripts])
             env['HERMES_CANARY_SCRATCH'] = cfg['scratch']
+            # The continuation publisher composes against the candidate's own
+            # WebUI consumer, never a historical checkout path.
+            env['HERMES_TEST_CONTINUATION_SOURCE'] = str(
+                Path(cfg['webui_repo']) / 'api/post_restart_continuation.py')
             result = subprocess.run([sys.executable, '-B', '-m', 'unittest', 'discover',
                                      '-s', str(scripts), '-p', 'test_*.py', '-v'],
                                     cwd=temp, env=env, capture_output=True, text=True, timeout=180)

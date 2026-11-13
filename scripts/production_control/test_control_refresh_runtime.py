@@ -100,6 +100,14 @@ def filesystem_state(root):
 
 class RefreshRuntimeTests(unittest.TestCase):
     def setUp(self):
+        # Fixtures drive restart_production.main in-process; the real ancestry
+        # guard would refuse whenever the suite runs under a WebUI-hosted
+        # prepare. The guard itself is covered by test_activate_pending.
+        import cutover_guard
+        for owner in (cutover_guard, control):
+            guard = patch.object(owner, 'require_out_of_process', lambda *a, **k: None)
+            guard.start()
+            self.addCleanup(guard.stop)
         self.f = fixtures.NativeMigrationTests()
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
