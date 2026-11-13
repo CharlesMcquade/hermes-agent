@@ -38,7 +38,8 @@ BASE = HOME / ".hermes/maintenance"
 CONTROLS = BASE / "control-refresh-versions/verity-startup-stable-v3"
 CONTROL_REFRESH = "096575e8b5d51ed83fd0bc9f765e03e5a7f59c41ff079f23eee2b191f60f2c5f"
 OPS_ROOT = HOME / "hermes-dev/redeploy"
-EVIDENCE_ROOT = HOME / "notes/security/hermes-release-evidence"
+DEFAULT_REFS = {"webui": "fork/master", "agent": "fork/main"}  # fork mainlines
+DEFAULT_DRIFT = "browser-harness,pillow-heif,resvg-py,tomli-w"  # reviewed 2026-11-12 (r20b)
 TOOL_FILES = ["safe_redeploy.py", "continuation_publish.py", "safe_pending_activation.py",
               "safe_pending_retirement.py", "activate_pending.py", "select_for_user_restart.py",
               "candidate_canary.py"]
@@ -52,11 +53,35 @@ def sha(p: Path) -> str:
 
 
 def run(cmd, **kw):
+    """Run a step; transparently retry while the watchdog briefly owns control.lock."""
     print("+", " ".join(map(str, cmd)), flush=True)
-    r = subprocess.run(list(map(str, cmd)), text=True, capture_output=True,
-                       env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, **kw)
+    r = None
+    for _ in range(60):
+        r = subprocess.run(list(map(str, cmd)), text=True, capture_output=True,
+                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, **kw)
+        if "owns control.lock" not in r.stdout + r.stderr:
+            break
+        time.sleep(1.5)
     sys.stdout.write(r.stdout[-4000:]); sys.stderr.write(r.stderr[-4000:])
     return r
+
+
+def git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], text=True, capture_output=True,
+                          env={k: v for k, v in os.environ.items() if k != "GIT_ALTERNATE_OBJECT_DIRECTORIES"},
+                          check=True).stdout.strip()
+
+
+def resolve_commit(repo, ref):
+    git(repo, "fetch", "-q", "fork", ref.split("/", 1)[1]) if ref.startswith("fork/") else None
+    return git(repo, "rev-parse", ref + "^{commit}")
+
+
+def next_release_name(name):
+    n = 1
+    while (HOME / ".hermes/releases" / f"hermes-{today()}-{name}-r{n}").exists():
+        n += 1
+    return f"r{n}"
 
 
 def today() -> str:
@@ -80,39 +105,41 @@ def phase_retire(_op, _a):
 
 
 def phase_build(_op, a):
-    if not a.release_tag:
-        sys.exit("build requires --release-tag (never reuse the running release tag)")
-    for name, val in (("--webui-commit", a.webui_commit), ("--agent-commit", a.agent_commit)):
-        if not val or not HEX40.match(val):
-            sys.exit(f"{name} must be an exact lowercase 40-char commit (resolve with git rev-parse)")
-    op_id = a.op_id or uuid.uuid4().hex
-    op = day_dir() / f"op-{op_id}"
-    op.mkdir(mode=0o700, exist_ok=True); os.chmod(op, 0o700)
-    (op / "continuation").mkdir(mode=0o700, exist_ok=True)
-    release = f"hermes-{today()}-{a.release_name}-{a.release_tag}"
+    """Mint a fresh config (release_workflow.new_config) from clean checkouts of exact commits."""
+    sys.path.insert(0, str(TOOLS))
+    import release_workflow as rw  # noqa
+    commits = {}
+    for name, repo, ref in (("webui", a.webui_repo, a.webui_commit), ("agent", a.agent_repo, a.agent_commit)):
+        commits[name] = ref if ref and HEX40.match(ref) else resolve_commit(repo, ref or DEFAULT_REFS[name])
+    tag = a.release_tag or next_release_name(a.release_name)
+    release = f"hermes-{today()}-{a.release_name}-{tag}"
     out = HOME / ".hermes/releases" / release
     if out.exists():
         sys.exit(f"release {release} already exists - pick a new --release-tag")
-    EVIDENCE_ROOT.mkdir(parents=True, exist_ok=True)
-    cfg = {
-        "baseline": str(BASE / "production-release.json"), "output": str(out),
-        "scratch": str(HOME / ".hermes/cache/scratch"),
-        "agent_repo": a.agent_repo, "agent_commit": a.agent_commit,
-        "webui_repo": a.webui_repo, "webui_commit": a.webui_commit,
-        "evidence_dir": str(EVIDENCE_ROOT), "controls": str(CONTROLS),
-        "control_refresh_sha256": CONTROL_REFRESH,
-        "tool_path": ":".join([str(HOME / ".local/bin"), "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
-                               "/usr/bin", "/bin", "/usr/sbin", "/sbin", str(HOME / ".hermes/bin"),
-                               str(HOME / ".hermes/node/bin"), str(HOME / ".hermes/node")]),
-        "continuation_dir": str(op / "continuation"),
-    }
+    op_id = a.op_id or uuid.uuid4().hex
+    op = day_dir() / f"op-{op_id}"
+    op.mkdir(mode=0o700, exist_ok=True); os.chmod(op, 0o700)
+    checkouts = HOME / ".hermes/cache/scratch" / f"ship-{op_id[:8]}"
+    repos = {}
+    for name, repo in (("webui", a.webui_repo), ("agent", a.agent_repo)):
+        wt = checkouts / name
+        if not wt.exists():
+            git(repo, "worktree", "add", "-q", "--detach", str(wt), commits[name])
+        require_clean = git(wt, "status", "--porcelain")
+        if require_clean or git(wt, "rev-parse", "HEAD") != commits[name]:
+            sys.exit(f"{name}: checkout {wt} is not clean at {commits[name]}")
+        repos[name] = wt
+    cfg = rw.new_config(BASE / "production-release.json", release, op / "build-config.json", repos)
+    cfg.update(controls=str(CONTROLS), control_refresh_sha256=CONTROL_REFRESH,
+               continuation_dir=str(op / "continuation"),
+               accept_runtime_drift=a.accept_runtime_drift.split(",") if a.accept_runtime_drift else [])
     (op / "build-config.json").write_text(json.dumps(cfg, indent=2) + "\n")
     st = load(op); st.update(op_id=op_id, release=release, candidate=str(out / "release.json")); save(op, st)
     r = run([PY, "-B", TOOLS / "release_workflow.py", "--config", op / "build-config.json", "build"])
     if r.returncode != 0:
         sys.exit("BUILD FAILED")
     st["candidate_sha256"] = sha(out / "release.json"); save(op, st)
-    print(json.dumps({"op": str(op), "release": release, "candidate_sha256": st["candidate_sha256"]}))
+    print(json.dumps({"op": str(op), "op_id": op_id, "release": release, "candidate_sha256": st["candidate_sha256"]}))
     return op
 
 
@@ -130,18 +157,23 @@ def phase_pins(op, _a):
                  "--", str(sel)])
         if r.returncode != 0:
             sys.exit("PIN COMMIT FAILED")
+        r = run(["git", "-C", TOOLS, "push", "-q", "fork", "HEAD:refs/heads/tooling/mainline"])
+        if r.returncode != 0:
+            sys.exit("PIN PUSH FAILED (tooling/mainline moved? rebase the tooling checkout and re-run)")
     st["selected_sha256"] = old_pin; save(op, st)
     print(json.dumps({"OLD_PIN": old_pin, "NEW_PIN": st["candidate_sha256"]}))
 
 
 def phase_prepare(op, _a):
     st = load(op)
-    before = {p.name for p in EVIDENCE_ROOT.iterdir()}
+    root = Path(json.loads((op / "build-config.json").read_text())["evidence_dir"])
+    root.mkdir(parents=True, exist_ok=True)
+    before = {p.name for p in root.iterdir()}
     r = run([PY, "-B", TOOLS / "release_workflow.py", "--config", op / "build-config.json", "prepare"])
-    new = sorted({p.name for p in EVIDENCE_ROOT.iterdir()} - before)
+    new = sorted({p.name for p in root.iterdir()} - before)
     if r.returncode != 0 or not new or "APP_SMOKE_PASSED_PENDING_GATE_CHECKED" not in r.stdout:
-        sys.exit(f"PREPARE FAILED rc={r.returncode} new_evidence={new} (previous receipt not retired?)")
-    st["evidence_dir"] = str(EVIDENCE_ROOT / new[-1]); save(op, st)
+        sys.exit(f"PREPARE FAILED rc={r.returncode} new_evidence={new} report under {root}")
+    st["evidence_dir"] = str(root / new[-1]); save(op, st)
     print(json.dumps({"evidence_dir": st["evidence_dir"]}))
 
 
@@ -227,14 +259,18 @@ PHASE_FN = {"retire": phase_retire, "build": phase_build, "pins": phase_pins, "p
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("phases", nargs="+", choices=PHASES + ["fire", "status"])
-    ap.add_argument("--session", help="orchestrating WebUI session id (required except for status)")
+    ap.add_argument("phases", nargs="+", choices=PHASES + ["ship", "fire", "status"])
+    ap.add_argument("--session", default=os.environ.get("HERMES_SESSION_ID"),
+                    help="orchestrating WebUI session id (default: the calling chat's HERMES_SESSION_ID)")
     ap.add_argument("--op-id"); ap.add_argument("--day", help="YYYYMMDD of an existing op (default today)")
-    ap.add_argument("--release-tag", help="r7, r8 ... (mandatory for build; never reuse)")
-    ap.add_argument("--release-name", default="redeploy")
-    ap.add_argument("--webui-repo", default=str(HOME / "hermes-dev/worktrees/safe-redeploy-webui"))
-    ap.add_argument("--webui-commit"); ap.add_argument("--agent-commit")
-    ap.add_argument("--agent-repo", default=str(HOME / "hermes-release-sources/agent-2b8ea994"))
+    ap.add_argument("--release-tag", help="r1, r2 ... (default: next unused tag for today + name)")
+    ap.add_argument("--release-name", default="ship")
+    ap.add_argument("--webui-repo", default=str(HOME / "hermes-webui"))
+    ap.add_argument("--agent-repo", default=str(HOME / ".hermes/hermes-agent"))
+    ap.add_argument("--webui-commit", help="commit or ref (default fork/master)")
+    ap.add_argument("--agent-commit", help="commit or ref (default fork/main)")
+    ap.add_argument("--accept-runtime-drift", default=DEFAULT_DRIFT,
+                    help="comma list of reviewed runtime package drift (empty string = none)")
     ap.add_argument("--profile", default="default"); ap.add_argument("--workspace", default=str(HOME / "hermes-dev"))
     ap.add_argument("--approval", default="Charles Inglis pre-approved this redeploy in the orchestrating session "
                     "(WebUI->Gateway restarts, verified fallback, same-session continuation; no Mac reboot, "
@@ -242,7 +278,7 @@ def main():
     ap.add_argument("--approval-hours", type=float, default=6)
     ap.add_argument("--attempt", type=int, default=1)
     a = ap.parse_args()
-    phases = PHASES if a.phases == ["fire"] else a.phases
+    phases = PHASES if a.phases in (["fire"], ["ship"]) else a.phases
     day = OPS_ROOT / (a.day or today())
     op = day / f"op-{a.op_id}" if a.op_id else None
     if phases == ["status"]:
