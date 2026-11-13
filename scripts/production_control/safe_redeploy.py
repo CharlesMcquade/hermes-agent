@@ -346,7 +346,7 @@ def wait_idle(c, pending, pin, timeout=45, stable_seconds=10, *, guard=None, bin
 
 def execute(plan, candidate, checkpoint):
     require("gateway_active_agents_advisory" not in plan, "Unproven gateway idle override refused")
-    from safe_pending_activation import run_activation, rollback_pending
+    from safe_pending_activation import run_activation, rollback_pending, launchd_nudge
     from safe_pending_retirement import retire
     base, controls = Path(plan["base"]), Path(plan["controls"])
     bytes_ = admission.prehash_bundle(base, controls, plan["control_refresh_sha256"])
@@ -490,7 +490,8 @@ def execute(plan, candidate, checkpoint):
             # run_activation owns its own bounded lock patience; wrapping it in
             # stable() restarted the whole activation on one lock collision.
             proof = run_activation(c, pending, pending_pin,
-                idle_checkpoint(c, pending, pending_pin, edge_checkpoint, guard=edge_guard))
+                idle_checkpoint(c, pending, pending_pin, edge_checkpoint, guard=edge_guard),
+                nudge=launchd_nudge)
             activated = True
             profile_guard(); post_restart_guard()
             def publish_verified_terminal():

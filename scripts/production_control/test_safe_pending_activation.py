@@ -78,6 +78,40 @@ class EngineTests(unittest.TestCase):
         self.assertEqual((self.c.base / pending.RECEIPT).read_bytes(), self.receipt)
         self.assertEqual(self.c.transaction_path.read_bytes(), self.fence)
 
+    def test_nudge_drives_settlement_without_scheduled_ticks(self):
+        """Event-driven loop: no natural ticks; nudges run the real watchdog
+        observation (as launchd would) outside control.lock, and its own
+        two-observation stability rule produces the verdict."""
+        import fcntl
+        self.stage()
+        self.f.launch('webui')
+        self.f.launch('agent')
+        self.scheduled = False
+        nudges = []
+
+        def nudge():
+            with (self.c.base / 'control.lock').open('rb') as fd:  # engine must not hold it
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            nudges.append(self.c.monotonic())
+            with self.c.locked():
+                pending.observe(self.c, self.pin)
+
+        started = self.c.monotonic()
+        result = engine._settle(self.c, pending, self.pin, 'new', 60, 1, nudge=nudge)
+        self.assertEqual(result['status'], 'verified')
+        self.assertGreaterEqual(len(nudges), 2)
+        self.assertTrue(all(b - a >= engine.NUDGE_INTERVAL_SECONDS for a, b in zip(nudges, nudges[1:])))
+        self.assertLess(self.c.monotonic() - started, 15)  # was >=60 s per scheduled tick
+
+    def test_nudge_cannot_forge_a_verdict(self):
+        """A nudge that does nothing (launchd refused, job missing) never completes."""
+        self.stage()
+        self.scheduled = False
+        with self.assertRaisesRegex(RuntimeError, 'settlement timeout'):
+            engine._settle(self.c, pending, self.pin, 'new', 8, 1, nudge=lambda: None)
+        self.assertFalse((self.c.base / pending.RESULT).exists())
+
     def test_no_watchdog_forced_by_engine(self):
         self.stage()
         self.scheduled = False

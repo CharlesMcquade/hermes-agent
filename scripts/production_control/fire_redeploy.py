@@ -260,8 +260,8 @@ PHASE_FN = {"retire": phase_retire, "build": phase_build, "pins": phase_pins, "p
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("phases", nargs="+", choices=PHASES + ["ship", "fire", "status"])
-    ap.add_argument("--session", default=os.environ.get("HERMES_SESSION_ID"),
-                    help="orchestrating WebUI session id (default: the calling chat's HERMES_SESSION_ID)")
+    ap.add_argument("--session", help="orchestrating WebUI session id - pass \"$HERMES_SESSION_ID\" explicitly "
+                    "(never defaulted from the environment: a stray invocation must not start a release)")
     ap.add_argument("--op-id"); ap.add_argument("--day", help="YYYYMMDD of an existing op (default today)")
     ap.add_argument("--release-tag", help="r1, r2 ... (default: next unused tag for today + name)")
     ap.add_argument("--release-name", default="ship")

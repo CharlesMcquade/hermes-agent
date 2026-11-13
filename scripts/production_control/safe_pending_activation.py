@@ -1,8 +1,10 @@
 """Ordered process activation for an already-admitted, pinned pending operation.
 
 The independent runner owns approval, executable admission and its own lock.
-This engine never installs controls, changes plists, forces watchdog observations,
-or deletes pending authority. Exceptions are caller-visible; the runner decides
+This engine never installs controls, changes plists, forges watchdog observations,
+or deletes pending authority. It MAY ask launchd to run the scheduled watchdog job
+early (`nudge`): the sealed watchdog still makes every observation and verdict;
+only its timing changes (Charles, 2026-11-12: event-driven release loop). Exceptions are caller-visible; the runner decides
 whether its explicit fallback authorization permits rollback_pending().
 """
 import hashlib
@@ -18,8 +20,18 @@ ORDER = ('webui', 'agent')
 # control.lock non-blocking once per tick and reports 'busy' otherwise; a
 # one-second gap starved it (A3, 2026-10-26). Five seconds leaves the lock
 # free >70% of the time against ~1-2 s ticks.
-READINESS_YIELD_SECONDS = 5
+READINESS_YIELD_SECONDS = 2  # 5 s cost ~1 min per release; 2 s still leaves the lock mostly free
 LOCK_PATIENCE_SECONDS = 60
+NUDGE_INTERVAL_SECONDS = 3  # watchdog verifies after 2 observations >= 2 s apart
+WATCHDOG_LABEL = 'com.charles.hermes-webui-watchdog'
+
+
+def launchd_nudge():
+    """Run the scheduled watchdog now (no -k: never interrupts a running tick)."""
+    import os
+    import subprocess
+    subprocess.run(['launchctl', 'kickstart', f'gui/{os.getuid()}/{WATCHDOG_LABEL}'],
+                   capture_output=True, timeout=10, check=False)
 
 
 def _lock_contention(exc):
@@ -200,8 +212,9 @@ def _ordered(c, pending, pin, checkpoint, selected, timeout):
     return report
 
 
-def _settle(c, pending, pin, selected, timeout, stable_seconds, *, progress=None):
+def _settle(c, pending, pin, selected, timeout, stable_seconds, *, progress=None, nudge=None):
     started = c.monotonic()
+    last_nudge = None
     deadline = started + timeout
     stable, stable_at, error = None, None, 'No stable sample'
     last_observation, last_report = None, started
@@ -230,6 +243,10 @@ def _settle(c, pending, pin, selected, timeout, stable_seconds, *, progress=None
                 last_observation, last_report = observation, c.monotonic()
             if not ready:
                 stable, stable_at = None, None
+                if nudge is not None and (last_nudge is None
+                                          or c.monotonic() - last_nudge >= NUDGE_INTERVAL_SECONDS):
+                    nudge()  # outside control.lock, so the watchdog can take it
+                    last_nudge = c.monotonic()
                 c.sleep(1)
                 continue
         with _patient_lock(c):
@@ -265,14 +282,14 @@ def _settle(c, pending, pin, selected, timeout, stable_seconds, *, progress=None
 
 
 def run_activation(c, pending, pin, checkpoint, *, service_timeout=180,
-                   settle_timeout=900, stable_seconds=10):
+                   settle_timeout=900, stable_seconds=3, nudge=None):
     """Activate WebUI then Gateway; return only after natural watchdog proof."""
     for value in (service_timeout, settle_timeout, stable_seconds):
         require(type(value) in (int, float) and math.isfinite(value) and value > 0,
                 'Timeouts and stable_seconds must be finite and positive')
     services = _ordered(c, pending, pin, checkpoint, 'new', service_timeout)
     result = _settle(c, pending, pin, 'new', settle_timeout, stable_seconds,
-                     progress=checkpoint)
+                     progress=checkpoint, nudge=nudge)
     return dict(result, services=services, receipt_sha256=pin)
 
 

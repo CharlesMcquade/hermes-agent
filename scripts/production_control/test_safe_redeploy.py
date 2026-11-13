@@ -50,7 +50,7 @@ class OrchestratorTests(unittest.TestCase):
         self.pending.effective_pair.return_value = (self.manifest, {}, self.identity)
         self.pending.select.side_effect = lambda *a: self.selected.write_bytes(self.newraw)
         self.engine = SimpleNamespace(run_activation=Mock(side_effect=RuntimeError('activation stopped')),
-                                      rollback_pending=Mock())
+                                      rollback_pending=Mock(), launchd_nudge=Mock(name='launchd_nudge'))
         self.stack = ExitStack(); self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.dict(sys.modules, safe_pending_activation=self.engine))
         self.stack.enter_context(patch.object(runner.admission, 'prehash_bundle', return_value={}))
@@ -96,6 +96,7 @@ class OrchestratorTests(unittest.TestCase):
              patch.object(runner.continuation, 'receipt_status', return_value={'status': 'worker_entered', 'stream_id': 'stream'}):
             self.assertEqual(self.execute()['outcome'], 'worker_entered')
         publish.assert_called_once(); self.engine.rollback_pending.assert_not_called()
+        self.assertIs(self.engine.run_activation.call_args.kwargs['nudge'], self.engine.launchd_nudge)
 
     def test_terminal_publication_succeeds_then_raises_never_rolls_back(self):
         self.terminal_fixture()
@@ -130,7 +131,7 @@ class OrchestratorTests(unittest.TestCase):
         """A3 regression: a human message after the WebUI signal must not abort or roll back."""
         self.terminal_fixture()
         self._real_binding_guards()
-        def activation(c, pending, pin, checkpoint):
+        def activation(c, pending, pin, checkpoint, **_):
             checkpoint('before_kick', service='webui')
             # The user types in the session while WebUI restarts; the transcript moves.
             self.anchor.return_value = 'moved'
@@ -147,7 +148,7 @@ class OrchestratorTests(unittest.TestCase):
     def test_anchor_move_before_first_kick_still_refuses_and_rolls_back(self):
         self.terminal_fixture()
         self._real_binding_guards()
-        def activation(c, pending, pin, checkpoint):
+        def activation(c, pending, pin, checkpoint, **_):
             self.anchor.return_value = 'moved'
             checkpoint('before_kick', service='webui')
             raise AssertionError('signal must not happen')
