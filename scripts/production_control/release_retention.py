@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -115,8 +116,9 @@ def collect_live_texts(home: Path | None = None) -> dict[str, str]:
 
 
 def live_reference_reasons(root: Path, live_texts: dict[str, str]) -> list[str]:
-    value = str(root)
-    return sorted(label for label, text in live_texts.items() if value in text)
+    # A path must end at a separator/boundary: '.../perf-r20' must not match '.../perf-r20b'.
+    pattern = re.compile(re.escape(str(root)) + r'(?![A-Za-z0-9_.-])')
+    return sorted(label for label, text in live_texts.items() if pattern.search(text))
 
 
 def retention_plan(
@@ -128,8 +130,14 @@ def retention_plan(
     selected_sha = hashlib.sha256(selected_bytes).hexdigest()
     baseline_sha = selected.get('baseline_sha256')
     candidates = []
+    bootstrap_anchors = []
     for root in sorted(releases.iterdir()):
         if not root.is_dir() or root.is_symlink():
+            continue
+        marker = root / 'BOOTSTRAP-DEPENDENCY.json'
+        if marker.is_file() and not marker.is_symlink() and not (root / 'release.json').exists():
+            # Compatibility path for the signed bootstrap, not a release: always kept.
+            bootstrap_anchors.append(str(root))
             continue
         manifest = root / 'release.json'
         if not manifest.is_file() or manifest.is_symlink():
@@ -148,7 +156,8 @@ def retention_plan(
             if ancestor.name != 'runtime':
                 continue
             external = ancestor.parent / 'release.json'
-            if external.is_file() and file_digest(external) == baseline_sha:
+            if (external.is_file() and file_digest(external) == baseline_sha
+                    and external.parent not in previous):  # same tree found both ways
                 previous.append(external.parent)
             break
     if len(previous) != 1:
@@ -172,6 +181,7 @@ def retention_plan(
         'releases_root': str(releases),
         'policy': 'current+N-1+live-operational-anchors; recycle-never-delete',
         'keep': [], 'archive': [], 'retained_outside_releases_root': external,
+        'bootstrap_anchors': bootstrap_anchors,
     }
     for root, manifest in candidates:
         name = root.name
@@ -293,9 +303,18 @@ def main() -> int:
     parser.add_argument('--archive-root', type=Path)
     parser.add_argument('--receipt', type=Path)
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--only', action='append', default=[], metavar='RELEASE_ID',
+                        help='restrict archiving to these approved release ids (repeatable); '
+                             'an id that is not archive-eligible is an error')
     args = parser.parse_args()
     try:
         plan = retention_plan(args.releases, args.manifest)
+        if args.only:
+            eligible = {item['release_id'] for item in plan['archive']}
+            missing = sorted(set(args.only) - eligible)
+            if missing:
+                raise RuntimeError('Not archive-eligible (kept or absent): ' + ', '.join(missing))
+            plan['archive'] = [item for item in plan['archive'] if item['release_id'] in set(args.only)]
         if not args.apply:
             print(json.dumps(plan, indent=2, sort_keys=True))
             return 0

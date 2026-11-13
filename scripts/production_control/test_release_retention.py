@@ -53,6 +53,35 @@ class ReleaseRetentionTests(unittest.TestCase):
                          [{'path': str(outside), 'reasons': ['N-1']}])
         self.assertEqual([item['release_id'] for item in plan['archive']], ['old'])
 
+    def test_previous_inside_root_also_named_by_runtime_source_counts_once(self):
+        selected = json.loads(self.current.read_text())
+        selected['runtime'] = {'source': str(self.releases / 'previous/runtime/venv/bin/python')}
+        self.current.write_text(json.dumps(selected))
+        plan = retention.retention_plan(self.releases, self.current, self.live)
+        self.assertIn('N-1', {r for i in plan['keep'] if i['release_id'] == 'previous' for r in i['reasons']})
+        self.assertEqual([item['release_id'] for item in plan['archive']], ['old'])
+
+    def test_live_reference_is_path_boundary_exact(self):
+        prefix = self.releases / 'old'
+        sibling = self.releases / 'oldb'
+        self.assertEqual(retention.live_reference_reasons(prefix, {'p': str(sibling) + '/runtime/python'}), [])
+        self.assertEqual(retention.live_reference_reasons(prefix, {'p': str(prefix) + '/runtime/python'}), ['p'])
+        self.assertEqual(retention.live_reference_reasons(prefix, {'p': '"' + str(prefix) + '"'}), ['p'])
+
+    def test_bootstrap_dependency_stub_is_kept_not_fatal(self):
+        stub = self.releases / 'steer-snapshot-v3'
+        (stub / 'runtime').mkdir(parents=True)
+        (stub / 'BOOTSTRAP-DEPENDENCY.json').write_text('{"preserve_until_signed_launcher_migration": true}')
+        plan = retention.retention_plan(self.releases, self.current, self.live)
+        self.assertEqual(plan['bootstrap_anchors'], [str(stub)])
+        self.assertNotIn('steer-snapshot-v3', {i['release_id'] for i in plan['archive'] + plan['keep']})
+        self.assertEqual([item['release_id'] for item in plan['archive']], ['old'])
+
+    def test_unmarked_directory_without_manifest_still_fails_closed(self):
+        (self.releases / 'mystery').mkdir()
+        with self.assertRaisesRegex(RuntimeError, 'lacks a regular manifest'):
+            retention.retention_plan(self.releases, self.current, self.live)
+
     def test_missing_previous_manifest_fails_closed(self):
         previous = json.loads(self.current.read_text())
         previous['baseline_sha256'] = '0' * 64
