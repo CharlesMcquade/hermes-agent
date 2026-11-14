@@ -111,5 +111,41 @@ def test_launchd_path_migration_detects_new_managed_directory():
     old = "<key>PATH</key><string>/usr/bin:/bin</string>"
     refreshed = "<key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string>"
     ambient_only = "<key>PATH</key><string>/some/shell/bin:/usr/bin:/bin</string>"
-    assert _normalize_launchd_plist_for_comparison(old) == _normalize_launchd_plist_for_comparison(ambient_only)
+    # The current canonical normalizer compares the deterministic managed prefix
+    # directly. Both legacy variants must therefore be refreshed when a managed
+    # package directory is added; their short legacy prefixes need not compare
+    # equal to one another during that one-time migration.
     assert _normalize_launchd_plist_for_comparison(old) != _normalize_launchd_plist_for_comparison(refreshed)
+    assert _normalize_launchd_plist_for_comparison(ambient_only) != _normalize_launchd_plist_for_comparison(refreshed)
+    # Once the managed prefix is populated, subsequent ambient-shell drift is
+    # still masked by the canonical normalizer.
+    aligned = "<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>"
+    aligned_ambient = "<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/some/shell/bin:/bin</string>"
+    assert _normalize_launchd_plist_for_comparison(aligned) == _normalize_launchd_plist_for_comparison(aligned_ambient)
+
+
+def test_generated_service_artifacts_include_package_manager_paths(tmp_path, monkeypatch):
+    """The service definitions, not just their helper, carry the resolved PATH."""
+    import plistlib
+    import hermes_cli.gateway as gateway_module
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(gateway_module, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(gateway_module, "_build_service_path_dirs", lambda: [
+        "/opt/homebrew/bin", "/home/linuxbrew/.linuxbrew/bin", "/usr/local/bin",
+    ])
+    monkeypatch.setattr(gateway_module, "_stable_service_working_dir", lambda: str(home))
+    monkeypatch.setattr(gateway_module, "_append_node_dir_for_service", lambda entries, *args: None)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    plist = plistlib.loads(gateway_module.generate_launchd_plist().encode())
+    launchd_path = plist["EnvironmentVariables"]["PATH"].split(":")
+    unit = gateway_module.generate_systemd_unit()
+    systemd_path = next(line for line in unit.splitlines() if line.startswith('Environment="PATH='))
+    systemd_entries = systemd_path.removeprefix('Environment="PATH=').removesuffix('"').split(":")
+    for directory in ("/opt/homebrew/bin", "/home/linuxbrew/.linuxbrew/bin", "/usr/local/bin"):
+        assert directory in launchd_path
+        assert directory in systemd_entries
+    assert launchd_path.count("/usr/local/bin") == 1
+    assert systemd_entries.count("/usr/local/bin") == 1
