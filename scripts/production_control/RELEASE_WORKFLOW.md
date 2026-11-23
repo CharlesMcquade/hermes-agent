@@ -48,7 +48,13 @@ neighboring tests in the machine-local config:
 
 Use each repository's canonical runner on a clean checkout at the exact candidate
 SHA. `paired: true` pins the WebUI to the candidate Agent rather than a frozen
-release; use it only for cross-repository contracts. The per-repository timeout is
+release; use it only for cross-repository contracts. An optional
+`validation.agent.python` names an absolute executable test interpreter with
+pytest. It is passed as `HERMES_PYTHON` to the canonical Agent runner, which
+honors it when no activation is inherited instead of relying on implicit PM
+provisioning. Use a candidate-owned, nonproduction test environment; this does
+not replace runtime/dependency checks or the exact-artifact canary. If omitted,
+interpreter selection is unchanged. The per-repository timeout is
 capped at 15 minutes; target ten minutes total for the application slice. Test
 output and a machine-readable receipt are retained under the preparation evidence
 directory. Documentation-only and unchanged-source changes need no application

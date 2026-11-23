@@ -96,6 +96,7 @@ def validation_plan(cfg: dict[str, Any]) -> dict[str, Any]:
         repo_settings = settings.get(name, {})
         if not isinstance(repo_settings, dict) or not isinstance(repo_settings.get('tests', []), list):
             raise RuntimeError(name + ' validation.tests must be a list')
+        test_python = explicit_test_python(name, repo_settings)
         focused = [valid_test_path(value) for value in repo_settings.get('tests', [])]
         present_at_candidate = git_output(
             repo, 'diff', '--name-only', '--diff-filter=ACMR', base, candidate,
@@ -126,7 +127,23 @@ def validation_plan(cfg: dict[str, Any]) -> dict[str, Any]:
             'changed_files': changed, 'changed_count': len(changed), 'tests': tests,
             'paired': bool(repo_settings.get('paired', False)),
         }
+        if test_python:
+            plan['repositories'][name]['test_python'] = test_python
     return plan
+
+
+def explicit_test_python(name: str, settings: dict[str, Any]) -> str | None:
+    value = settings.get('python')
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError(name + ' validation.python must be an interpreter path')
+    path = Path(value)
+    if not path.is_absolute():
+        raise RuntimeError(name + ' validation.python must be an absolute interpreter path')
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise RuntimeError(name + ' validation.python must be an executable file')
+    return str(path)
 
 
 def test_environment(name: str, cfg: dict[str, Any], evidence: Path) -> dict[str, str]:
@@ -144,6 +161,10 @@ def test_environment(name: str, cfg: dict[str, Any], evidence: Path) -> dict[str
         'HERMES_HOME': str(home / '.hermes'),
         'HERMES_WEBUI_AUTO_INSTALL': '0', 'HERMES_WEBUI_FOREGROUND': '1',
     }
+    if name == 'agent':
+        test_python = explicit_test_python(name, cfg.get('validation', {}).get(name, {}))
+        if test_python:
+            env['HERMES_PYTHON'] = test_python
     paired = name == 'webui' and cfg.get('validation', {}).get(name, {}).get('paired', False)
     if paired:
         webui = Path(cfg['webui_repo']).resolve()

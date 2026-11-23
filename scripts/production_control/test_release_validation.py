@@ -123,6 +123,51 @@ class ReleaseValidationTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / 'evidence/report.json').read_text())['source_commits']['agent'],
                          self.commits['agent'][1])
 
+    def test_agent_explicit_interpreter_is_recorded_and_passed_to_runner(self):
+        base = self.commits['webui'][0]
+        self.git(self.repos['webui'], 'reset', '--hard', '-q', base)
+        self.cfg['webui_commit'] = base
+        executable = self.root / 'test-python'
+        # Exercised only as a path/argv fixture; the canonical runner performs
+        # the actual interpreter's pytest capability check before executing.
+        executable.write_text('# Only an executable-path fixture; not executed.\n')
+        executable.chmod(0o700)
+        self.cfg['validation']['agent']['python'] = str(executable)
+        plan = validation.validation_plan(self.cfg)
+        self.assertEqual(plan['repositories']['agent']['test_python'], str(executable))
+        self.assertEqual(plan['repositories']['agent']['tests'],
+                         ['tests/test_app.py', 'tests/test_neighbor.py'])
+        completed = subprocess.CompletedProcess([], 0, '', '')
+        real_run = subprocess.run
+        def run_test_or_git(argv, *args, **kwargs):
+            if argv[0].startswith('scripts/'):
+                return completed
+            return real_run(argv, *args, **kwargs)
+        with mock.patch.object(validation.subprocess, 'run', side_effect=run_test_or_git) as run:
+            report = validation.execute_plan(self.cfg, plan, self.root / 'evidence-explicit-python')
+        self.assertEqual(report['status'], 'passed')
+        calls = [call for call in run.call_args_list
+                 if call.args[0][0].startswith('scripts/run_tests.sh')]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].kwargs['env'].get('HERMES_PYTHON'), str(executable))
+        self.assertNotIn('HERMES_RUNTIME_DIR', calls[0].kwargs['env'])
+        self.assertNotIn('UV_PYTHON_INSTALL_DIR', calls[0].kwargs['env'])
+
+    def test_explicit_interpreter_requires_an_absolute_executable_path(self):
+        for value in ('relative-python', ['not', 'a', 'path']):
+            with self.subTest(value=value):
+                self.cfg['validation']['agent']['python'] = value
+                pattern = 'interpreter path' if not isinstance(value, str) else 'absolute interpreter path'
+                with self.assertRaisesRegex(RuntimeError, pattern):
+                    validation.validation_plan(self.cfg)
+        missing = self.root / 'missing-python'
+        self.cfg['validation']['agent']['python'] = str(missing)
+        with self.assertRaisesRegex(RuntimeError, 'executable file'):
+            validation.validation_plan(self.cfg)
+        missing.write_text('Not an executable interpreter.\n')
+        with self.assertRaisesRegex(RuntimeError, 'executable file'):
+            validation.validation_plan(self.cfg)
+
     def test_execution_fails_before_runner_on_dirty_or_wrong_head(self):
         base = self.commits['webui'][0]
         self.git(self.repos['webui'], 'reset', '--hard', '-q', base)

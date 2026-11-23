@@ -3,7 +3,7 @@
 
 check is production-read-only (disposable routing fixtures are written to scratch).
 prepare and select each require separate explicit approval; neither restarts.
-Only the reviewed v5 transition is admitted. New bundles/releases require review.
+Only the exact transition pinned below is admitted. New bundles/releases require review.
 """
 import argparse
 import base64
@@ -21,11 +21,11 @@ import sys
 import tempfile
 import types
 
-# Reviewed transition: certifi-security -> duo-ready-r2. Pins are deliberately
-# explicit: a subsequent rebuild or control refresh requires fresh admission.
+# Reviewed transition: hermes-20261113-ship-r2 -> hermes-20261123-upstream-r1.
+# A subsequent rebuild or control refresh requires fresh admission.
 REFRESH_PIN = '096575e8b5d51ed83fd0bc9f765e03e5a7f59c41ff079f23eee2b191f60f2c5f'
-OLD_PIN = 'f91c7b5e0ce330e14bb7220bf6999925ac9c2c6783b42c4d7a87afd5743f569c'
-NEW_PIN = '6e60ac82725f50d26b58f7cd1f48bec9b1aa9abcfb3dad7132c4be6532aa6734'
+OLD_PIN = '6e60ac82725f50d26b58f7cd1f48bec9b1aa9abcfb3dad7132c4be6532aa6734'
+NEW_PIN = '87cf58a1db9f9dc3e2a95c1f46cb8cb6f342812755a6544559561c8804a03af2'
 MODULES = ('production_launcher', 'restart_production', 'native_identity',
            'control_refresh', 'watchdog', 'approved_restart_job')
 ORDER = ['Restart WebUI', 'Reconnect and verify candidate WebUI native identity',
