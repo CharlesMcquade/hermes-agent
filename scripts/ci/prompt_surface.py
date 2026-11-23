@@ -79,6 +79,11 @@ def _pin_environment() -> None:
     socket.socket.connect = refuse  # type: ignore[method-assign]
     socket.create_connection = refuse  # type: ignore[assignment]
     socket.getaddrinfo = refuse  # type: ignore[assignment]
+    # Initialize platform-sensitive stdlib and native modules before spoofing Linux.
+    # Otherwise macOS sysconfig looks for linux+darwin config and psutil selects Linux bindings.
+    import sysconfig
+    sysconfig.get_config_vars()
+    import psutil  # noqa: F401  # retained in sys.modules for the later run_agent import
     sys.platform = "linux"  # skills index ``platforms:`` gate
 
     import hermes_time
