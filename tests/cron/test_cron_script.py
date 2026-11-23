@@ -101,7 +101,7 @@ class TestRunJobScript:
         python = runtime / "bin" / "python"
         python.touch()
         script = tmp_path / "check.py"
-        monkeypatch.setattr(scheduler_script, "__file__", str(agent / "cron" / "scheduler_script.py"))
+        monkeypatch.setattr(scheduler_script, "project_root_str", lambda: str(agent))
         monkeypatch.setattr(_launchers, "resolve_store_python", lambda _repo: tmp_path / "store-python")
         monkeypatch.setattr(environments, "project_python", lambda _repo: agent / "venv/bin/python")
         monkeypatch.setattr(scheduler_script.sys, "executable", str(python))
