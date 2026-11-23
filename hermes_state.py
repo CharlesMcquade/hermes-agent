@@ -318,6 +318,13 @@ class _SessionDB:
         return self._store.sessions.create(NewSession(session_id=session_id, source=source, **kwargs))
 
     @_held
+    def ensure_session(self, session_id: "str", source: "str" = "unknown", model: "Optional[str]" = None, **kwargs: "Any") -> "str":
+        """Legacy upsert entry point retained for WebUI and older callers."""
+        from persistence import SessionId
+        from persistence.conversation.sessions import NewSession
+        return self._store.sessions.create(NewSession(session_id=SessionId(session_id), source=source, model=model, **kwargs))
+
+    @_held
     def end_session(self, session_id: "str", end_reason: "str") -> None:
         self._store.sessions.end(session_id, end_reason)
 
@@ -385,6 +392,41 @@ class _SessionDB:
     @_held
     def set_session_title(self, session_id: "str", title: "str") -> "bool":
         return self._store.sessions.set_title(session_id, title)
+
+    @_held
+    def get_session_title(self, session_id: "str") -> "Optional[str]":
+        return self._store.sessions.get_title(session_id)
+
+    @_held
+    def get_session_title_source(self, session_id: "str") -> "Optional[str]":
+        source = self._store.sessions.get_title_source(session_id)
+        return None if source is None else getattr(source, "value", source)
+
+    @_held
+    def set_auto_title(self, session_id: "str", title: "str", *, source: "str") -> "bool":
+        from persistence.conversation.sessions import TitleSource
+        return self._store.sessions.set_auto_title(session_id, title, source=TitleSource(source))
+
+    @_held
+    def set_auto_title_if_empty(self, session_id: "str", title: "str") -> "bool":
+        existing = self._store.sessions.get(session_id)
+        if existing is not None and existing.title:
+            return False
+        from persistence.conversation.sessions import TitleSource
+        return self._store.sessions.set_auto_title(session_id, title, source=TitleSource.DERIVED)
+
+    @_held
+    def sanitize_title(self, title: "str") -> "Optional[str]":
+        from persistence.sqlite.conversation._store.titles import sanitize_title
+        return sanitize_title(title)
+
+    @_held
+    def _execute_write(self, fn: "Any", **kwargs: "Any") -> "Any":
+        return self._store._bound_store().holder()._execute_write(fn, **kwargs)
+
+    @_held
+    def _read_one(self, query: "str", params: "tuple" = ()) -> "Any":
+        return self._store._bound_store().holder()._read_one(query, params)
 
     @_held
     def resolve_session_by_title(self, title: "str") -> "Optional[str]":
