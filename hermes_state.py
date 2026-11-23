@@ -488,6 +488,56 @@ class _SessionDB:
             turn_lease_ttl_seconds=turn_lease_ttl_seconds)
 
     @_held
+    def append_messages_batch(self, session_id: str, messages: list[dict],
+                              compression_lock_holder: str | None = None, *,
+                              turn_lease_holder=None, chunk_rows: int | None = None,
+                              turn_lease_ttl_seconds: float = 300.0) -> int:
+        """Append legacy ``_db_flush_row`` dictionaries in one store transaction.
+
+        ``compression_lock_holder`` is accepted for the legacy call shape and is not
+        forwarded; the current repository's batch writer owns its normal guards.
+        The batch result is the number of freshly appended rows, and the caller's
+        original dictionaries receive the store's row annotations in place.
+        """
+        if not messages:
+            return 0
+        from agent.session_persistence import _new_message
+
+        for row in messages:
+            if not isinstance(row, dict):
+                raise TypeError("append_messages_batch requires _db_flush_row-style dictionaries")
+        converted = [_new_message(row) for row in messages]
+        result = self._store.messages.append_batch(
+            session_id,
+            converted,
+            turn_lease_holder=turn_lease_holder,
+            chunk_rows=chunk_rows,
+            turn_lease_ttl_seconds=turn_lease_ttl_seconds,
+        )
+        for row, outcome in zip(messages, result.outcomes, strict=True):
+            row.update((key, value) for key, value in outcome.as_row_annotation().items() if value is not None)
+        return result.inserted
+
+    @staticmethod
+    def _restore_legacy_steer_receipt_ids(row: dict) -> dict:
+        """Restore the private legacy alias from its persisted display-side value.
+
+        Canonical storage keeps the receipt IDs in display_metadata; legacy Agent
+        consumers also require this private key on real steer rows.
+        """
+        if (
+            row.get("display_kind") == "steer"
+            and "_steer_receipt_ids" not in row
+            and isinstance(row.get("display_metadata"), dict)
+        ):
+            from agent.prompt_builder import valid_steer_receipt_ids
+
+            receipt_ids = valid_steer_receipt_ids(row["display_metadata"].get("steer_receipt_ids"))
+            if receipt_ids:
+                row["_steer_receipt_ids"] = receipt_ids
+        return row
+
+    @_held
     def get_messages(
         self, session_id: "str", include_inactive: "bool" = False, include_compacted: "bool" = False,
         limit: "Optional[int]" = None, offset: "int" = 0, latest: "bool" = False, after_id: "Optional[int]" = None,
@@ -497,7 +547,10 @@ class _SessionDB:
 
         request = TranscriptRead(view=_transcript_view(include_inactive, include_compacted), limit=limit,
                                  offset=offset, latest=latest, after_id=after_id, include_lineage=include_ancestors)
-        return [row.as_wire_row() for row in self._store.messages.read_transcript(session_id, request)]
+        return [
+            self._restore_legacy_steer_receipt_ids(row.as_wire_row())
+            for row in self._store.messages.read_transcript(session_id, request)
+        ]
 
     @_held
     def get_messages_as_conversation(
@@ -509,7 +562,10 @@ class _SessionDB:
         request = ConversationRequest(view=_transcript_view(include_inactive, include_compacted),
                                       include_lineage=include_ancestors, repair_alternation=repair_alternation,
                                       include_row_ids=include_row_ids)
-        return [message.as_openai_message() for message in self._store.messages.read_conversation(session_id, request)]
+        return [
+            self._restore_legacy_steer_receipt_ids(message.as_openai_message())
+            for message in self._store.messages.read_conversation(session_id, request)
+        ]
 
     @_held
     def clear_messages(self, session_id: "str") -> None:
