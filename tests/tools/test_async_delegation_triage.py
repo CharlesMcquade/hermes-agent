@@ -141,3 +141,38 @@ def test_normal_claim_precedes_triage_and_blocks_suppression(monkeypatch, tmp_pa
     assert token
     assert not ledger.claim_completion_delivery("race", "competing")
     assert ledger.settle_late_result("parent-A", "race", token, "suppress")
+
+
+def test_terminal_capacity_preserves_quiet_and_suppressed_history(monkeypatch, tmp_path):
+    """The ordinary terminal cap must not erase protected result lifetimes."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _finished("dropped", completed_at=time.time() - 49 * 3600)
+    ledger.restore_undelivered_completions(queue.Queue())
+    protected = ("pending", "claimed", "wake", "suppressed")
+    for ident in (*protected, "ordinary", "delivered"):
+        _finished(ident)
+    assert ledger.finalize_parent_delegations("parent-A", list(protected)) == list(protected)
+    # Exercise all unresolved pending triage states through their normal writers.
+    assert ledger.admit_late_result("parent-A", "claimed") is not None
+    wake_token = ledger.admit_late_result("parent-A", "wake")
+    assert wake_token and ledger.settle_late_result("parent-A", "wake", wake_token, "wake")
+    suppress_token = ledger.admit_late_result("parent-A", "suppressed")
+    assert suppress_token and ledger.settle_late_result("parent-A", "suppressed", suppress_token, "suppress")
+
+    def _acknowledge(conn):
+        conn.execute("UPDATE async_delegations SET delivery_state='delivered' WHERE delegation_id='delivered'")
+
+    with ledger._DB_LOCK:
+        ledger._triage_write(_acknowledge)
+    monkeypatch.setattr(ledger, "_MAX_RETAINED_COMPLETED", 0)
+    monkeypatch.setattr(ledger, "_MAX_DURABLE_PENDING", 0)
+    ledger._prune_durable_records()
+    for ident, expected in (
+        ("pending", "pending"), ("claimed", "pending"), ("wake", "pending"),
+        ("suppressed", "suppressed"), ("dropped", "dropped"),
+    ):
+        record = ledger.get_durable_delegation(ident)
+        assert record is not None
+        assert record["delivery_state"] == expected
+    assert ledger.get_durable_delegation("ordinary") is None
+    assert ledger.get_durable_delegation("delivered") is None

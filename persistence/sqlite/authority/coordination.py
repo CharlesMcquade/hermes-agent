@@ -458,52 +458,21 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             self._ledger_write(_do)
 
     def prune_delegation_ledger(self) -> None:
-        """Bound terminal history, preferring delivered records for deletion. A unit a waiting child reports on is
-        kept out of the retention and the terminal cap (``KEEP_WAITING_UNITS_SQL``), not the pending cap."""
+        """Apply the shared terminal retention and pending-history bounds.
+
+        Units still owed child resumes keep the canonical terminal-cap exception;
+        that does not turn into a blanket pending-cap exemption.
+        """
         cutoff = time.time() - DELEGATION_RETENTION_SECONDS
-        keep = KEEP_WAITING_UNITS_SQL
+
         def _do(conn):
-            # Only acknowledged deliveries are disposable. Pending, dropped and explicitly
-            # suppressed results remain inspectable; unresolved quiet triage is never capacity-pruned.
-            conn.execute("""DELETE FROM async_delegation_triage WHERE NOT EXISTS
-                (SELECT 1 FROM async_delegations d WHERE d.delegation_id=async_delegation_triage.delegation_id)""")
-            conn.execute("""DELETE FROM async_delegation_triage WHERE delegation_id IN
-                (SELECT delegation_id FROM async_delegations
-                 WHERE delivery_state='delivered' AND updated_at < ?)""", (cutoff,))
-            conn.execute(
-                "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?" + keep, (cutoff,))
-            delivered_count = conn.execute(
-                "SELECT COUNT(*) FROM async_delegations WHERE delivery_state='delivered'" + keep
-            ).fetchone()[0]
-            if delivered_count > DELEGATION_MAX_RETAINED_TERMINAL:
-                conn.execute(f"""DELETE FROM async_delegation_triage WHERE delegation_id IN (
-                         SELECT delegation_id FROM async_delegations
-                         WHERE delivery_state='delivered'{keep}
-                         ORDER BY updated_at ASC LIMIT ?
-                       )""", (delivered_count - DELEGATION_MAX_RETAINED_TERMINAL,))
-                conn.execute(f"""DELETE FROM async_delegations WHERE delegation_id IN (
-                         SELECT delegation_id FROM async_delegations
-                         WHERE delivery_state='delivered'{keep}
-                         ORDER BY updated_at ASC LIMIT ?
-                       )""", (delivered_count - DELEGATION_MAX_RETAINED_TERMINAL,))
-            # Preserve the ordinary upstream pending cap. Only parent-enrolled,
-            # unresolved quiet-triage records are exempt from capacity pruning.
-            unprotected_triage = """NOT EXISTS (
-                SELECT 1 FROM async_delegation_triage t
-                WHERE t.delegation_id=async_delegations.delegation_id
-                  AND (t.triage_state IN ('pending','claimed')
-                       OR (t.triage_state='settled' AND t.decision='wake')))"""
-            pending_count = conn.execute(
-                "SELECT COUNT(*) FROM async_delegations "
-                "WHERE state!='running' AND delivery_state='pending' AND " + unprotected_triage
-            ).fetchone()[0]
-            if pending_count > DELEGATION_MAX_DURABLE_PENDING:
-                conn.execute(f"""DELETE FROM async_delegations WHERE delegation_id IN (
-                         SELECT delegation_id FROM async_delegations
-                         WHERE state!='running' AND delivery_state='pending'
-                           AND {unprotected_triage}
-                         ORDER BY updated_at ASC LIMIT ?
-                       )""", (pending_count - DELEGATION_MAX_DURABLE_PENDING,))
+            _prune_delegation_ledger_rows(
+                conn,
+                cutoff=cutoff,
+                max_retained_terminal=DELEGATION_MAX_RETAINED_TERMINAL,
+                max_durable_pending=DELEGATION_MAX_DURABLE_PENDING,
+            )
+
         with translated():
             self._ledger_write(_do)
 
@@ -839,6 +808,90 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             return None
         return PendingCompletion(delegation_id=delegation_id, event=json.loads(row[0]), completed_at=row[1],
                                  dispatched_at=row[2])
+
+
+def _prune_delegation_ledger_rows(
+    conn,
+    *,
+    cutoff: float,
+    max_retained_terminal: int,
+    max_durable_pending: int,
+) -> None:
+    """Prune both driver paths under the same history and quiet-triage rules.
+
+    The caller supplies its already-authorized write transaction. Capacity deletes
+    cover delivered and ordinary pending terminal rows. Dropped/suppressed results
+    remain inspectable, and unresolved quiet triage protects pending parents from
+    capacity deletion. Acknowledged deliveries remain disposable even when a stale
+    triage row remains. Units owed child resumes follow the repository's canonical
+    terminal-cap exception, but not a blanket pending-cap exception.
+    """
+    keep = KEEP_WAITING_UNITS_SQL
+    # Awake-work cleanup, an active claim, or a settled decision to wake means the
+    # pending quiet result still has a successor. Other triage is already resolved.
+    unprotected_triage = """NOT EXISTS (
+        SELECT 1 FROM async_delegation_triage t
+        WHERE t.delegation_id=async_delegations.delegation_id
+          AND (t.triage_state IN ('pending','claimed')
+               OR (t.triage_state='settled' AND t.decision='wake')))"""
+    # Age retention continues to expire only acknowledged deliveries. Pending,
+    # dropped, and explicitly suppressed results are not expired by this step.
+    conn.execute("""DELETE FROM async_delegation_triage WHERE NOT EXISTS
+        (SELECT 1 FROM async_delegations d WHERE d.delegation_id=async_delegation_triage.delegation_id)""")
+    conn.execute("""DELETE FROM async_delegation_triage WHERE delegation_id IN
+        (SELECT delegation_id FROM async_delegations
+         WHERE delivery_state='delivered' AND updated_at < ?)""", (cutoff,))
+    conn.execute(
+        "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?" + keep,
+        (cutoff,),
+    )
+
+    # The normal upstream history bound includes ordinary pending terminal rows;
+    # the fork's unresolved pending quiet records are additional retained history.
+    # Dropped/suppressed results stay inspectable, as required by their setter APIs.
+    disposable_terminal = (
+        "state!='running' AND (delivery_state='delivered' OR "
+        f"(delivery_state='pending' AND {unprotected_triage})){keep}"
+    )
+    history_count = conn.execute(
+        f"SELECT COUNT(*) FROM async_delegations WHERE {disposable_terminal}"
+    ).fetchone()[0]
+    if history_count > max_retained_terminal:
+        excess = history_count - max_retained_terminal
+        selection = f"""SELECT delegation_id FROM async_delegations
+            WHERE {disposable_terminal}
+            ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
+                     updated_at ASC, delegation_id ASC LIMIT ?"""
+        conn.execute(
+            f"DELETE FROM async_delegation_triage WHERE delegation_id IN ({selection})",
+            (excess,),
+        )
+        conn.execute(
+            f"DELETE FROM async_delegations WHERE delegation_id IN ({selection})",
+            (excess,),
+        )
+
+    # Preserve the ordinary upstream pending cap. Only parent-enrolled unresolved
+    # quiet triage is exempt; the waiting-unit terminal exception does not apply.
+    pending_predicate = (
+        "state!='running' AND delivery_state='pending' AND " + unprotected_triage
+    )
+    pending_count = conn.execute(
+        f"SELECT COUNT(*) FROM async_delegations WHERE {pending_predicate}"
+    ).fetchone()[0]
+    if pending_count > max_durable_pending:
+        excess = pending_count - max_durable_pending
+        selection = f"""SELECT delegation_id FROM async_delegations
+            WHERE {pending_predicate}
+            ORDER BY updated_at ASC, delegation_id ASC LIMIT ?"""
+        conn.execute(
+            f"DELETE FROM async_delegation_triage WHERE delegation_id IN ({selection})",
+            (excess,),
+        )
+        conn.execute(
+            f"DELETE FROM async_delegations WHERE delegation_id IN ({selection})",
+            (excess,),
+        )
 
 
 register_repository("coordination", SQLiteCoordinationRepository, {"transactional_claims": True})

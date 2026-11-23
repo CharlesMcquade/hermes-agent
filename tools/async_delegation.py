@@ -190,28 +190,23 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
 
 
 def _prune_durable_records() -> None:
-    """Bound terminal history, preferring delivered records for deletion."""
+    """Apply canonical retention within the legacy triage transaction owner."""
+    # This legacy entry point owns a direct profile-writer transaction for its
+    # triage bookkeeping. Reuse the repository's SQL policy rather than letting
+    # the two cleanup paths disagree about pending rows and child-resume guards.
+    from persistence.sqlite.authority.coordination import _prune_delegation_ledger_rows
+
     require_ledger_owner()
     cutoff = time.time() - 7 * 24 * 60 * 60
+
     def _prune(conn):
-        # Only acknowledged deliveries are disposable. Pending, dropped and explicitly
-        # suppressed results remain queryable; unresolved quiet results are never capacity-pruned.
-        conn.execute("""DELETE FROM async_delegation_triage WHERE NOT EXISTS
-            (SELECT 1 FROM async_delegations d WHERE d.delegation_id=async_delegation_triage.delegation_id)""")
-        conn.execute("""DELETE FROM async_delegation_triage WHERE delegation_id IN
-            (SELECT delegation_id FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?)""", (cutoff,))
-        conn.execute(
-            "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?", (cutoff,))
-        delivered_count = conn.execute("SELECT COUNT(*) FROM async_delegations WHERE delivery_state='delivered'").fetchone()[0]
-        if delivered_count > _MAX_RETAINED_COMPLETED:
-            conn.execute("""DELETE FROM async_delegation_triage WHERE delegation_id IN (
-                     SELECT delegation_id FROM async_delegations
-                     WHERE delivery_state='delivered' ORDER BY updated_at ASC LIMIT ?
-                   )""", (delivered_count - _MAX_RETAINED_COMPLETED,))
-            conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
-                     SELECT delegation_id FROM async_delegations
-                     WHERE delivery_state='delivered' ORDER BY updated_at ASC LIMIT ?
-                   )""", (delivered_count - _MAX_RETAINED_COMPLETED,))
+        _prune_delegation_ledger_rows(
+            conn,
+            cutoff=cutoff,
+            max_retained_terminal=_MAX_RETAINED_COMPLETED,
+            max_durable_pending=_MAX_DURABLE_PENDING,
+        )
+
     with _DB_LOCK:
         _triage_write(_prune)
 
