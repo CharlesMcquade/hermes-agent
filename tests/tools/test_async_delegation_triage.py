@@ -9,13 +9,15 @@ from tools import async_delegation as ledger
 
 def _finished(delegation_id, parent="parent-A", completed_at=None):
     now = completed_at or time.time()
-    with ledger._DB_LOCK, ledger._transaction() as conn:
+    def _insert(conn):
         conn.execute("""INSERT INTO async_delegations
             (delegation_id, origin_session, parent_session_id, state, dispatched_at,
              completed_at, updated_at, event_json, result_json)
             VALUES (?, 'route', ?, 'completed', ?, ?, ?, ?, ?)""",
             (delegation_id, parent, now, now, now,
              '{"type":"async_delegation"}', '{"summary":"important correction"}'))
+    with ledger._DB_LOCK:
+        ledger._triage_write(_insert)
 
 
 def test_exact_owner_opt_in_and_atomic_settlement(monkeypatch, tmp_path):
@@ -47,9 +49,11 @@ def test_retry_restart_and_preserve_unresolved(monkeypatch, tmp_path):
     ledger.finalize_parent_delegations("parent-A", ["old"])
     token = ledger.admit_late_result("parent-A", "old")
     assert token
-    with ledger._DB_LOCK, ledger._transaction() as conn:
+    def _age_claim(conn):
         conn.execute("""UPDATE async_delegation_triage SET triage_claimed_at=0 WHERE delegation_id='old'""")
         conn.execute("""UPDATE async_delegations SET delivery_claimed_at=0 WHERE delegation_id='old'""")
+    with ledger._DB_LOCK:
+        ledger._triage_write(_age_claim)
     newer = ledger.admit_late_result("parent-A", "old")
     assert newer and newer != token
     assert not ledger.settle_late_result("parent-A", "old", token, "suppress")
@@ -85,13 +89,18 @@ def test_prune_removes_orphans_and_acknowledged_only(monkeypatch, tmp_path):
     for ident in ("pending", "delivered", "orphan"):
         _finished(ident)
     ledger.finalize_parent_delegations("parent-A", ["pending", "delivered", "orphan"])
-    with ledger._DB_LOCK, ledger._transaction() as conn:
+    def _settle(conn):
         conn.execute("UPDATE async_delegations SET delivery_state='delivered' WHERE delegation_id='delivered'")
+        conn.execute("DELETE FROM async_delegation_triage WHERE delegation_id='orphan'")
         conn.execute("DELETE FROM async_delegations WHERE delegation_id='orphan'")
+    with ledger._DB_LOCK:
+        ledger._triage_write(_settle)
     monkeypatch.setattr(ledger, "_MAX_RETAINED_COMPLETED", 0)
     ledger._prune_durable_records()
-    with ledger._DB_LOCK, ledger._transaction() as conn:
-        assert conn.execute("SELECT delegation_id FROM async_delegation_triage").fetchall() == [("pending",)]
+    def _rows(conn):
+        assert [row[0] for row in conn.execute("SELECT delegation_id FROM async_delegation_triage")] == ["pending"]
+    with ledger._DB_LOCK:
+        ledger._triage_write(_rows)
     assert ledger.get_durable_delegation("pending") is not None
     assert ledger.get_durable_delegation("delivered") is None
 

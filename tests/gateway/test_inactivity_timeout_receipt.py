@@ -6,9 +6,10 @@ import pytest
 
 from gateway.config import Platform
 from gateway.session import SessionSource
-from gateway.session_authority import LiveSession
+from gateway.session_authority import LiveSession, admission_row
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import admit_session_input, claim_session_input, get_session_admission
+from gateway.session_persistence import authority_persistence
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.mark.asyncio
@@ -23,22 +24,19 @@ async def test_timeout_diagnostic_keeps_failed_receipt_after_string_projection(o
     if platform is Platform.LOCAL:
         from gateway.session_contract import SessionActor
         from gateway.session_local import create_local_session
-        # Exercise the real private LOCAL session contract, including its
-        # receipt, actor identity and policy. A bare 's' row is not restorable.
+        # Exercise the real private LOCAL session contract, including its receipt and policy.
         owner.runner.adapters = {}
         owner.runner._evict_cached_agent = lambda route: None
         actor = SessionActor('human', owner.profile_id, frozenset({'session:create', 'session:read'}), 'fixture')
         ref = create_local_session(owner, actor, {
-            'request_id': 'timeout', 'source': 'cli', 'cwd': str(owner.db.db_path.parent),
+            'request_id': 'timeout', 'source': 'cli', 'cwd': str(owner.persistence.scope.profile_dir),
             'model': 'frozen', 'toolsets': [],
         })
         sid = ref.session_id
     else:
-        owner.db.create_session('s', source='cli')
+        seed_session(owner.persistence, 's', 'cli')
         sid = 's'
-        source = SessionSource(platform, sid, user_id='human')
-        owner.sessions[sid] = LiveSession(source, 'route')
-    # Keep the restored LiveSession and its receipt-bound route for LOCAL.
+        owner.sessions[sid] = LiveSession(SessionSource(platform, sid, user_id='human'), 'route')
     source = owner.sessions[sid].source
     route = owner.sessions[sid].route
     owner.runner._adapter_for_source = lambda source: None
@@ -60,14 +58,14 @@ async def test_timeout_diagnostic_keeps_failed_receipt_after_string_projection(o
         return response
 
     owner.runner._handle_message = handle
-    admitted = admit_session_input(owner.db, epoch=owner.epoch, principal_id='human',
+    admitted, _created = owner.persistence.admissions.admit(epoch=owner.epoch, principal_id='human',
         session_id=sid, request_id='timeout', payload={'text': 'work'})
-    row = claim_session_input(owner.db, epoch=owner.epoch, session_id=sid)
+    row = admission_row(owner.persistence.admissions.claim(epoch=owner.epoch, session_id=sid))
     response = await execute_admission(owner, SessionRef(owner.profile_id, sid), row)
-    finish_result(owner.db, epoch=owner.epoch, row=row, response=response, outcome='completed',
-                  result=owner.pending_results[admitted['admission_id']])
-    saved = admission_result(owner.db, admitted['admission_id'])['result']
-    assert get_session_admission(owner.db, admission_id=admitted['admission_id'])['outcome'] == 'failed'
+    finish_result(authority_persistence(owner), epoch=owner.epoch, row=row, response=response, outcome='completed',
+                  result=owner.pending_results[admitted.admission_id])
+    saved = admission_result(authority_persistence(owner), admitted.admission_id)['result']
+    assert owner.persistence.admissions.get(admission_id=admitted.admission_id).outcome == 'failed'
     assert saved['failed'] is True and saved['completed'] is False
     assert saved['final_response'] == response == diagnostic[0]
 
@@ -76,17 +74,17 @@ async def test_timeout_diagnostic_keeps_failed_receipt_after_string_projection(o
 async def test_owner_notice_without_execution_is_still_completed(owner):
     from gateway.session_ingress import execute_admission
     from gateway.session_results import finish_result
-    owner.db.create_session('notice', source='telegram')
+    seed_session(owner.persistence, 'notice', 'telegram')
     source = SessionSource(Platform.TELEGRAM, 'notice', user_id='human')
     owner.sessions['notice'] = LiveSession(source, 'notice-route')
     owner.runner._adapter_for_source = lambda source: None
     async def notice(event):
         return 'Gateway is paused by the operator.'
     owner.runner._handle_message = notice
-    admitted = admit_session_input(owner.db, epoch=owner.epoch, principal_id='human',
+    admitted, _created = owner.persistence.admissions.admit(epoch=owner.epoch, principal_id='human',
         session_id='notice', request_id='notice', payload={'text': 'work'})
-    row = claim_session_input(owner.db, epoch=owner.epoch, session_id='notice')
+    row = admission_row(owner.persistence.admissions.claim(epoch=owner.epoch, session_id='notice'))
     response = await execute_admission(owner, SessionRef(owner.profile_id, 'notice'), row)
-    finish_result(owner.db, epoch=owner.epoch, row=row, response=response, outcome='completed',
-                  result=owner.pending_results[admitted['admission_id']])
-    assert get_session_admission(owner.db, admission_id=admitted['admission_id'])['outcome'] == 'completed'
+    finish_result(authority_persistence(owner), epoch=owner.epoch, row=row, response=response, outcome='completed',
+                  result=owner.pending_results[admitted.admission_id])
+    assert owner.persistence.admissions.get(admission_id=admitted.admission_id).outcome == 'completed'

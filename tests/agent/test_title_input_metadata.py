@@ -62,27 +62,21 @@ def test_title_paths_use_same_clean_input(monkeypatch, wrapped, clean):
 ])
 def test_metadata_cannot_create_a_title_or_consume_opening_turn(monkeypatch, tmp_path, message):
     from hermes_state import SessionDB
-    import hermes_state_dbfile
 
-    # State's Darwin WAL-holder scan shares the stdlib threading module. Keep
-    # its real primitives separate so this mock observes title scheduling only.
-    # This module's threading accesses are limited to Lock and Thread.
-    monkeypatch.setattr(hermes_state_dbfile, "threading", SimpleNamespace(
-        Lock=titles.threading.Lock, Thread=titles.threading.Thread,
-    ))
+    # Mock the actual title scheduler, not the process-wide stdlib Thread constructor.
     start = Mock()
-    monkeypatch.setattr(titles.threading, "Thread", start)
+    monkeypatch.setattr("agent.memory_provider.spawn_context_thread", start)
     with SessionDB(tmp_path / "state.db") as db:
         db.create_session(session_id="metadata-test", source="webui")
         titles.maybe_auto_title(db, "metadata-test", message, [])
         assert not titles.is_titleable_user_message(message)
-        assert db.get_session_title("metadata-test") is None
+        assert (db.get_session("metadata-test") or {}).get("title") is None
         start.assert_not_called()
         titles.maybe_auto_title(db, "metadata-test", "Book Vegas flights", [
             {"role": "user", "content": message},
             {"role": "user", "content": "Book Vegas flights"},
         ])
-        assert db.get_session_title("metadata-test") == "Book Vegas flights"
+        assert (db.get_session("metadata-test") or {}).get("title") == "Book Vegas flights"
         start.assert_called_once()
 
 

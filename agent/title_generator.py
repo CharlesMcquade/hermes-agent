@@ -5,6 +5,7 @@ is called, cannot fail), then an **upgrade** from one auxiliary-model call (thin
 JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces
 stage 1 and neither replaces a name the user typed."""
 
+import itertools
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ import re
 
 import threading
 import time
+import unicodedata
 import weakref
 from contextlib import suppress
 from typing import Any, Callable, Optional
@@ -20,7 +22,7 @@ from typing import Any, Callable, Optional
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.delegation_context import is_dispatcher_owned_worker_context
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 from agent.title_policy import TITLE_RESPONSE_FORMAT, normalize_title, title_prompt
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,29 @@ MAX_DERIVED_TITLE_CHARS = 48
 # answer-shaped output guard in generate_title; port of can1357/oh-my-pi#7306). 12 leaves headroom for
 # legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
+# Answer-shaped guard, CJK half: Han, kana and Hangul have no inter-word spaces, so the word count above
+# cannot see a full reply in those scripts (a 76-character Chinese answer counts as three "words"). Length
+# alone does not separate them: a plain Japanese title such as "クラウドストレージの同期エラーを解決する方法"
+# runs 22 characters. A reply is a sentence, so over 20 characters it is rejected when it carries sentence
+# punctuation, and past 40 (twice a sidebar title, where the 80-char cut would truncate it anyway) always.
+_MAX_TITLE_CJK_CHARS = 20
+_MAX_UNPUNCTUATED_TITLE_CJK_CHARS = 40
+# CJK script ranges counted by _cjk_char_count (after NFC): Han (Unified Ideographs, Extension A and the
+# supplementary-plane extensions), kana, Hangul syllables, and the CJK punctuation/fullwidth/halfwidth
+# blocks a reply in those scripts is written with, so "可以，直接在这说。…" counts its punctuation too.
+_CJK_RANGES = (
+    ("\u3000", "\u303f"),
+    ("\u3040", "\u30ff"),
+    ("\u3400", "\u4dbf"),
+    ("\u4e00", "\u9fff"),
+    ("\uac00", "\ud7af"),
+    ("\uff01", "\uff9f"),
+    ("\U00020000", "\U0003134f"),
+)
+# Sentence punctuation after NFKC (fullwidth ！？，． fold to ASCII): the ideographic full stop, and ASCII
+# ! ? , or a full stop that ends a sentence (followed by space or the end, so "Node.js" is not one).
+# Not "、" or ":": list commas and "Topic: detail" prefixes are title shapes.
+_SENTENCE_PUNCTUATION = re.compile(r"[\u3002!?,]|\.(?:\s|$)")
 # Output budget for the title call: room for a fenced/prefixed JSON reply and for a reasoning model that
 # thinks despite the thinking-disabled request, without letting a runaway reply burn minutes.
 TITLE_MAX_TOKENS = 512
@@ -390,7 +415,7 @@ def _summarize_user_message(user_message: str) -> str:
         text = stripped
     described = None
     try:
-        from agent.skill_commands import describe_skill_invocation
+        from session_rules.turns import describe_skill_invocation
         described = describe_skill_invocation(text)
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
@@ -537,8 +562,95 @@ def _title_from_reasoning(message: Any) -> str:
     return ""
 
 
-def _clean_title(text: str) -> Optional[str]:
-    """Normalize a model-produced title, or None when nothing usable remains."""
+# Code pages a model's UTF-8 bytes have come back through (``à`` = C3 A0 read as cp1250 gives ``Ă`` plus
+# a no-break space, which the whitespace collapse below would then make permanent).
+_MOJIBAKE_CODECS = ("cp1252", "cp1250", "latin-1")
+
+
+def _repair_mojibake(text: str, typed: Optional[set[str]] = None) -> str:
+    """``text`` with UTF-8 restored when it is UTF-8 read through a single-byte code page; unchanged
+    otherwise. Strict both ways, so ordinary accented text never round-trips into something else. With
+    ``typed`` (the non-ASCII characters of the title input), a repair must only produce characters the
+    user typed: clean Romanian ``Ăş`` is also valid cp1250-read UTF-8 for ``ú``."""
+    for codec in _MOJIBAKE_CODECS:
+        try:
+            repaired = text.encode(codec).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if repaired != text and (typed is None or all(c in typed for c in repaired if ord(c) > 0x7F)):
+            return repaired
+    return text
+
+
+def _typed_chars(source: str) -> set[str]:
+    """Non-ASCII characters of the title input, in both cases (a title may capitalize what the user typed)."""
+    return {c for char in source if ord(char) > 0x7F for c in (char, *char.upper(), *char.lower())}
+
+
+def _byte_spellings() -> dict[str, tuple[int, ...]]:
+    """Each glyph a UTF-8 byte >= 0x80 shows as under the code pages models echo: cp1252/cp1250/latin-1
+    plus Greek cp1253 and Turkish cp1254 (#149025's ``ArkadaμƒΔ±ΕŸ`` mixes cp1252 and cp1253 glyphs)."""
+    table: dict[str, list[int]] = {}
+    for codec in (*_MOJIBAKE_CODECS, "cp1253", "cp1254"):
+        for byte in range(0x80, 0x100):
+            with suppress(UnicodeDecodeError):
+                spelled = table.setdefault(bytes([byte]).decode(codec), [])
+                if byte not in spelled:
+                    spelled.append(byte)
+    return {glyph: tuple(found) for glyph, found in table.items()}
+
+
+_BYTE_SPELLINGS = _byte_spellings()
+
+
+def _decode_spelled(glyphs: str) -> str:
+    """The single character whose UTF-8 bytes ``glyphs`` spell, one glyph per byte; ``""`` otherwise."""
+    options = [_BYTE_SPELLINGS.get(glyph) for glyph in glyphs]
+    if not all(options):
+        return ""
+    for combo in itertools.product(*options):
+        with suppress(UnicodeDecodeError):
+            decoded = bytes(combo).decode("utf-8")
+            if len(decoded) == 1:
+                return decoded
+    return ""
+
+
+def _repair_spelled_chars(text: str, typed: set[str]) -> Optional[str]:
+    """``text`` with each character the user typed restored where the model spelled out its UTF-8 bytes
+    (a model can emit that mixed with intact words, so a whole-string round trip cannot undo it, #149025).
+
+    Only characters in ``typed`` (``_typed_chars`` of the title input) count as repairs, so ordinary text whose letters happen to form a
+    UTF-8 sequence (Turkish ``İş``) stays as is. Once a repair proves the output is byte-damaged, a leftover
+    letter or symbol the user never typed is undecodable residue (``μƒ``): None, so the caller keeps the
+    title derived from the user's own words."""
+    out: list[str] = []
+    i, repaired = 0, False
+    while i < len(text):
+        char = next((c for n in (2, 3, 4) if (c := _decode_spelled(text[i:i + n])) in typed), "")
+        if char:
+            i += len(char.encode("utf-8"))
+            out.append(char)
+            repaired = True
+        else:
+            out.append(text[i])
+            i += 1
+    if not repaired:
+        return text
+    fixed = "".join(out)
+    if any(c not in typed and ord(c) > 0x7F and unicodedata.category(c)[0] in "LS" for c in fixed):
+        logger.debug("Rejecting byte-damaged title output: %r", text)
+        return None
+    return fixed
+
+
+def _clean_title(text: str, source: str = "") -> Optional[str]:
+    """Normalize a model-produced title, or None when nothing usable remains. ``source`` is the text the
+    title was generated from; it lets byte-spelled characters the user typed be restored."""
+    typed = _typed_chars(source) if source else None
+    text = _repair_mojibake(text or "", typed)
+    if typed is not None and (text := _repair_spelled_chars(text, typed)) is None:
+        return None
     title = _strip_title_prefix(" ".join((text or "").split()).strip("\"'").strip()).rstrip(".!,;:")
     if len(title) > 80:
         title = title[:77].rstrip() + "..."
@@ -580,6 +692,29 @@ def _is_prompt_example_echo(title: str) -> bool:
     """
     normalized = re.sub(r"^[\W_]+|[\W_]+$", "", title.strip(), flags=re.UNICODE).lower()
     return normalized in _EXAMPLE_ECHO_REJECT
+
+
+def _cjk_char_count(text: str) -> int:
+    """CJK script characters in ``text`` after canonical composition (NFD Hangul is conjoining jamo,
+    outside the syllable block, so the same visible reply would otherwise count 0)."""
+    return sum(1 for ch in unicodedata.normalize("NFC", text) if any(lo <= ch <= hi for lo, hi in _CJK_RANGES))
+
+
+def _is_answer_shaped(title: str) -> bool:
+    """True when the model answered the user instead of titling the session.
+
+    Titling is a 3-7 word task with a short result; a reply is a full sentence. The word count covers
+    space-delimited text and the character budget covers CJK, where ``str.split()`` sees no boundaries.
+    NFKC first, for the judgement only (the stored title keeps its bytes): decomposed Hangul is the
+    same text as precomposed, and fullwidth punctuation the same as ASCII. The character count reads
+    the NFC text, where fullwidth punctuation still counts as CJK text.
+    """
+    text = unicodedata.normalize("NFKC", title)
+    if len(text.split()) > _MAX_TITLE_WORDS:
+        return True
+    cjk = _cjk_char_count(title)
+    return cjk > _MAX_UNPUNCTUATED_TITLE_CJK_CHARS or (
+        cjk > _MAX_TITLE_CJK_CHARS and _SENTENCE_PUNCTUATION.search(text) is not None)
 
 
 def generate_title(
@@ -629,8 +764,19 @@ def generate_title(
             reasoning_config={"enabled": False},
         )
         message = response.choices[0].message
-        content = message.content or _title_from_reasoning(message)
-        title = normalize_title(content, user_snippet)
+        body = message.content or _title_from_reasoning(message)
+        # Preserve the fork's legacy tag/name JSON too; upstream's extractor only recognizes title JSON.
+        raw_title = _extract_title_text(body) or body
+        # Preserve upstream's encoding repair and answer guards, then enforce the fork's
+        # open-vocabulary [Tag] Name policy as the storage gate.
+        cleaned = _clean_title(raw_title, user_snippet)
+        if cleaned is not None and _is_answer_shaped(" ".join(raw_title.split())):
+            logger.debug("Rejecting answer-shaped title output (%r)", cleaned)
+            return None
+        if cleaned is not None and _is_prompt_example_echo(cleaned):
+            logger.debug("Rejecting prompt-example echo title: %r", cleaned)
+            return None
+        title = normalize_title(cleaned or "", user_snippet)
         if title is not None:
             return title
         raise ValueError("Title model returned invalid output")
@@ -642,9 +788,12 @@ def generate_title(
         return None
 
 
-def _has_upgraded_title(session_db, session_id: str) -> bool:
+def _has_upgraded_title(session_db, session_id: str, *, persistence=None) -> bool:
     """True when the session already carries an ``llm``/``user`` title (or the check fails)."""
     try:
+        if persistence is not None:
+            from persistence.conversation.sessions import TitleSource
+            return persistence.sessions.get_title_source(session_id) not in (None, TitleSource.DERIVED)
         source_fn = getattr(session_db, "get_session_title_source", None)
         if source_fn is not None:
             return source_fn(session_id) not in (None, "derived")
@@ -653,7 +802,7 @@ def _has_upgraded_title(session_db, session_id: str) -> bool:
         return True
 
 
-def _persist_session_title(session_db, session_id, title, *, source, dedupe=True):
+def _persist_session_title(session_db, session_id, title, *, source, dedupe=True, persistence=None):
     """Persist at *source* authority via ``set_auto_title`` (precedence check + write in one
     transaction, so a manual ``/title`` is never overwritten); None when a higher authority held the row.
     ``ValueError`` = unique-title index collision → append ``#N`` via ``get_next_title_in_lineage``;
@@ -663,7 +812,13 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
     ``ValueError`` means the name is taken by an unrelated session (the unique-title index); rather than
     leave the session untitled (#50537), append a ``#N`` suffix via ``get_next_title_in_lineage``.
     """
-    auto_fn = getattr(session_db, "set_auto_title", None)
+    if persistence is not None:
+        from persistence.conversation.sessions import TitleSource
+
+        def auto_fn(sid, candidate, *, source):
+            return persistence.sessions.set_auto_title(sid, candidate, source=TitleSource(source))
+    else:
+        auto_fn = getattr(session_db, "set_auto_title", None)
 
     def _set(candidate):
         if auto_fn is not None:
@@ -681,20 +836,23 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
     try:
         return _set(title)
     except ValueError:
-        next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
+        next_title_fn = (persistence.sessions.next_title_in_lineage if persistence is not None
+                         else getattr(session_db, "get_next_title_in_lineage", None))
         deduped = next_title_fn(title) if dedupe and next_title_fn is not None else None
         if not deduped or deduped == title:
             raise
         return _set(deduped)
 
 
-def apply_subagent_title(session_db, session_id: str, goal: str) -> Optional[str]:
+def apply_subagent_title(session_db, session_id: str, goal: str, *, persistence=None) -> Optional[str]:
     """Title a delegate run ``Subagent: <goal's first line>`` at ``derived`` authority. No model call:
     runs fan out in bulk, and the prefix alone is what tells them apart from conversations wherever
     ``sessions.show_subagents`` lists them (#97202). Collisions get ``#N``. Never raises."""
     try:
         derived = derive_title(goal) if is_titleable_user_message(goal) else None
-        return _persist_session_title(session_db, session_id, f"Subagent: {derived}", source="derived") if derived else None
+        return _persist_session_title(
+            session_db, session_id, f"Subagent: {derived}", source="derived", persistence=persistence,
+        ) if derived else None
     except Exception:
         logger.debug("Subagent title failed for %s", session_id, exc_info=True)
         return None
@@ -702,7 +860,7 @@ def apply_subagent_title(session_db, session_id: str, goal: str) -> Optional[str
 
 def apply_instant_title(
     session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None,
-    title_preview: str | None = None,
+    title_preview: str | None = None, *, persistence=None,
 ) -> Optional[str]:
     """Write the derived title inline. Returns it, or None (no usable text, or a ``derived``+ title exists). Never raises.
 
@@ -712,7 +870,9 @@ def apply_instant_title(
         return None
     try:
         title = derive_title(user_message, title_preview) if is_titleable_user_message(user_message) else None
-        persisted = _persist_session_title(session_db, session_id, title, source="derived", dedupe=False) if title else None
+        persisted = _persist_session_title(
+            session_db, session_id, title, source="derived", dedupe=False, persistence=persistence,
+        ) if title else None
         if persisted:
             _notify_title(title_callback, persisted, "derived", "Instant-title")
         return persisted
@@ -730,13 +890,15 @@ def auto_title_session(
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
+    *,
+    persistence=None,
 ) -> None:
     """Generate and store the model title (daemon-thread target); skips sessions already carrying an
     ``llm``/``user`` title (a ``derived`` one is expected — upgrading it is the point). Never lets an
     exception escape (the threading excepthook would spray a traceback into the terminal); the canonical
     trigger is the post-``hermes update`` window where lazy imports read NEW source against OLD modules."""
     try:
-        if not session_db or not session_id or _has_upgraded_title(session_db, session_id):
+        if not session_db or not session_id or _has_upgraded_title(session_db, session_id, persistence=persistence):
             return
         # This thread starts AFTER the turn's ambient context was reset; republish it so the call carries
         # the same Portal ``conversation=`` tag (root-of-lineage) and bills usage to this session.
@@ -744,11 +906,12 @@ def auto_title_session(
         from agent.portal_tags import set_conversation_context
         conversation_id = session_id
         with suppress(Exception):
-            conversation_id = session_db.get_conversation_root(session_id) or session_id
+            conversation_id = (persistence.lineage.conversation_root(session_id) if persistence is not None
+                               else session_db.get_conversation_root(session_id)) or session_id
         set_conversation_context(conversation_id)
         # Same for the accounting context, so the title call's token usage is recorded against this session
         # (task='title_generation', #23270).
-        set_accounting_context(session_db, session_id)
+        set_accounting_context(session_db, session_id, persistence=persistence)
         title, source = generate_title(
             user_message, failure_callback=failure_callback, main_runtime=main_runtime,
             runtime_validator=runtime_validator, title_preview=title_preview,
@@ -760,7 +923,7 @@ def auto_title_session(
         if not title:
             return
         try:
-            persisted = _persist_session_title(session_db, session_id, title, source=source)
+            persisted = _persist_session_title(session_db, session_id, title, source=source, persistence=persistence)
         except Exception as e:
             logger.debug("Failed to set auto-generated title: %s", e)
             return
@@ -774,6 +937,14 @@ def auto_title_session(
         _report_failure(failure_callback, e, "Auto-title")
 
 
+def _upgrade_holding_store(hold, *args, **kwargs) -> None:
+    """``auto_title_session`` while ``hold``, the thread's own reference on the store it writes, keeps it open."""
+    try:
+        auto_title_session(*args, **kwargs)
+    finally:
+        hold.close()
+
+
 def _is_real_user_turn(message: Any) -> bool:
     """A question a person actually asked (Hermes persists machinery under ``role="user"``)."""
     if not isinstance(message, dict) or message.get("role") != "user":
@@ -782,9 +953,9 @@ def _is_real_user_turn(message: Any) -> bool:
     return is_titleable_user_message(content if isinstance(content, str) else flatten_message_text(content))
 
 
-def _session_is_untitled(session_db, session_id: str) -> bool:
+def _session_is_untitled(session_db, session_id: str, *, persistence=None) -> bool:
     """No title of any provenance; False when it can't tell (no model call per turn for an unreadable title)."""
-    getter = getattr(session_db, "get_session_title", None)
+    getter = persistence.sessions.get_title if persistence is not None else getattr(session_db, "get_session_title", None)
     try:
         return callable(getter) and not str(getter(session_id) or "").strip()
     except Exception:
@@ -800,13 +971,13 @@ def _kanban_task_title() -> Optional[str]:
         return None
     try:
         from hermes_cli import kanban_db, kanban_db_connect
-        from hermes_state import SessionDB
+        from persistence.conversation.sessions import MAX_TITLE_LENGTH
         with kanban_db_connect.connect_closing() as conn:
             task = kanban_db.get_task(conn, task_id)
         title = " ".join((task.title or "").split()) if task is not None else ""
         # Cards have no length cap; the title store rejects past MAX_TITLE_LENGTH (and the ``#N``
         # retry suffix needs room), which would leave the worker nameless.
-        cap = SessionDB.MAX_TITLE_LENGTH - 4
+        cap = MAX_TITLE_LENGTH - 4
         if len(title) > cap:
             title = title[: cap - 1].rstrip() + "…"
     except Exception:
@@ -825,6 +996,8 @@ def maybe_auto_title(
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
+    *,
+    persistence=None,
 ) -> Optional[threading.Thread]:
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model.
 
@@ -839,8 +1012,8 @@ def maybe_auto_title(
     # placeholder gets turns 2-3, so a failing title model costs at most three calls, not one per turn.
     user_msg_count = sum(1 for m in (conversation_history or []) if _is_real_user_turn(m))
     if user_msg_count > 1 and (
-        _has_upgraded_title(session_db, session_id)
-        or (user_msg_count > 3 and not _session_is_untitled(session_db, session_id))
+        _has_upgraded_title(session_db, session_id, persistence=persistence)
+        or (user_msg_count > 3 and not _session_is_untitled(session_db, session_id, persistence=persistence))
     ):
         return None
     kanban_title = _kanban_task_title()
@@ -849,7 +1022,7 @@ def maybe_auto_title(
         # only competes with the worker for capacity (#111166). Final (``llm``) authority: nothing
         # upgrades it later, and a manual ``/title`` still wins inside ``set_auto_title``.
         with suppress(Exception):
-            persisted = _persist_session_title(session_db, session_id, kanban_title, source="llm")
+            persisted = _persist_session_title(session_db, session_id, kanban_title, source="llm", persistence=persistence)
             if persisted:
                 _notify_title(title_callback, persisted, "llm", "Kanban task title")
         return None
@@ -858,7 +1031,8 @@ def maybe_auto_title(
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return None
-    apply_instant_title(session_db, session_id, user_message, title_callback, title_preview=title_preview)
+    apply_instant_title(session_db, session_id, user_message, title_callback, title_preview=title_preview,
+                        persistence=persistence)
     if not _model_title_upgrade_enabled():
         logger.debug("Instant title persisted; model upgrade disabled by auxiliary.title_generation.model_upgrade_enabled=false")
         return None
@@ -870,11 +1044,18 @@ def maybe_auto_title(
                           runtime_validator=runtime_validator)
     if isinstance(title_preview, str) and title_preview.strip():
         upgrade_kwargs["title_preview"] = title_preview
-    upgrade = spawn_context_thread(
-        auto_title_session, name="auto-title",
-        args=(session_db, session_id, user_message),
-        kwargs=upgrade_kwargs,
-    )
+    target, args = auto_title_session, (session_db, session_id, user_message)
+    if persistence is not None:
+        # The caller may close its handle while the model is still answering: the thread writes through its own
+        # reference, which keeps the profile's store open until the title is written (released when the thread ends,
+        # or when a thread that never started is collected).
+        from persistence_assembly import open_persistence
+        hold = open_persistence(persistence.scope)
+        upgrade_kwargs["persistence"] = hold
+        target, args = _upgrade_holding_store, (hold, *args)
+    upgrade = spawn_context_thread(target, name="auto-title", args=args, kwargs=upgrade_kwargs)
+    if persistence is not None:
+        weakref.finalize(upgrade, hold.close)
     if title_upgrade_must_wait_for_turn(main_runtime):
         logger.debug("Auto-title upgrade deferred past the turn: shares the self-hosted endpoint with the main request")
         return upgrade

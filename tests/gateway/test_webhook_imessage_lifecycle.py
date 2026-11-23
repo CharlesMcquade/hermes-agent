@@ -26,6 +26,13 @@ async def drain(adapter):
             await asyncio.sleep(.01)
 
 
+def session_row(store, session_id):
+    """Read the real persistence row through the fixture's explicitly pinned handle."""
+    row = store._db.sessions.get(session_id)
+    assert row is not None
+    return row.as_session_row()
+
+
 @pytest.fixture
 def harness(tmp_path):
     route = dict(secret="INSECURE_NO_AUTH", persistent_session=True, prompt="Framed: {prompt}",
@@ -35,7 +42,12 @@ def harness(tmp_path):
     sessions = tmp_path / "sessions"
     sessions.mkdir()
     store = SessionStore(sessions, GatewayConfig())
-    adapter.gateway_runner = SimpleNamespace(session_store=store, _session_db=store._db,
+    db = store.persistence
+    assert db is not None
+    # Modern SessionStore only exposes a legacy _db when one is explicitly pinned.
+    # Pin the real handle so this fixture exercises one durable database throughout.
+    store._db = db
+    adapter.gateway_runner = SimpleNamespace(session_store=store, _session_db=db,
         _session_key_for_source=store._generate_session_key,
         _profile_name_for_source=lambda source, **kw: "default")
     events, ids, sent = [], [], []
@@ -79,7 +91,7 @@ async def test_persistent_reply_and_sqlite_lifecycle(harness, invariant):
         assert sent == [("reply one", "one"), ("reply two", "two")]
     else:
         assert ids[0] == ids[1]
-        assert store._db.get_session(ids[0])["ended_at"] is None
+        assert session_row(store, ids[0])["ended_at"] is None
 
 
 @pytest.mark.asyncio
@@ -210,7 +222,7 @@ async def test_one_shot_close_and_unbound_persistent_send_fails_closed(harness):
     a._routes["a"]["persistent_session"] = False
     await post(a, proxy_payload())
     await drain(a)
-    assert store._db.get_session(ids[0])["end_reason"] == "webhook_complete"
+    assert session_row(store, ids[0])["end_reason"] == "webhook_complete"
     assert sent == [("reply one", "fixture-capability")]
     a._routes["a"]["persistent_session"] = True
     await post(a, proxy_payload(), "two")
@@ -263,8 +275,8 @@ async def test_new_runs_real_gateway_reset_and_rotates_sqlite_session(harness):
         await post(a, proxy_payload(), "next")
         await drain(a)
         assert old != ids[-1]
-        assert store._db.get_session(old)["ended_at"] is not None
-        assert store._db.get_session(ids[-1])["ended_at"] is None
+        assert session_row(store, old)["ended_at"] is not None
+        assert session_row(store, ids[-1])["ended_at"] is None
         assert len(sent) == 3
     finally:
         for name in ("_executor", "_housekeeping_executor"):
