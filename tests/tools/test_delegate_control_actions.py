@@ -24,6 +24,38 @@ from tools.delegate_tool import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")
+
+
+def _seed_delegation(ledger, delegation_id: str, owner: str, *, suppressed: bool = False) -> None:
+    """Create an owned unit through the post-refactor coordination ledger API."""
+    from persistence.authority.coordination import OwnerStamp
+
+    with ledger._DB_LOCK, ledger._ledger() as store:
+        store.coordination.record_delegation_dispatch(
+            delegation_id=delegation_id,
+            origin_session="route",
+            origin_ui_session_id="",
+            parent_session_id=owner,
+            dispatched_at=1.0,
+            owner=OwnerStamp(pid=1, started_at=None),
+            task={"goal": delegation_id},
+        )
+        if suppressed:
+            store.coordination.record_delegation_completion(
+                delegation_id=delegation_id,
+                state="completed",
+                completed_at=2.0,
+                event={"type": "async_delegation", "delegation_id": delegation_id},
+                result={"summary": delegation_id},
+            )
+    if suppressed:
+        assert ledger.finalize_parent_delegations(owner, [delegation_id]) == [delegation_id]
+        token = ledger.admit_late_result(owner, delegation_id)
+        assert token is not None
+        assert ledger.settle_late_result(owner, delegation_id, token, "suppress")
+
+
 class _StubChild:
     """Weakref-able stand-in for a live child AIAgent."""
 
@@ -51,17 +83,17 @@ def test_finalize_exact_ids_from_parent_agent_not_caller(monkeypatch, tmp_path):
     from agent.tool_guardrails import _subagent_spawn_count
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for ident, owner in (("mine", "owner"), ("foreign", "other")):
-        with ledger._DB_LOCK, ledger._transaction() as conn:
-            conn.execute("""INSERT INTO async_delegations
-                (delegation_id, origin_session, parent_session_id, state, dispatched_at, updated_at)
-                VALUES (?, 'route', ?, 'running', 1, 1)""", (ident, owner))
+        _seed_delegation(ledger, ident, owner)
     parent = _StubParent()
     parent.session_id = "owner"
     result = json.loads(delegate_task(action="finalize", delegation_ids=["mine", "foreign", "missing", "mine"], parent_agent=parent))
     assert result == {"action": "finalize", "finalized_delegation_ids": ["mine"],
                       "rejected_delegation_ids": ["foreign", "missing"]}
-    with ledger._DB_LOCK, ledger._transaction() as conn:
-        assert conn.execute("SELECT triage_state FROM async_delegation_triage WHERE delegation_id='mine'").fetchone() == ("pending",)
+    with ledger._DB_LOCK:
+        row = ledger._triage_write(lambda conn: conn.execute(
+            "SELECT triage_state FROM async_delegation_triage WHERE delegation_id='mine'"
+        ).fetchone())
+    assert tuple(row) == ("pending",)
     assert ledger.late_result_disposition("other", "foreign") == "wake"
     assert _subagent_spawn_count({"action": "finalize", "delegation_ids": ["mine"]}) == 0
     assert "finalize" in DELEGATE_TASK_SCHEMA["parameters"]["properties"]["action"]["enum"]
@@ -85,12 +117,7 @@ def test_inspect_exact_ids_is_owner_scoped_and_registry_callable(monkeypatch, tm
     from tools.registry import registry
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for ident, owner in (("mine", "owner"), ("foreign", "other")):
-        with ledger._DB_LOCK, ledger._transaction() as conn:
-            conn.execute("""INSERT INTO async_delegations
-                (delegation_id, origin_session, parent_session_id, state, result_json,
-                 delivery_state, dispatched_at, updated_at)
-                VALUES (?, 'route', ?, 'completed', ?, 'suppressed', 1, 1)""",
-                         (ident, owner, json.dumps({"summary": ident})))
+        _seed_delegation(ledger, ident, owner, suppressed=True)
     class InspectParent(_StubParent):
         session_id = "owner"
     parent = InspectParent()
