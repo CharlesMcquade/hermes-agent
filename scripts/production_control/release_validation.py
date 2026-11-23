@@ -218,9 +218,23 @@ def test_environment(name: str, cfg: dict[str, Any], evidence: Path) -> dict[str
     if name == 'webui':
         env['HERMES_WEBUI_STATE_DIR'] = str(evidence / 'webui-runtime-state')
         env['HERMES_WEBUI_TEST_STATE_DIR'] = str(evidence / 'webui-test-state')
+        browsers = playwright_browsers_path()
+        if browsers:
+            # Browser binaries are immutable downloads, not state. The hermetic HOME
+            # has no cache, and the WebUI conftest keeps Playwright's own override.
+            env['PLAYWRIGHT_BROWSERS_PATH'] = browsers
     if not paired:
         env.pop('PYTHONPATH', None)
     return env
+
+
+def playwright_browsers_path(home: Path | None = None) -> str | None:
+    """The real user's Playwright browser cache, when one exists."""
+    home = home or Path.home()
+    for candidate in (home / 'Library/Caches/ms-playwright', home / '.cache/ms-playwright'):
+        if candidate.is_dir():
+            return str(candidate)
+    return None
 
 
 def execute_plan(cfg: dict[str, Any], plan: dict[str, Any], evidence: Path) -> dict[str, Any]:

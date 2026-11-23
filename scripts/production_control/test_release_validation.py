@@ -239,6 +239,22 @@ class ReleaseValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '40 lowercase hexadecimal'):
             validation.validation_plan(self.cfg)
 
+    def test_webui_environment_passes_real_playwright_cache_without_leaking_home(self):
+        evidence = self.root / 'evidence'
+        evidence.mkdir()
+        cache = self.root / 'real-home/Library/Caches/ms-playwright'
+        cache.mkdir(parents=True)
+        with mock.patch.object(validation, 'playwright_browsers_path', return_value=str(cache)):
+            env = validation.test_environment('webui', self.cfg, evidence)
+        self.assertEqual(env['PLAYWRIGHT_BROWSERS_PATH'], str(cache))
+        self.assertEqual(env['HOME'], str(evidence / 'home-webui'))
+        agent_evidence = self.root / 'evidence-agent'
+        agent_evidence.mkdir()
+        self.assertNotIn('PLAYWRIGHT_BROWSERS_PATH',
+                         validation.test_environment('agent', self.cfg, agent_evidence))
+        self.assertIsNone(validation.playwright_browsers_path(self.root / 'no-such-home'))
+        self.assertEqual(validation.playwright_browsers_path(self.root / 'real-home'), str(cache))
+
 
 if __name__ == '__main__':
     unittest.main()
