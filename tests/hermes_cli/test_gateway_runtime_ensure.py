@@ -36,6 +36,8 @@ def test_unmanaged_runtime_drops_session_config_bypass_flags(tmp_path, monkeypat
                         lambda command: (command, None, {'RUNTIME_TEST_OVERLAY': '1'}))
     captured = {}
     child = SimpleNamespace(pid=123)
+    # This test covers direct-spawn environment filtering, not the macOS launchd wrapper.
+    monkeypatch.setattr(start, 'start_gateway_job', lambda *a, **k: None)
     def spawn(command, **kwargs):
         captured.update(kwargs)
         return child

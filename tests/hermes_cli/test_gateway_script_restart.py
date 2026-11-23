@@ -51,6 +51,8 @@ if args[0] == "print":
     print("\\targuments = {{\\n\\t\\t" + {program!r} + "\\n\\t\\tagent\\n\\t}}")
     print("\\tenvironment = {{\\n\\t\\tHERMES_HOME => " + {str(state)!r} + "\\n\\t}}")
     print("\\tpid = " + str(pid) + "\\n}}")
+elif args == ["list"]:
+    pass  # finished one-off job cleanup; no finished jobs in this fixture
 elif args == ["kickstart", "-k", "gui/{os.getuid()}/ai.hermes.gateway"]:
     flag.touch()
 else:
@@ -82,4 +84,5 @@ else:
     assert plist.read_bytes() == before
     commands = [json.loads(line) for line in calls.read_text().splitlines()]
     assert [c for c in commands if c[0] != "print"] == [
+        ["list"],
         ["kickstart", "-k", f"gui/{os.getuid()}/ai.hermes.gateway"]]
