@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
@@ -67,6 +68,43 @@ def valid_test_path(value: Any) -> str:
     return path.as_posix()
 
 
+_SHA = re.compile(r'[0-9a-f]{40}\Z')
+
+
+def _upstream_merge_discovery_base(repo: Path, candidate: str, settings: dict[str, Any]) -> str | None:
+    """Validate an explicitly reviewed upstream merge parent for test discovery.
+
+    Production is the default comparison. This exception is only for a genuine
+    merge whose first-parent history contains the named second parent; an arbitrary
+    ancestor cannot be used to discard inherited test coverage.
+    """
+    value = settings.get('test_discovery_base_commit')
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _SHA.fullmatch(value):
+        raise RuntimeError('test_discovery_base_commit must be 40 lowercase hexadecimal characters')
+    history = git_output(repo, 'log', '--first-parent', '--format=%H %P', candidate)
+    for line in history.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[2] == value:
+            return value
+    raise RuntimeError(
+        'test_discovery_base_commit must be the second parent of a first-parent merge '
+        'in the candidate history'
+    )
+
+
+def _automatic_changed_tests(repo: Path, baseline: str, candidate: str) -> list[str]:
+    present_at_candidate = git_output(
+        repo, 'diff', '--name-only', '--diff-filter=ACMR', baseline, candidate,
+    ).splitlines()
+    return sorted(
+        value for value in present_at_candidate
+        if value.startswith('tests/') and value.endswith('.py')
+        and PurePosixPath(value).name.startswith('test_')
+    )
+
+
 def validation_plan(cfg: dict[str, Any]) -> dict[str, Any]:
     baseline_path = Path(cfg['baseline'])
     baseline = json.loads(baseline_path.read_text())
@@ -98,14 +136,12 @@ def validation_plan(cfg: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError(name + ' validation.tests must be a list')
         test_python = explicit_test_python(name, repo_settings)
         focused = [valid_test_path(value) for value in repo_settings.get('tests', [])]
-        present_at_candidate = git_output(
-            repo, 'diff', '--name-only', '--diff-filter=ACMR', base, candidate,
-        ).splitlines()
-        changed_tests = sorted(
-            value for value in present_at_candidate
-            if value.startswith('tests/') and value.endswith('.py')
-            and PurePosixPath(value).name.startswith('test_')
-        )
+        discovery_base = _upstream_merge_discovery_base(repo, candidate, repo_settings)
+        production_changed_tests = _automatic_changed_tests(repo, base, candidate)
+        if discovery_base is None:
+            changed_tests = production_changed_tests
+        else:
+            changed_tests = _automatic_changed_tests(repo, discovery_base, candidate)
         tests = sorted(set(focused + changed_tests))
         application_changed = any(not value.startswith('tests/') for value in changed)
         if application_changed and not focused and not documentation_only(changed):
@@ -127,6 +163,10 @@ def validation_plan(cfg: dict[str, Any]) -> dict[str, Any]:
             'changed_files': changed, 'changed_count': len(changed), 'tests': tests,
             'paired': bool(repo_settings.get('paired', False)),
         }
+        if discovery_base is not None:
+            plan['repositories'][name]['test_discovery_base_commit'] = discovery_base
+            plan['repositories'][name]['automatic_test_count'] = len(changed_tests)
+            plan['repositories'][name]['production_delta_automatic_test_count'] = len(production_changed_tests)
         if test_python:
             plan['repositories'][name]['test_python'] = test_python
     return plan

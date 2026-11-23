@@ -75,6 +75,37 @@ failures, and rerun the same bounded set. Do not turn a failed file into a
 diagnostics; they are not routine release or upstream-rebaseline gates. The
 upstream test inventory stays intact—selection changes, tests do not.
 
+### Reviewed discovery scope for an explicit upstream merge
+
+A large upstream merge can make the production delta select an unintended
+whole-repository census. Default discovery remains unchanged. For an explicitly
+reviewed upstream merge, the repository may instead name the upstream merge
+parent used specifically for automatic test discovery:
+
+```json
+"validation": {
+  "agent": {
+    "test_discovery_base_commit": "<upstream-merge-second-parent-sha>",
+    "tests": ["tests/tools/test_example.py"]
+  }
+}
+```
+
+This exception is fail-closed: the value must be 40 lowercase hexadecimal
+characters and must be an actual second parent of a merge reachable through the
+candidate's first-parent history. A merely related ancestor, nonexistent object,
+or malformed value is refused. Still include all expected feature regressions
+and direct neighbors in `validation.<repo>.tests`; automatic discovery is only the
+supplement, not the complete review.
+
+The plan preserves the complete production `changed_files` and helper-owned
+metadata. For each explicit merge scope it records `test_discovery_base_commit`,
+`automatic_test_count`, and `production_delta_automatic_test_count`, so inherited
+upstream changes are visible rather than silently waived. Candidate failures in
+the selected scope still stop preparation. This option changes neither test
+selection behavior for ordinary feature releases nor the opt-in full-suite policy;
+it does not delete, consolidate, or weaken tests.
+
 Optional runtime keys:
 
 - `runtime_source` + `runtime_source_root` (together or neither): build the private

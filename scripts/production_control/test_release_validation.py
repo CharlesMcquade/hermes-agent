@@ -91,6 +91,35 @@ class ReleaseValidationTests(unittest.TestCase):
         self.assertEqual(plan['repositories']['agent']['tests'], ['tests/test_neighbor.py'])
         self.assertIn('tests/test_app.py', plan['repositories']['agent']['changed_files'])
 
+    def _real_upstream_merge(self, name):
+        repo = self.repos[name]
+        other = 'webui' if name == 'agent' else 'agent'
+        # This test isolates one repository's discovery mode. The sibling is an
+        # unchanged repository, as in the existing execution tests.
+        self.cfg[other + '_commit'] = self.commits[other][0]
+        production = self.commits[name][0]
+        self.git(repo, 'reset', '--hard', '-q', production)
+        mainline = self.git(repo, 'branch', '--show-current')
+        self.git(repo, 'checkout', '-b', 'validation-upstream')
+        (repo / 'tests/test_inherited.py').write_text('def test_inherited(): pass\n')
+        self.git(repo, 'add', 'tests/test_inherited.py')
+        self.git(repo, 'commit', '-qm', 'upstream test')
+        upstream = self.rev(repo, 'HEAD')
+        self.git(repo, 'checkout', mainline)
+        self.git(repo, 'checkout', '-b', 'validation-overlay')
+        (repo / 'app.py').write_text('VALUE = "overlay"\n')
+        (repo / 'tests/test_overlay.py').write_text('def test_overlay(): pass\n')
+        self.git(repo, 'add', 'app.py', 'tests/test_overlay.py')
+        self.git(repo, 'commit', '-qm', 'overlay behavior')
+        self.git(repo, 'merge', '--no-ff', '-qm', 'merge upstream', 'validation-upstream')
+        candidate = self.rev(repo, 'HEAD')
+        self.cfg[name + '_commit'] = candidate
+        self.cfg['validation'][name] = {
+            'tests': ['tests/test_neighbor.py'],
+            'TODO': ['helper-owned-metadata'],
+        }
+        return repo, production, upstream, candidate
+
     def test_missing_or_out_of_tree_test_is_rejected(self):
         self.cfg['validation']['agent']['tests'] = ['tests/not_here.py']
         with self.assertRaisesRegex(RuntimeError, 'does not exist'):
@@ -182,6 +211,33 @@ class ReleaseValidationTests(unittest.TestCase):
         with mock.patch.object(validation.subprocess, 'run', side_effect=fail_if_test_invoked):
             with self.assertRaisesRegex(RuntimeError, 'clean checkout'):
                 validation.execute_plan(self.cfg, plan, self.root / 'evidence-dirty')
+
+    def test_merge_discovery_base_is_bound_to_real_upstream_parent(self):
+        for name in ('agent', 'webui'):
+            with self.subTest(repo=name):
+                repo, production, upstream, candidate = self._real_upstream_merge(name)
+                broad = validation.validation_plan(self.cfg)
+                self.assertEqual(broad['repositories'][name]['tests'], [
+                    'tests/test_inherited.py', 'tests/test_neighbor.py', 'tests/test_overlay.py'])
+                self.assertNotIn('test_discovery_base_commit', broad['repositories'][name])
+                self.cfg['validation'][name]['test_discovery_base_commit'] = upstream
+                plan = validation.validation_plan(self.cfg)
+                entry = plan['repositories'][name]
+                self.assertEqual(entry['tests'], ['tests/test_neighbor.py', 'tests/test_overlay.py'])
+                self.assertEqual(entry['automatic_test_count'], 1)
+                self.assertEqual(entry['production_delta_automatic_test_count'], 2)
+                self.assertEqual(entry['changed_count'], 3)
+                self.assertEqual(entry['test_discovery_base_commit'], upstream)
+                self.assertEqual(self.cfg['validation'][name]['TODO'], ['helper-owned-metadata'])
+
+    def test_merge_discovery_base_rejects_non_merge_parent_and_bad_sha(self):
+        repo, production, upstream, candidate = self._real_upstream_merge('agent')
+        self.cfg['validation']['agent']['test_discovery_base_commit'] = self.rev(repo, 'HEAD^1')
+        with self.assertRaisesRegex(RuntimeError, 'second parent of a first-parent merge'):
+            validation.validation_plan(self.cfg)
+        self.cfg['validation']['agent']['test_discovery_base_commit'] = 'not-a-sha'
+        with self.assertRaisesRegex(RuntimeError, '40 lowercase hexadecimal'):
+            validation.validation_plan(self.cfg)
 
 
 if __name__ == '__main__':
