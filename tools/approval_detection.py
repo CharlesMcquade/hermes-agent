@@ -455,6 +455,13 @@ def _detect_hardline_command(command: str, *, excluded_descriptions=frozenset())
                 )
             if pattern_re.search(masked_lower if quote_masked else variant_lower):
                 return (True, description)
+    # The floors also read raw heredoc bodies (heredoc_scan_sources above), but
+    # upstream's executable-token matcher skips quoted script text. Retain the
+    # fork's conservative raw-body classification, including its bounded fallback
+    # syntax walk, only when ordinary variants found no other hardline first.
+    if not capped and "<<" in command and (raw_match := _hardline_fallback(
+            command, excluded_descriptions=excluded_descriptions)):
+        return (True, raw_match)
     return (True, _PARSER_LIMIT_DESCRIPTION) if capped else (False, None)
 
 

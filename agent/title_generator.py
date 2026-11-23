@@ -776,7 +776,9 @@ def generate_title(
         if cleaned is not None and _is_prompt_example_echo(cleaned):
             logger.debug("Rejecting prompt-example echo title: %r", cleaned)
             return None
-        title = normalize_title(cleaned or "", user_snippet)
+        # Validate the complete model output: upstream's permissive extractor repairs
+        # ordinary titles but must not erase duplicate fields or trailing prose first.
+        title = normalize_title(body or "", user_snippet)
         if title is not None:
             return title
         raise ValueError("Title model returned invalid output")
