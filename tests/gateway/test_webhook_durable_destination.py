@@ -13,6 +13,9 @@ from tests.gateway.fixtures.webhook_route_authority import mount_authority
 from tests.fixtures.storage_holder import raw_holder
 
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
+
 @pytest.mark.asyncio
 async def test_destination_commits_with_input_and_survives_adapter_restart():
     config = PlatformConfig(enabled=True, extra={'secret': 'owned-secret', 'routes': {
@@ -109,8 +112,8 @@ async def test_missing_destination_never_counts_as_log_delivery():
 @pytest.mark.parametrize('value', [None, 0, 1, 'true', 'false', [], {}, ['true']])
 def test_destination_rejects_non_boolean_persistent_session(value):
     from gateway.platforms.webhook_delivery import validate_destination
-    from hermes_state_runtime import RuntimeStoreError
-    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+    from persistence.core.errors import AuthorityRefusal
+    with pytest.raises(AuthorityRefusal, match='invalid_params'):
         validate_destination({'deliver': 'log', 'deliver_extra': {}, 'persistent_session': value})
 
 
@@ -242,7 +245,7 @@ async def test_persistent_recipes_hold_route_and_per_turn_destination(monkeypatc
 
         runner = adapter._message_handler.__self__
         authority = runner.session_authority
-        rows = authority.db._read_all('SELECT * FROM session_admissions ORDER BY request_id')
+        rows = raw_holder(authority.persistence)._read_all('SELECT * FROM session_admissions ORDER BY request_id')
         assert len(rows) == 2
         envelopes = [json.loads(row['payload_json'])['native_text_v1'] for row in rows]
         for envelope, sender in zip(envelopes, ('alice', 'bob')):
@@ -281,8 +284,8 @@ async def test_persistent_recipes_hold_route_and_per_turn_destination(monkeypatc
         assert sent == [('reply persistent-alice', 'alice'), ('reply persistent-bob', 'bob')]
 
         from gateway.platforms.webhook_delivery import route_digest
-        from hermes_state_runtime import RuntimeStoreError
-        with pytest.raises(RuntimeStoreError, match='not_found'):
+        from persistence.core.errors import AuthorityRefusal
+        with pytest.raises(AuthorityRefusal, match='not_found'):
             route_digest(adapter, restored[0].source.chat_id)
         assert route_digest(adapter, restored[0].source.chat_id,
                             authenticated_route='fixture') == envelopes[0]['webhook_route']
@@ -290,10 +293,10 @@ async def test_persistent_recipes_hold_route_and_per_turn_destination(monkeypatc
         mismatched = json.loads(rows[0]['payload_json'])
         mismatched['native_text_v1']['webhook_delivery']['route'] = 'other'
         entry = runner.session_store.lookup_by_session_key(envelopes[0]['route'])
-        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        with pytest.raises(AuthorityRefusal, match='admission_conflict'):
             await check_native_route(runner, mismatched, rows[0]['target_session_id'],
                                      entry.origin, adapter)
         adapter._routes.pop('fixture')
-        with pytest.raises(RuntimeStoreError, match='not_found'):
+        with pytest.raises(AuthorityRefusal, match='not_found'):
             await check_native_route(runner, json.loads(rows[0]['payload_json']),
                                      rows[0]['target_session_id'], entry.origin, adapter)
