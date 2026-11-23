@@ -16,12 +16,13 @@ from agent.usage_pricing import (
     resolve_billing_route,
 )
 
-
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
     """Keep every pricing lookup offline: bundled snapshot only."""
     monkeypatch.setattr("agent.models_dev.get_model_info", lambda *a, **k: None)
     monkeypatch.setattr(up, "fetch_endpoint_model_metadata", lambda *a, **k: {})
+    monkeypatch.setattr("providers.get_provider_profile", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.config.ensure_hermes_home", lambda: None)
 
 
 # ---------------------------------------------------------------- routed tokens
@@ -194,26 +195,30 @@ def test_insights_stored_row_custom_endpoint_preserves_identity(tmp_path):
     """Controlled stored-Insights row: a custom:endpoint session row flows
     through the real lookup path with its full model id (no collapse, no
     invented price) and does not double count."""
-    from hermes_state import SessionDB
-    session_db = SessionDB(db_path=tmp_path / "k06.db")
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
+
+    session_db = open_persistence(profile_scope(home=tmp_path))
     try:
-        session_db.create_session(session_id="k06", source="cli", model="org/team/model:revision", user_id="u1")
-        session_db.end_session("k06", end_reason="user_exit")
-        # billing_* columns are written by the billing layer, not create_session.
-        session_db._conn.execute(
-            "UPDATE sessions SET billing_provider = 'custom:example', billing_base_url = 'https://proxy.example/v1' WHERE id = 'k06'"
+        session_db.sessions.create(
+            NewSession(session_id="k06", source="cli", model="org/team/model:revision", user_id="u1")
         )
-        session_db._conn.commit()
-        stored = session_db._conn.execute(
-            "SELECT model, billing_provider, billing_base_url FROM sessions WHERE id = 'k06'"
-        ).fetchone()
-        assert stored[1] == "custom:example" and stored[2] == "https://proxy.example/v1"
+        session_db.sessions.end("k06", "user_exit")
+        # billing_* columns are written by the billing layer, not session creation.
+        from tests.fixtures.storage_holder import raw_holder
+        raw_holder(session_db)._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET billing_provider = ?, billing_base_url = ? WHERE id = ?",
+            ("custom:example", "https://proxy.example/v1", "k06"),
+        ))
+        stored = session_db.sessions.get("k06")
+        assert stored is not None
+        assert stored.billing_provider == "custom:example" and stored.billing_base_url == "https://proxy.example/v1"
         from agent.insights import _estimate_cost
-        estimated, status = _estimate_cost(stored[0], provider=stored[1], base_url=stored[2])
+        estimated, status = _estimate_cost(stored.model, provider=stored.billing_provider, base_url=stored.billing_base_url)
         assert status == "unknown"
         assert estimated == 0.0
         # Aggregation over the same row twice must not double count an unknown.
-        totals = [_estimate_cost(stored[0], provider=stored[1], base_url=stored[2])[0] for _ in range(2)]
+        totals = [_estimate_cost(stored.model, provider=stored.billing_provider, base_url=stored.billing_base_url)[0] for _ in range(2)]
         assert totals == [0.0, 0.0]
     finally:
         session_db.close()
