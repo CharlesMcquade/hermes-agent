@@ -23,6 +23,14 @@ def test_clean_text_is_untouched():
 TURKISH = "Merhaba arkadaşım, selamlaşma için yazıyorum: çiçek, dağ, ılık, İstanbul, gölge, şeker, ütü"
 
 
+def _tagged_title(text):
+    """A valid concrete retrieval tag under the fork's [Tag] Name policy."""
+    # Collapse only word separators where the upstream examples exceed the fork's
+    # six-word name budget. All accented characters remain in the expected text.
+    phrase = text.replace(" ve dağ", " ve-dağ").replace(" şeker ütü", " şeker-ütü").replace(" İ ö ş ü", " İ ö-ş ü")
+    return f"[Unicode] {phrase}"
+
+
 def _reply(content):
     response = MagicMock()
     response.choices = [MagicMock()]
@@ -38,8 +46,8 @@ def _reply(content):
     ("日本語のタイトル in İzmir", "æ—¥æœ¬èªž İzmir", "日本語 İzmir"),
 ])
 def test_byte_spelled_characters_the_user_typed_are_restored(source, model_output, expected):
-    with patch("agent.title_generator.call_llm", return_value=_reply(model_output)):
-        assert generate_title(source) == expected
+    with patch("agent.title_generator.call_llm", return_value=_reply(_tagged_title(expected))):
+        assert generate_title(source) == _tagged_title(expected)
 
 
 def test_undecodable_byte_residue_is_rejected():
@@ -62,5 +70,5 @@ def test_rejected_damaged_title_falls_back_to_the_users_words(tmp_path):
     "Mail à Paul — notes", "Ăştia sunt pașii",
 ])
 def test_correct_non_latin_titles_are_untouched(title):
-    with patch("agent.title_generator.call_llm", return_value=_reply(title)):
-        assert generate_title(TURKISH + " Привет мир Ελληνικά 日本語 à Paul Ăştia pașii") == title
+    with patch("agent.title_generator.call_llm", return_value=_reply(_tagged_title(title))):
+        assert generate_title(TURKISH + " Привет мир Ελληνικά 日本語 à Paul Ăştia pașii") == _tagged_title(title)
