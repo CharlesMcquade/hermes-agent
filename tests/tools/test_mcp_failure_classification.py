@@ -61,6 +61,18 @@ class TestClassifyMcpFailure:
         assert _classify_mcp_failure(anyio.ClosedResourceError()) == "transient"
 
 
+    def test_transport_error_remains_transient_after_lazy_oauth_import(self, monkeypatch):
+        import sys
+        from tools import mcp_tool_errors
+
+        monkeypatch.setattr(mcp_tool_errors, "_AUTH_ERROR_TYPES", None)
+        monkeypatch.delitem(sys.modules, "tools.mcp_oauth", raising=False)
+
+        assert mcp_tool_errors._classify_mcp_failure(
+            ConnectionError("All connection attempts failed")
+        ) == "transient"
+
+
     def test_permanent_inside_taskgroup(self):
         # Classification must apply to the UNWRAPPED root cause.
         g = _group(_group(FileNotFoundError("cmd not found")))
