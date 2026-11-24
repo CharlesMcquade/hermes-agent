@@ -125,7 +125,8 @@ def apply_validation_scope(cfg, a):
         # with discovered tests, so the neighbor map must go when the reviewed
         # merge parent defines discovery. Keep it visible under TODO.
         repo["TODO"] = sorted(set(repo.get("TODO", [])) | set(repo.get("tests", [])))
-        repo["tests"] = []
+        focused = getattr(a, name + "_focused_tests", None)
+        repo["tests"] = sorted(set(json.loads(Path(focused).read_text()))) if focused else []
     if a.webui_paired:
         v.setdefault("webui", {})["paired"] = True
     if a.validation_timeout:
@@ -305,6 +306,8 @@ def main():
         return value
     ap.add_argument("--agent-discovery-base", type=hex40, help="40-hex upstream merge parent for Agent test discovery (opt-in)")
     ap.add_argument("--webui-discovery-base", type=hex40, help="40-hex upstream merge parent for WebUI test discovery (opt-in)")
+    ap.add_argument("--agent-focused-tests", help="JSON list file of fork-overlay neighbor tests to keep when --agent-discovery-base is set")
+    ap.add_argument("--webui-focused-tests", help="JSON list file of fork-overlay neighbor tests to keep when --webui-discovery-base is set")
     ap.add_argument("--webui-paired", action="store_true", help="run the WebUI gate paired against the candidate Agent")
     ap.add_argument("--validation-timeout", type=int, help="per-repo application test budget in seconds (1-900)")
     ap.add_argument("--accept-runtime-drift", default=DEFAULT_DRIFT,

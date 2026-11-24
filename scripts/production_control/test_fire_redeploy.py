@@ -11,19 +11,24 @@ def _run(*args, timeout=60):
     return subprocess.run([PY, "-B", str(TOOL), *args], text=True, capture_output=True, env=ENV, timeout=timeout)
 
 
-def test_validation_scope_flags_map_onto_the_gate_config():
+def test_validation_scope_flags_map_onto_the_gate_config(tmp_path):
     sys.path.insert(0, str(TOOL.parent))
     import argparse, fire_redeploy as fr
+    focused = tmp_path / "agent-focused.json"
+    focused.write_text('["tests/test_overlay.py", "tests/test_overlay.py"]')
     a = argparse.Namespace(agent_discovery_base="a" * 40, webui_discovery_base=None,
+                           agent_focused_tests=str(focused), webui_focused_tests=None,
                            webui_paired=True, validation_timeout=900)
     cfg = fr.apply_validation_scope({"validation": {"agent": {"tests": ["tests/test_x.py"]}}}, a)
-    # discovery replaces the production-delta neighbor map (else focused ∪ discovered = whole suite)
-    assert cfg["validation"]["agent"] == {"tests": [], "TODO": ["tests/test_x.py"],
+    # discovery replaces the production-delta neighbor map (else focused ∪ discovered = whole suite);
+    # the reviewed fork-overlay list is the only focused input
+    assert cfg["validation"]["agent"] == {"tests": ["tests/test_overlay.py"], "TODO": ["tests/test_x.py"],
                                           "test_discovery_base_commit": "a" * 40}
     assert cfg["validation"]["webui"] == {"paired": True}
     assert cfg["validation"]["timeout_seconds"] == 900
     # default: nothing added, production->candidate scope stays the gate default
     none = argparse.Namespace(agent_discovery_base=None, webui_discovery_base=None,
+                              agent_focused_tests=None, webui_focused_tests=None,
                               webui_paired=False, validation_timeout=None)
     assert fr.apply_validation_scope({"validation": {}}, none) == {"validation": {}}
 
