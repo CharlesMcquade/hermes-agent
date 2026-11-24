@@ -48,7 +48,7 @@ def test_provision_webui_test_venv_reuses_existing_and_installs_dev_plus_playwri
     fr.provision_webui_test_venv(webui, "/usr/bin/python3")
     assert calls[0][:3] == ["/usr/bin/python3", "-m", "venv"]
     assert calls[1][-2:] == ["-r", str(webui / "requirements-dev.txt")]
-    assert calls[2][-1] == "playwright"
+    assert calls[2][-2:] == ["playwright", "requests"]
 
 
 def test_discovery_base_must_be_40_hex():

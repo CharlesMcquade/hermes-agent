@@ -120,7 +120,10 @@ def provision_webui_test_venv(webui, base_python):
     subprocess.run([base_python, "-m", "venv", str(venv)], check=True)
     pip = [str(python), "-m", "pip", "install", "-q", "--disable-pip-version-check"]
     subprocess.run(pip + ["-r", str(Path(webui) / "requirements-dev.txt")], check=True)
-    subprocess.run(pip + ["playwright"], check=True)
+    # `requests` is the one Agent runtime import the paired contract tests reach
+    # (api.agent_runtime.require_ai_agent_class -> run_agent -> managed_modal);
+    # WebUI's own requirements do not carry it.
+    subprocess.run(pip + ["playwright", "requests"], check=True)
     return python
 
 
