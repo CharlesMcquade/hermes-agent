@@ -118,7 +118,14 @@ def apply_validation_scope(cfg, a):
     for name, base in (("agent", a.agent_discovery_base), ("webui", a.webui_discovery_base)):
         if not base:
             continue
-        v.setdefault(name, {})["test_discovery_base_commit"] = base
+        repo = v.setdefault(name, {})
+        repo["test_discovery_base_commit"] = base
+        # new_config's focused list is the production-delta neighbor map, which
+        # across an upstream merge is the whole suite; the gate unions focused
+        # with discovered tests, so the neighbor map must go when the reviewed
+        # merge parent defines discovery. Keep it visible under TODO.
+        repo["TODO"] = sorted(set(repo.get("TODO", [])) | set(repo.get("tests", [])))
+        repo["tests"] = []
     if a.webui_paired:
         v.setdefault("webui", {})["paired"] = True
     if a.validation_timeout:
