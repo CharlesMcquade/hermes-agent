@@ -175,7 +175,13 @@ def new_config(production, release_id, out, repos=None):
         available = set(git(repo, 'ls-tree', '-r', '--name-only', candidate).splitlines())
         tests, todo = [], []
         for path in changed:
-            candidates = ([path] if path.startswith('tests/') else []) + [
+            # Only pytest modules are runnable tests. Fixtures, READMEs and binary
+            # assets under tests/ (e.g. tests/fixtures/audio/voice_note.ogg) must
+            # never reach the runner, which opens every selected file as UTF-8.
+            is_test_module = (
+                path.startswith('tests/') and path.endswith('.py')
+                and Path(path).name.startswith('test_'))
+            candidates = ([path] if is_test_module else []) + [
                 'tests/test_' + Path(path).stem + '.py',
                 str(Path(path).with_name('test_' + Path(path).name))]
             match = next((test for test in candidates if test in available and test.startswith('tests/')), None)

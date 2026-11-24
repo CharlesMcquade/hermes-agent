@@ -58,6 +58,30 @@ class ReleaseWorkflowTests(unittest.TestCase):
         return subprocess.run(['/usr/bin/git', '-C', str(repo), *args],
                               capture_output=True, check=True)
 
+    def test_new_config_selects_only_pytest_modules_from_changed_tests_dir(self):
+        # Fixtures, docs and binary assets under tests/ are not runnable tests;
+        # the runner reads every selected file as UTF-8 and crashes on an .ogg.
+        base = self.sha
+        (self.source / 'tests' / 'fixtures' / 'audio').mkdir(parents=True)
+        (self.source / 'tests' / 'fixtures' / 'audio' / 'voice_note.ogg').write_bytes(b'OggS\x00\x02\xff\xfe\x80')
+        (self.source / 'tests' / 'AGENTS.md').write_text('notes\n')
+        (self.source / 'tests' / 'conftest.py').write_text('# helpers\n')
+        (self.source / 'tests' / 'test_real.py').write_text('def test_ok():\n    pass\n')
+        (self.source / 'tests' / 'test_voice_note.py').write_text('def test_ogg():\n    pass\n')
+        self.git(self.source, 'add', '.')
+        self.git(self.source, 'commit', '-qm', 'tests delta')
+        production = self.root / 'production-release.json'
+        production.write_text(json.dumps({'source_commits': {'agent': base, 'webui': base}}))
+        cfg = workflow.new_config(production, 'unit-r1', self.root / 'cfg.json',
+                                 repos={'agent': self.source, 'webui': self.source})
+        for name in ('agent', 'webui'):
+            tests = cfg['validation'][name]['tests']
+            self.assertEqual(tests, ['tests/test_real.py', 'tests/test_voice_note.py'])
+            # the .ogg maps to its neighbor test_voice_note.py rather than being run itself
+            self.assertNotIn('tests/fixtures/audio/voice_note.ogg', cfg['validation'][name]['TODO'])
+            self.assertIn('tests/AGENTS.md', cfg['validation'][name]['TODO'])
+            self.assertIn('tests/conftest.py', cfg['validation'][name]['TODO'])
+
     def test_genuine_snapshot_and_commit_objects(self):
         result = workflow.provenance(self.manifest)
         self.assertEqual(result['agent']['commit'], self.sha)
