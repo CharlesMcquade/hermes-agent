@@ -104,6 +104,28 @@ def phase_retire(_op, _a):
         sys.exit("RETIRE FAILED (previous round not settled-verified yet?)")
 
 
+def apply_validation_scope(cfg, a):
+    """Opt-in upstream-merge discovery scope for release_validation.
+
+    Default scope is production -> candidate. Across an upstream merge that is
+    effectively the whole suite (30k+ tests) and cannot finish inside the gate
+    budget. `--<repo>-discovery-base <40-hex>` names the reviewed upstream merge
+    parent; release_validation refuses it unless it is the second parent of a
+    first-parent merge in the candidate history, so it cannot shrink coverage of
+    fork-only work. `--validation-timeout` is the per-repo budget (<= 900 s).
+    """
+    v = cfg.setdefault("validation", {})
+    for name, base in (("agent", a.agent_discovery_base), ("webui", a.webui_discovery_base)):
+        if not base:
+            continue
+        v.setdefault(name, {})["test_discovery_base_commit"] = base
+    if a.webui_paired:
+        v.setdefault("webui", {})["paired"] = True
+    if a.validation_timeout:
+        v["timeout_seconds"] = a.validation_timeout
+    return cfg
+
+
 def phase_build(_op, a):
     """Mint a fresh config (release_workflow.new_config) from clean checkouts of exact commits."""
     sys.path.insert(0, str(TOOLS))
@@ -133,6 +155,7 @@ def phase_build(_op, a):
     cfg.update(controls=str(CONTROLS), control_refresh_sha256=CONTROL_REFRESH,
                continuation_dir=str(op / "continuation"),
                accept_runtime_drift=a.accept_runtime_drift.split(",") if a.accept_runtime_drift else [])
+    apply_validation_scope(cfg, a)
     (op / "build-config.json").write_text(json.dumps(cfg, indent=2) + "\n")
     st = load(op); st.update(op_id=op_id, release=release, candidate=str(out / "release.json")); save(op, st)
     r = run([PY, "-B", TOOLS / "release_workflow.py", "--config", op / "build-config.json", "build"])
@@ -269,6 +292,14 @@ def main():
     ap.add_argument("--agent-repo", default=str(HOME / ".hermes/hermes-agent"))
     ap.add_argument("--webui-commit", help="commit or ref (default fork/master)")
     ap.add_argument("--agent-commit", help="commit or ref (default fork/main)")
+    def hex40(value):
+        if not HEX40.match(value):
+            raise argparse.ArgumentTypeError("discovery base must be a 40-hex commit, not a ref: " + value)
+        return value
+    ap.add_argument("--agent-discovery-base", type=hex40, help="40-hex upstream merge parent for Agent test discovery (opt-in)")
+    ap.add_argument("--webui-discovery-base", type=hex40, help="40-hex upstream merge parent for WebUI test discovery (opt-in)")
+    ap.add_argument("--webui-paired", action="store_true", help="run the WebUI gate paired against the candidate Agent")
+    ap.add_argument("--validation-timeout", type=int, help="per-repo application test budget in seconds (1-900)")
     ap.add_argument("--accept-runtime-drift", default=DEFAULT_DRIFT,
                     help="comma list of reviewed runtime package drift (empty string = none)")
     ap.add_argument("--profile", default="default"); ap.add_argument("--workspace", default=str(HOME / "hermes-dev"))
