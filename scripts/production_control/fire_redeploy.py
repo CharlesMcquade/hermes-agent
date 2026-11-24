@@ -233,12 +233,35 @@ def phase_prepare(op, _a):
     print(json.dumps({"evidence_dir": st["evidence_dir"]}))
 
 
+GATE_SCRATCH = ("home-", "tmp-")
+
+
+def evidence_files(root):
+    """Files the plan pins as approval evidence: reports, logs, canary, plan.json.
+
+    The application gates run with an isolated HOME/TMPDIR *inside* the evidence
+    dir (application-validation/home-*, tmp-*); that is test scratch (uv caches,
+    pytest tmp) with world-writable lock files, not evidence. Pinning it makes
+    the safe_redeploy admission check reject the plan ("Unsafe input owner/mode")
+    and bloats the plan to tens of thousands of hashes.
+    """
+    out = []
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root).parts
+        if len(rel) >= 2 and rel[0] == "application-validation" and rel[1].startswith(GATE_SCRATCH):
+            continue
+        out.append(p)
+    return out
+
+
 def phase_plan(op, a):
     sys.path.insert(0, str(TOOLS))
     import continuation_publish as cp  # noqa
     st = load(op)
     anchor = cp.human_anchor(str(HOME / ".hermes"), a.session)
-    evidence = [{"path": str(p), "sha256": sha(p)} for p in sorted(Path(st["evidence_dir"]).rglob("*")) if p.is_file()]
+    evidence = [{"path": str(p), "sha256": sha(p)} for p in evidence_files(Path(st["evidence_dir"]))]
     resume = (f"Automatic redeploy continuation (operation {st['op_id']}). The trusted runner completed the "
               f"/safe-hermes-redeploy deployment steps and resumed this session. Read {op}/state.json, "
               f"independently verify the running release ({st['release']}, manifest {st['candidate_sha256']}), "

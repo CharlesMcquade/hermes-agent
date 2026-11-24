@@ -51,6 +51,22 @@ def test_provision_webui_test_venv_reuses_existing_and_installs_dev_plus_playwri
     assert calls[2][-2:] == ["playwright", "requests"]
 
 
+def test_evidence_files_pin_reports_and_logs_but_not_gate_scratch(tmp_path):
+    sys.path.insert(0, str(TOOL.parent))
+    import fire_redeploy as fr
+    av = tmp_path / "application-validation"
+    for rel in ["report.json", "canary/start-1.log", "application-validation/agent.log",
+                "application-validation/webui.log", "application-validation/plan.json",
+                "application-validation/home-agent/.cache/uv/.lock",
+                "application-validation/home-webui/.hermes/x", "application-validation/tmp-agent/uv-1.lock",
+                "application-validation/tmp-webui/pytest-of-u/requirements.txt"]:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x")
+    got = [str(p.relative_to(tmp_path)) for p in fr.evidence_files(tmp_path)]
+    assert got == ["application-validation/agent.log", "application-validation/plan.json",
+                   "application-validation/webui.log", "canary/start-1.log", "report.json"]
+
+
 def test_discovery_base_must_be_40_hex():
     r = _run("build", "--session", "s", "--agent-discovery-base", "fork/main",
              "--webui-commit", "b" * 40, "--agent-commit", "b" * 40)
