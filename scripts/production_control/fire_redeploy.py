@@ -104,6 +104,26 @@ def phase_retire(_op, _a):
         sys.exit("RETIRE FAILED (previous round not settled-verified yet?)")
 
 
+def provision_webui_test_venv(webui, base_python):
+    """Give a detached WebUI build checkout the test venv the paired gate requires.
+
+    release_validation's paired mode wants `<webui_repo>/.venv/bin/python`; a fresh
+    worktree has none and scripts/test.sh would build one without Playwright, so the
+    36 browser tests silently skip. Mirror the reviewed staging venv instead:
+    requirements-dev plus playwright (browsers come from the user's immutable cache
+    via PLAYWRIGHT_BROWSERS_PATH, which the gate already passes).
+    """
+    venv = Path(webui) / ".venv"
+    python = venv / "bin/python"
+    if python.is_file():
+        return python
+    subprocess.run([base_python, "-m", "venv", str(venv)], check=True)
+    pip = [str(python), "-m", "pip", "install", "-q", "--disable-pip-version-check"]
+    subprocess.run(pip + ["-r", str(Path(webui) / "requirements-dev.txt")], check=True)
+    subprocess.run(pip + ["playwright"], check=True)
+    return python
+
+
 def apply_validation_scope(cfg, a):
     """Opt-in upstream-merge discovery scope for release_validation.
 
@@ -159,6 +179,8 @@ def phase_build(_op, a):
         if require_clean or git(wt, "rev-parse", "HEAD") != commits[name]:
             sys.exit(f"{name}: checkout {wt} is not clean at {commits[name]}")
         repos[name] = wt
+    if a.webui_paired:
+        provision_webui_test_venv(repos["webui"], a.webui_test_python)
     cfg = rw.new_config(BASE / "production-release.json", release, op / "build-config.json", repos)
     cfg.update(controls=str(CONTROLS), control_refresh_sha256=CONTROL_REFRESH,
                continuation_dir=str(op / "continuation"),
@@ -308,6 +330,8 @@ def main():
     ap.add_argument("--webui-discovery-base", type=hex40, help="40-hex upstream merge parent for WebUI test discovery (opt-in)")
     ap.add_argument("--agent-focused-tests", help="JSON list file of fork-overlay neighbor tests to keep when --agent-discovery-base is set")
     ap.add_argument("--webui-focused-tests", help="JSON list file of fork-overlay neighbor tests to keep when --webui-discovery-base is set")
+    ap.add_argument("--webui-test-python", default="/opt/homebrew/bin/python3.13",
+                    help="base interpreter (3.11-3.13) for the paired WebUI test venv")
     ap.add_argument("--webui-paired", action="store_true", help="run the WebUI gate paired against the candidate Agent")
     ap.add_argument("--validation-timeout", type=int, help="per-repo application test budget in seconds (1-900)")
     ap.add_argument("--accept-runtime-drift", default=DEFAULT_DRIFT,
