@@ -96,11 +96,8 @@ def _replay_pending(conn, rows, now: float) -> tuple[PendingCompletion, ...]:
     offered = []
     for delegation_id, payload, completed_at, dispatched_at in rows:
         age_basis = completed_at or dispatched_at
-        opted_in = conn.execute("""SELECT 1 FROM async_delegation_triage
-            WHERE delegation_id=? AND (triage_state IN ('pending','claimed')
-               OR (triage_state='settled' AND decision='wake'))""", (delegation_id,)).fetchone()
         # Parent-owned unresolved late-result triage is durable work, not an ordinary stale wake.
-        if not opted_in and age_basis and (now - age_basis) > DELEGATION_REPLAY_MAX_AGE_SECONDS:
+        if not _completion_replayable(conn, delegation_id, now, completed_at, dispatched_at):
             conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
                           delivery_claim=NULL, delivery_claimed_at=NULL,
                           updated_at=?
@@ -118,6 +115,15 @@ def _replay_pending(conn, rows, now: float) -> tuple[PendingCompletion, ...]:
 def _past_replay_age(now: float, completed_at: Optional[float], dispatched_at: Optional[float]) -> bool:
     age_basis = completed_at or dispatched_at
     return bool(age_basis) and (now - age_basis) > DELEGATION_REPLAY_MAX_AGE_SECONDS
+
+
+def _completion_replayable(conn, delegation_id: str, now: float,
+                           completed_at: Optional[float], dispatched_at: Optional[float]) -> bool:
+    """Read and write paths share the quiet-triage exemption from ordinary replay expiry."""
+    opted_in = conn.execute("""SELECT 1 FROM async_delegation_triage
+        WHERE delegation_id=? AND (triage_state IN ('pending','claimed')
+           OR (triage_state='settled' AND decision='wake'))""", (delegation_id,)).fetchone()
+    return bool(opted_in) or not _past_replay_age(now, completed_at, dispatched_at)
 
 
 # A JSON object column as a dict: ``{}`` when empty, undecodable or not an object.
@@ -775,7 +781,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
                                       dead_owners: frozenset[RecordedOwner],
                                       lost_ids: frozenset[DelegationId] = frozenset()) -> tuple[PendingCompletion, ...]:
         def _read(conn):
-            return conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
+            rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
                           owner_pid, owner_started_at, delivery_attempts
                    FROM async_delegations
                    WHERE state!='running' AND delivery_state='pending'
@@ -783,6 +789,8 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
                      AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
                    ORDER BY completed_at, delegation_id""",
                 (now - DELEGATION_ORPHAN_STALE_SECONDS, now - DELEGATION_CLAIM_STALE_SECONDS)).fetchall()
+            return tuple(row for row in rows
+                         if _completion_replayable(conn, row[0], now, row[2], row[3]))
         with translated():
             rows = self._ledger_read(_read)
         return tuple(
@@ -791,20 +799,22 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             for delegation_id, payload, completed_at, dispatched_at, pid, started, attempts in rows
             if (delegation_id in lost_ids or (delegation_id not in exclude_ids
                                               and RecordedOwner(pid=pid, started_at=started) in dead_owners))
-            and (attempts or 0) < DELEGATION_MAX_DELIVERY_ATTEMPTS
-            and not _past_replay_age(now, completed_at, dispatched_at))
+            and (attempts or 0) < DELEGATION_MAX_DELIVERY_ATTEMPTS)
 
     # The completion ``reopen_admitted_completion`` returns, read before the reopen commits.
     def get_admitted_completion(self, *, delegation_id: DelegationId) -> Optional[PendingCompletion]:
         def _read(conn):
-            return conn.execute("""SELECT event_json, completed_at, dispatched_at, delivery_attempts
+            row = conn.execute("""SELECT event_json, completed_at, dispatched_at, delivery_attempts
                    FROM async_delegations
                    WHERE delegation_id=? AND delivery_state='delivered' AND event_json IS NOT NULL""",
                 (delegation_id,)).fetchone()
+            if row is not None and not _completion_replayable(
+                    conn, delegation_id, time.time(), row[1], row[2]):
+                return None
+            return row
         with translated():
             row = self._ledger_read(_read)
-        if (row is None or row[3] >= DELEGATION_MAX_DELIVERY_ATTEMPTS
-                or _past_replay_age(time.time(), row[1], row[2])):
+        if row is None or row[3] >= DELEGATION_MAX_DELIVERY_ATTEMPTS:
             return None
         return PendingCompletion(delegation_id=delegation_id, event=json.loads(row[0]), completed_at=row[1],
                                  dispatched_at=row[2])

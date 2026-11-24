@@ -84,6 +84,47 @@ def test_replay_cutoff_preserves_only_unresolved_opted_in(monkeypatch, tmp_path)
     assert ledger.get_durable_delegation("ordinary")["delivery_state"] == "dropped"
 
 
+def test_old_opted_in_orphan_replays_while_ordinary_expires(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    old = time.time() - 60 * 3600
+    for ident in ("opted", "ordinary"):
+        _finished(ident, completed_at=old)
+    assert ledger.finalize_parent_delegations("parent-A", ["opted"]) == ["opted"]
+    monkeypatch.setattr(ledger, "_offered", {
+        (ledger.hermes_home_key(tmp_path), "opted"),
+        (ledger.hermes_home_key(tmp_path), "ordinary"),
+    })
+    monkeypatch.setattr(ledger, "_reoffered_at", {})
+    monkeypatch.setattr(ledger, "_owner_liveness", lambda: (lambda pid, started: False))
+    monkeypatch.setattr(ledger, "recover_abandoned_delegations", lambda: 0)
+    events = queue.Queue()
+    assert ledger.sweep_orphaned_completions(events, now=time.time()) == 1
+    event = events.get_nowait()
+    assert event["restored"] is True
+    assert events.empty()
+    assert ledger.get_durable_delegation("opted")["delivery_state"] == "pending"
+    assert ledger.get_durable_delegation("ordinary")["delivery_state"] == "dropped"
+
+
+def test_old_opted_in_admitted_requeues_while_ordinary_expires(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    old = time.time() - 60 * 3600
+    for ident in ("opted", "ordinary"):
+        _finished(ident, completed_at=old)
+    assert ledger.finalize_parent_delegations("parent-A", ["opted"]) == ["opted"]
+    def _acknowledge(conn):
+        conn.execute("UPDATE async_delegations SET delivery_state='delivered'")
+    with ledger._DB_LOCK:
+        ledger._triage_write(_acknowledge)
+    events = queue.Queue()
+    assert ledger.requeue_admitted_completion("opted", events) is True
+    assert ledger.requeue_admitted_completion("ordinary", events) is False
+    assert events.qsize() == 1
+    assert events.get_nowait()["restored"] is True
+    assert ledger.get_durable_delegation("opted")["delivery_state"] == "pending"
+    assert ledger.get_durable_delegation("ordinary")["delivery_state"] == "dropped"
+
+
 def test_prune_removes_orphans_and_acknowledged_only(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for ident in ("pending", "delivered", "orphan"):

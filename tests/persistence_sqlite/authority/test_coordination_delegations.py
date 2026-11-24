@@ -119,10 +119,15 @@ def legacy_state(monkeypatch):
 
 
 def run_ledger_both(backend, scope, monkeypatch, rows: list[dict[str, Any]], legacy: Callable[[], Any],
-                    verb: Callable[[Any], Any]):
+                    verb: Callable[[Any], Any], *, protected_ids: tuple[str, ...] = ()):
     """Seed, run the legacy function on the profile home, restore the seed, run the verb; assert equal rows."""
     path = store_for(scope)
     seed_rows(path, rows)
+    if protected_ids:
+        with sqlite3.connect(path) as conn:
+            conn.executemany("""INSERT INTO async_delegation_triage
+                (delegation_id, parent_session_id, finalized_at) VALUES (?, 'parent-1', ?)""",
+                [(delegation_id, NOW) for delegation_id in protected_ids])
     snapshot = path.with_name("seed.db")
     copy_db(path, snapshot)
     with monkeypatch.context() as patch:
@@ -296,6 +301,34 @@ def test_sweep_orphaned_completions(backend, scope_a, monkeypatch):
     assert_same(before, after, lambda pending: (len(pending), _offered_events(pending, startup=False)))
 
 
+def test_old_opted_in_orphan_read_ahead_replays_while_ordinary_expires(backend, scope_a, monkeypatch):
+    monkeypatch.setattr(ad, "recover_abandoned_delegations", lambda: 0)
+    ids = ("opted", "ordinary")
+    rows = [row(ident, dispatched_at=NOW - 60 * 3600, completed_at=NOW - 60 * 3600,
+                updated_at=NOW - 60 * 3600) for ident in ids]
+    target: queue.Queue = queue.Queue()
+
+    def legacy():
+        ad._offered.update((ad.hermes_home_key(ad.get_hermes_home()), ident) for ident in ids)
+        count = ad.sweep_orphaned_completions(target, now=NOW)
+        return count, drain(target), [ad.get_durable_delegation(ident)["delivery_state"] for ident in ids]
+
+    def project(c):
+        sweep = dict(now=NOW, lost_ids=frozenset(ids), dead_owners=frozenset())
+        pending = c.list_orphan_completion_offers(**sweep)
+        events = _offered_events(pending, startup=False)
+        c.sweep_orphaned_completions(**sweep)
+        states = [c.get_delegation(delegation_id=ident).delivery_state.value for ident in ids]
+        return len(pending), events, states
+
+    before, after = run_ledger_both(backend, scope_a, monkeypatch, rows, legacy, project,
+                                    protected_ids=("opted",))
+    assert before[1][0] == 1
+    assert before[1][2] == ["pending", "dropped"]
+    assert len(before[1][1]) == 1 and before[1][1][0]["delegation_id"] == "opted"
+    assert_same(before, after)
+
+
 CLAIM_ROWS = [
     row("free"),
     row("mine", delivery_claim="me", delivery_claimed_at=NOW - 10, delivery_attempts=3),
@@ -348,6 +381,34 @@ def test_reopen_admitted_completion(backend, scope_a, monkeypatch, delegation_id
     before, after = run_ledger_both(backend, scope_a, monkeypatch, REOPEN_ROWS, legacy,
                                     lambda c: c.reopen_admitted_completion(delegation_id=delegation_id))
     assert_same(before, after, project)
+
+
+def test_old_opted_in_admitted_read_ahead_requeues_while_ordinary_expires(backend, scope_a, monkeypatch):
+    ids = ("opted", "ordinary")
+    rows = [row(ident, delivery_state="delivered", dispatched_at=NOW - 60 * 3600,
+                completed_at=NOW - 60 * 3600, updated_at=NOW - 60 * 3600) for ident in ids]
+    target: queue.Queue = queue.Queue()
+
+    def legacy():
+        results = [ad.requeue_admitted_completion(ident, target) for ident in ids]
+        return results, drain(target), [ad.get_durable_delegation(ident)["delivery_state"] for ident in ids]
+
+    def project(c):
+        results, events = [], []
+        for ident in ids:
+            pending = c.get_admitted_completion(delegation_id=ident)
+            events.extend(_offered_events([pending] if pending else [], startup=False))
+            reopened = c.reopen_admitted_completion(delegation_id=ident)
+            results.append(reopened is not None and pending is not None)
+        states = [c.get_delegation(delegation_id=ident).delivery_state.value for ident in ids]
+        return results, events, states
+
+    before, after = run_ledger_both(backend, scope_a, monkeypatch, rows, legacy, project,
+                                    protected_ids=("opted",))
+    assert before[1][0] == [True, False]
+    assert before[1][2] == ["pending", "dropped"]
+    assert len(before[1][1]) == 1 and before[1][1][0]["delegation_id"] == "opted"
+    assert_same(before, after)
 
 
 # ── reads ─────────────────────────────────────────────────────────────────────
